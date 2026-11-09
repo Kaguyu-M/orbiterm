@@ -4,9 +4,13 @@ pub mod commands;
 pub mod config;
 pub mod error;
 pub mod known_hosts;
+pub mod pty;
 pub mod secrets;
+pub mod serial;
 pub mod sftp;
 pub mod ssh;
+pub mod telnet;
+pub mod terminal;
 
 use tauri::Manager;
 
@@ -28,11 +32,13 @@ pub fn run() {
             commands::folder_save,
             commands::folder_delete,
             commands::password_forget,
-            commands::ssh_connect,
+            commands::term_open,
             commands::hostkey_answer,
-            commands::ssh_write,
-            commands::ssh_resize,
-            commands::ssh_disconnect,
+            commands::term_write,
+            commands::term_resize,
+            commands::term_close,
+            commands::local_shells,
+            commands::serial_ports,
             commands::sftp_home,
             commands::sftp_list,
             commands::sftp_mkdir,

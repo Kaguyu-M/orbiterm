@@ -7,12 +7,14 @@
     actions,
     onclose,
     width = "460px",
+    align = "center",
   }: {
     title: string;
     children: Snippet;
     actions: Snippet;
     onclose?: () => void;
     width?: string;
+    align?: "center" | "end";
   } = $props();
 
   function key(e: KeyboardEvent) {
@@ -24,9 +26,12 @@
 
 <div class="backdrop" role="presentation">
   <div class="modal" role="dialog" aria-modal="true" aria-label={title} style:width>
-    <header>{title}</header>
+    <header>
+      <span>{title}</span>
+      {#if onclose}<button class="close" aria-label="Fermer" onclick={onclose}>✕</button>{/if}
+    </header>
     <div class="body">{@render children()}</div>
-    <footer>{@render actions()}</footer>
+    <footer style:justify-content={align}>{@render actions()}</footer>
   </div>
 </div>
 
@@ -34,36 +39,54 @@
   .backdrop {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.55);
+    background: rgba(0, 0, 0, 0.3);
     display: flex;
     align-items: center;
     justify-content: center;
     z-index: 100;
   }
   .modal {
-    max-width: calc(100vw - 32px);
-    max-height: calc(100vh - 32px);
+    max-width: calc(100vw - 24px);
+    max-height: calc(100vh - 24px);
     display: flex;
     flex-direction: column;
     background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+    border: 1px solid var(--chrome-border-dark);
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.35);
   }
   header {
-    padding: 12px 16px;
-    font-weight: 600;
-    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    height: 30px;
+    padding-left: 10px;
+    background: var(--titlebar);
+    color: var(--titlebar-text);
+    border-bottom: 1px solid var(--chrome-border);
+  }
+  header span {
+    flex: 1;
+  }
+  .close {
+    width: 40px;
+    height: 30px;
+    border: none;
+    border-radius: 0;
+    background: none;
+    color: inherit;
+  }
+  .close:hover {
+    background: #e81123;
+    color: #fff;
   }
   .body {
-    padding: 16px;
+    padding: 12px 14px;
     overflow: auto;
   }
   footer {
-    padding: 12px 16px;
+    padding: 10px 14px;
     display: flex;
-    justify-content: flex-end;
     gap: 8px;
-    border-top: 1px solid var(--border);
+    border-top: 1px solid var(--chrome-border);
+    background: var(--chrome);
   }
 </style>

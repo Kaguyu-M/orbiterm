@@ -1,476 +1,585 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { listen } from "@tauri-apps/api/event";
-  import {
-    api,
-    asApiError,
-    newSession,
-    type Folder,
-    type HostKeyPrompt,
-    type Session,
-    type Store,
-  } from "$lib/api";
+  import { getCurrentWindow } from "@tauri-apps/api/window";
+  import { describe, protocol, type HostKeyPrompt } from "$lib/api";
+  import { app, HOME, type Tab } from "$lib/app.svelte";
   import { startBus, onConnectionClosed } from "$lib/bus";
+  import ContextMenu from "$lib/ContextMenu.svelte";
+  import HomeTab from "$lib/HomeTab.svelte";
+  import Icon from "$lib/Icon.svelte";
+  import Logo from "$lib/Logo.svelte";
+  import MenuBar, { type Menu, type MenuItem } from "$lib/MenuBar.svelte";
   import Modal from "$lib/Modal.svelte";
   import SessionDialog from "$lib/SessionDialog.svelte";
-  import SessionTree from "$lib/SessionTree.svelte";
-  import SftpPanel from "$lib/SftpPanel.svelte";
-  import Terminal from "$lib/Terminal.svelte";
+  import Sidebar from "$lib/Sidebar.svelte";
+  import Terminal, { terminals } from "$lib/Terminal.svelte";
+  import Toolbar, { type ToolButton } from "$lib/Toolbar.svelte";
 
-  // ------------------------------------------------------------ state
-  let store: Store = $state({ version: 1, folders: [], sessions: [] });
-  let filter = $state("");
-  let sideTab: "sessions" | "sftp" = $state("sessions");
-  let sidebarWidth = $state(300);
+  const VERSION = "0.2.0";
+  let about = $state(false);
+  let shortcuts = $state(false);
 
-  type Tab = {
-    key: string;
-    session: Session;
-    connId: string | null;
-    status: string;
-    state: "connecting" | "open" | "closed" | "error";
-  };
-  let tabs: Tab[] = $state([]);
-  let activeKey: string | null = $state(null);
-  const active = $derived(tabs.find((t) => t.key === activeKey) ?? null);
-  /** The SFTP side tab exists only while the active terminal has a live connection. */
-  const hasSftp = $derived(!!active && active.state === "open" && !!active.connId && active.session.sftp_enabled);
-  $effect(() => {
-    if (!hasSftp && sideTab === "sftp") sideTab = "sessions";
-  });
+  const term = () => (app.active ? terminals.get(app.active.key) : undefined);
+  const SOON = " (prochaine étape)";
 
-  let editing: Session | null = $state(null);
-
-  // generic dialogs (promise based)
-  type TextAsk = { title: string; value: string; secret: boolean; check?: string; checked: boolean; resolve: (v: { value: string; checked: boolean } | null) => void };
-  let textAsk: TextAsk | null = $state(null);
-  type ConfirmAsk = { message: string; resolve: (v: boolean) => void };
-  let confirmAsk: ConfirmAsk | null = $state(null);
-  let hostKeys: HostKeyPrompt[] = $state([]);
-
-  function ask(title: string, initial = "", secret = false, check?: string, checked = false) {
-    return new Promise<{ value: string; checked: boolean } | null>((resolve) => {
-      textAsk = { title, value: initial, secret, check, checked, resolve };
-    });
+  async function toggleFullscreen() {
+    const w = getCurrentWindow();
+    await w.setFullscreen(!(await w.isFullscreen()));
   }
-  function closeAsk(ok: boolean) {
-    if (!textAsk) return;
-    const t = textAsk;
-    textAsk = null;
-    t.resolve(ok ? { value: t.value, checked: t.checked } : null);
-  }
-  async function askText(title: string, initial: string) {
-    const r = await ask(title, initial);
-    return r?.value.trim() || null;
-  }
-  function confirmBox(message: string) {
-    return new Promise<boolean>((resolve) => (confirmAsk = { message, resolve }));
-  }
-  function closeConfirm(v: boolean) {
-    const c = confirmAsk;
-    confirmAsk = null;
-    c?.resolve(v);
+  function togglePref(k: "sidebar" | "toolbar" | "menubar" | "statusbar") {
+    app.prefs[k] = !app.prefs[k];
+    app.savePrefs();
   }
 
-  // ------------------------------------------------------------ sessions
-  async function reload() {
-    store = await api.sessionsLoad();
+  function sessionItems(): MenuItem[] {
+    const list = [...app.store.sessions].sort((a, b) => a.name.localeCompare(b.name));
+    if (!list.length) return [{ label: "(aucune session enregistrée)", disabled: true }];
+    return list.slice(0, 40).map((s) => ({ label: s.name, icon: protocol(s.kind).icon, action: () => app.openSession(s) }));
   }
 
-  async function saveSession(s: Session) {
-    editing = null;
-    try {
-      await api.sessionSave(s);
-      await reload();
-    } catch (e) {
-      alertMsg(asApiError(e).message);
-    }
+  function viewItems(): MenuItem[] {
+    return [
+      { label: "Barre latérale", checked: app.prefs.sidebar, shortcut: "Ctrl+Maj+B", action: () => togglePref("sidebar") },
+      { label: "Barre d'outils", checked: app.prefs.toolbar, action: () => togglePref("toolbar") },
+      { label: "Barre de menus", checked: app.prefs.menubar, action: () => togglePref("menubar") },
+      { label: "Barre d'état", checked: app.prefs.statusbar, action: () => togglePref("statusbar") },
+      { sep: true },
+      { label: "Plein écran", icon: "view", shortcut: "F11", action: toggleFullscreen },
+      { sep: true },
+      { label: "Agrandir le texte", shortcut: "Ctrl+Maj+=", disabled: !app.active, action: () => term()?.zoom(1) },
+      { label: "Réduire le texte", shortcut: "Ctrl+Maj+-", disabled: !app.active, action: () => term()?.zoom(-1) },
+      { label: "Taille normale", shortcut: "Ctrl+Maj+0", disabled: !app.active, action: () => term()?.zoom(0) },
+    ];
   }
 
-  async function duplicate(s: Session) {
-    const copy = structuredClone($state.snapshot(s)) as Session;
-    copy.id = "";
-    copy.name = `${s.name} (copie)`;
-    await saveSession(copy);
+  const menus: Menu[] = [
+    {
+      label: "Terminal",
+      items: () => [
+        { label: "Ouvrir un nouveau terminal local", icon: "terminal", shortcut: "Ctrl+Maj+T", action: () => app.startLocalTerminal() },
+        ...app.shells.slice(1).map((sh) => ({
+          label: `Nouveau terminal : ${sh.label}`,
+          icon: sh.id.startsWith("wsl:") ? "wsl" : "shell",
+          action: () => app.startLocalTerminal(sh.id),
+        })),
+        { sep: true },
+        { label: "Copier", icon: "copy", shortcut: "Ctrl+Maj+C", disabled: !app.active, action: () => term()?.copy() },
+        { label: "Coller", shortcut: "Ctrl+Maj+V", disabled: !app.active, action: () => term()?.paste() },
+        { label: "Tout sélectionner", disabled: !app.active, action: () => term()?.selectAll() },
+        { label: "Effacer l'historique", disabled: !app.active, action: () => term()?.clear() },
+        { sep: true },
+        { label: "Renommer l'onglet", icon: "edit", disabled: !app.active, action: () => app.active && app.renameTab(app.active) },
+        { label: "Dupliquer l'onglet", icon: "copy", disabled: !app.active, action: () => app.active && app.duplicateTab(app.active) },
+        { label: "Reconnecter", icon: "refresh", disabled: !app.active, action: () => app.active && app.reconnect(app.active) },
+        { label: "Fermer l'onglet", icon: "close", shortcut: "Ctrl+Maj+W", disabled: !app.active, action: () => app.active && app.closeTab(app.active) },
+        { sep: true },
+        { label: "Quitter", icon: "exit", action: quit },
+      ],
+    },
+    {
+      label: "Sessions",
+      items: () => [
+        { label: "Nouvelle session", icon: "session", shortcut: "Ctrl+Maj+N", action: () => app.newSession() },
+        { label: "Nouveau dossier", icon: "newfolder", action: () => app.newFolder("") },
+        { label: "Connexion rapide…", icon: "search", action: focusQuick },
+        { sep: true },
+        { label: "Importer depuis MobaXterm / PuTTY" + SOON, disabled: true },
+        { sep: true },
+        ...sessionItems(),
+      ],
+    },
+    { label: "Affichage", items: viewItems },
+    {
+      label: "Serveur X",
+      items: () => [
+        { label: "Démarrer le serveur X" + SOON, icon: "xserver", disabled: true },
+        { label: "Arrêter le serveur X" + SOON, icon: "xserver_off", disabled: true },
+      ],
+    },
+    {
+      label: "Outils",
+      items: () => [
+        ...app.shells.map((sh) => ({
+          label: sh.label,
+          icon: sh.id.startsWith("wsl:") ? "wsl" : "shell",
+          action: () => app.startLocalTerminal(sh.id),
+        })),
+        { sep: true },
+        { label: "Scanner de ports" + SOON, icon: "scan", disabled: true },
+        { label: "Ports ouverts / connexions" + SOON, icon: "ports", disabled: true },
+        { label: "Wake-on-LAN" + SOON, icon: "wol", disabled: true },
+        { label: "Tunnels SSH" + SOON, icon: "tunnel", disabled: true },
+        { sep: true },
+        { label: "Serveurs intégrés (HTTP, TFTP, FTP, SSH)" + SOON, icon: "servers", disabled: true },
+      ],
+    },
+    {
+      label: "Paramètres",
+      items: () => [
+        { label: "Configuration générale" + SOON, icon: "settings", disabled: true },
+        { sep: true },
+        { label: "Afficher la barre latérale", checked: app.prefs.sidebar, action: () => togglePref("sidebar") },
+      ],
+    },
+    {
+      label: "Macros",
+      items: () => [
+        { label: "Enregistrer une macro" + SOON, icon: "record", disabled: true },
+        { label: "Gérer les macros" + SOON, icon: "macro", disabled: true },
+      ],
+    },
+    {
+      label: "Aide",
+      items: () => [
+        { label: "Raccourcis clavier", icon: "keyboard", action: () => (shortcuts = true) },
+        { sep: true },
+        { label: "À propos d'Orbiterm", icon: "info", action: () => (about = true) },
+      ],
+    },
+  ];
+
+  function dropMenu(ev: MouseEvent, items: MenuItem[]) {
+    const r = (ev.currentTarget as HTMLElement).getBoundingClientRect();
+    app.ctx = { x: r.left, y: r.bottom, items };
   }
 
-  async function deleteSession(s: Session) {
-    if (!(await confirmBox(`Supprimer la session « ${s.name} » ?`))) return;
-    await api.sessionDelete(s.id);
-    await reload();
+  const toolsLeft: ToolButton[] = $derived([
+    { id: "session", label: "Session", icon: "session", title: "Nouvelle session (Ctrl+Maj+N)", action: () => app.newSession() },
+    {
+      id: "servers",
+      label: "Serveurs",
+      icon: "servers",
+      title: "Serveurs intégrés",
+      action: () => {
+        app.sideTab = "tools";
+        app.prefs.sidebar = true;
+      },
+    },
+    {
+      id: "tools",
+      label: "Outils",
+      icon: "tools",
+      action: () => {
+        app.sideTab = "tools";
+        app.prefs.sidebar = true;
+      },
+    },
+    { id: "sessions", label: "Sessions", icon: "sessions", title: "Sessions enregistrées", action: (e: MouseEvent) => dropMenu(e, sessionItems()) },
+    { id: "view", label: "Affichage", icon: "view", action: (e: MouseEvent) => dropMenu(e, viewItems()) },
+    { id: "split", label: "Split", icon: "split", title: "Écran partagé" + SOON, disabled: true, action: () => {} },
+    { id: "multiexec", label: "MultiExec", icon: "multiexec", title: "Saisie simultanée dans tous les terminaux" + SOON, disabled: true, action: () => {} },
+    { id: "tunnel", label: "Tunnels", icon: "tunnel", title: "Tunnels SSH" + SOON, disabled: true, action: () => {} },
+    { id: "packages", label: "Paquets", icon: "packages", title: "Gestion de paquets" + SOON, disabled: true, action: () => {} },
+    { id: "settings", label: "Paramètres", icon: "settings", title: "Configuration" + SOON, disabled: true, action: () => {} },
+    { id: "help", label: "Aide", icon: "help", action: () => (about = true) },
+  ]);
+  const toolsRight: ToolButton[] = [
+    { id: "xserver", label: "Serveur X", icon: "xserver_off", title: "Serveur X" + SOON, disabled: true, action: () => {} },
+    { id: "exit", label: "Quitter", icon: "exit", action: () => quit() },
+  ];
+
+  async function quit() {
+    const open = app.tabs.filter((t) => t.state === "open").length;
+    if (open && !(await app.confirm(`${open} session(s) ouverte(s). Quitter quand même ?`))) return;
+    await app.closeAllTabs();
+    await getCurrentWindow().close();
   }
 
-  async function newFolder(parent: string) {
-    const name = await askText("Nom du dossier", "");
-    if (!name) return;
-    await api.folderSave({ id: "", name, parent });
-    await reload();
+  function focusQuick() {
+    app.sideTab = "sessions";
+    app.prefs.sidebar = true;
+    requestAnimationFrame(() => document.querySelector<HTMLInputElement>("[data-quick]")?.focus());
   }
 
-  async function renameFolder(f: Folder) {
-    const name = await askText("Renommer le dossier", f.name);
-    if (!name) return;
-    await api.folderSave({ ...f, name });
-    await reload();
-  }
-
-  async function deleteFolder(f: Folder) {
-    if (!(await confirmBox(`Supprimer le dossier « ${f.name} », ses sous-dossiers et toutes leurs sessions ?`))) return;
-    await api.folderDelete(f.id);
-    await reload();
-  }
-
-  let alertText = $state("");
-  function alertMsg(m: string) {
-    alertText = m;
-  }
-
-  // ------------------------------------------------------------ connections
-  function openSession(s: Session) {
-    const tab: Tab = {
-      key: crypto.randomUUID(),
-      session: structuredClone($state.snapshot(s)) as Session,
-      connId: null,
-      status: "",
-      state: "connecting",
+  function tabMenu(e: MouseEvent, t: Tab) {
+    e.preventDefault();
+    app.activeKey = t.key;
+    app.ctx = {
+      x: e.clientX,
+      y: e.clientY,
+      items: [
+        { label: "Renommer l'onglet", icon: "edit", action: () => app.renameTab(t) },
+        { label: "Dupliquer l'onglet", icon: "copy", action: () => app.duplicateTab(t) },
+        { label: "Reconnecter", icon: "refresh", action: () => app.reconnect(t) },
+        { sep: true },
+        { label: "Fermer l'onglet", icon: "close", action: () => app.closeTab(t) },
+        {
+          label: "Fermer les autres onglets",
+          disabled: app.tabs.length < 2,
+          action: async () => {
+            for (const o of app.tabs.filter((x) => x.key !== t.key)) await app.closeTab(o);
+          },
+        },
+        { label: "Fermer tous les onglets", action: () => app.closeAllTabs() },
+      ],
     };
-    tabs.push(tab);
-    activeKey = tab.key;
-    connect(tabs[tabs.length - 1]);
-  }
-
-  async function connect(
-    tab: Tab,
-    extra: { password?: string; passphrase?: string; remember?: boolean } = {},
-    note = "",
-  ): Promise<void> {
-    const s = tab.session;
-    tab.state = "connecting";
-    tab.status = `Connexion à ${s.username ? s.username + "@" : ""}${s.host}:${s.port}…`;
-    try {
-      const connId = await api.sshConnect({ session_id: s.id, cols: 120, rows: 32, ...extra });
-      tab.connId = connId;
-      tab.state = "open";
-      tab.status = "";
-      if (s.sftp_enabled && tab.key === activeKey) sideTab = "sftp";
-    } catch (e) {
-      const err = asApiError(e);
-      if (err.kind === "need_password") {
-        const r = await ask(
-          `${note}Mot de passe pour ${s.username}@${s.host}`,
-          "",
-          true,
-          s.remember_password ? "Mémoriser dans le trousseau du système" : undefined,
-          s.remember_password,
-        );
-        if (r) return connect(tab, { password: r.value, remember: r.checked });
-        tab.state = "error";
-        tab.status = "Connexion annulée.";
-      } else if (err.kind === "need_passphrase") {
-        const r = await ask(`${note}Passphrase de la clé ${s.key_path}`, "", true);
-        if (r) return connect(tab, { passphrase: r.value });
-        tab.state = "error";
-        tab.status = "Connexion annulée.";
-      } else if (err.kind === "auth_failed" && extra.password !== undefined) {
-        return connect(tab, {}, "⚠ Mot de passe refusé — ");
-      } else if (err.kind === "auth_failed" && extra.passphrase !== undefined) {
-        return connect(tab, {}, "⚠ Clé refusée — ");
-      } else if (err.kind === "ssh" && extra.passphrase !== undefined && /decrypt|passphrase|crypto/i.test(err.message)) {
-        return connect(tab, {}, "⚠ Passphrase incorrecte — ");
-      } else {
-        tab.state = "error";
-        tab.status = `Échec : ${err.message}`;
-      }
-    }
-  }
-
-  function reconnect(tab: Tab) {
-    const old = tab.connId;
-    tab.connId = null;
-    if (old) api.sshDisconnect(old).catch(() => {});
-    connect(tab);
-  }
-
-  async function closeTab(tab: Tab) {
-    if (tab.connId) await api.sshDisconnect(tab.connId).catch(() => {});
-    const i = tabs.findIndex((t) => t.key === tab.key);
-    tabs.splice(i, 1);
-    if (activeKey === tab.key) activeKey = tabs[Math.min(i, tabs.length - 1)]?.key ?? null;
-  }
-
-  async function answerHostKey(accept: boolean) {
-    const hk = hostKeys.shift();
-    if (hk) await api.hostkeyAnswer(hk.request_id, accept);
   }
 
   // ------------------------------------------------------------ sidebar resize
   function startResize(e: PointerEvent) {
     const startX = e.clientX;
-    const startW = sidebarWidth;
-    const move = (ev: PointerEvent) => (sidebarWidth = Math.min(600, Math.max(200, startW + ev.clientX - startX)));
+    const startW = app.prefs.sidebarWidth;
+    const move = (ev: PointerEvent) => (app.prefs.sidebarWidth = Math.min(600, Math.max(180, startW + ev.clientX - startX)));
     const up = () => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
+      app.savePrefs();
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
   }
 
   function keys(e: KeyboardEvent) {
-    if (e.ctrlKey && e.shiftKey && e.code === "KeyW" && active) {
+    const cs = e.ctrlKey && e.shiftKey;
+    if (cs && e.code === "KeyW" && app.active) {
       e.preventDefault();
-      closeTab(active);
-    }
-    if (e.ctrlKey && e.code === "Tab" && tabs.length > 1) {
+      app.closeTab(app.active);
+    } else if (cs && e.code === "KeyT") {
       e.preventDefault();
-      const i = tabs.findIndex((t) => t.key === activeKey);
-      activeKey = tabs[(i + (e.shiftKey ? tabs.length - 1 : 1)) % tabs.length].key;
+      app.startLocalTerminal();
+    } else if (cs && e.code === "KeyN") {
+      e.preventDefault();
+      app.newSession();
+    } else if (cs && e.code === "KeyB") {
+      e.preventDefault();
+      togglePref("sidebar");
+    } else if (cs && (e.code === "Equal" || e.code === "NumpadAdd")) {
+      e.preventDefault();
+      term()?.zoom(1);
+    } else if (cs && (e.code === "Minus" || e.code === "NumpadSubtract")) {
+      e.preventDefault();
+      term()?.zoom(-1);
+    } else if (cs && (e.code === "Digit0" || e.code === "Numpad0")) {
+      e.preventDefault();
+      term()?.zoom(0);
+    } else if (e.ctrlKey && e.code === "Tab") {
+      e.preventDefault();
+      app.nextTab(e.shiftKey ? -1 : 1);
+    } else if (e.code === "F11") {
+      e.preventDefault();
+      toggleFullscreen();
     }
   }
+
+  const stateLabel: Record<string, string> = { connecting: "connexion…", open: "connecté", closed: "terminé", error: "erreur" };
 
   onMount(() => {
     const unsubs: Array<() => void> = [];
     startBus();
-    reload().catch((e) => alertMsg(asApiError(e).message));
-    listen<HostKeyPrompt>("hostkey-prompt", (e) => hostKeys.push(e.payload)).then((u) => unsubs.push(u));
-    unsubs.push(
-      onConnectionClosed((connId, reason) => {
-        const t = tabs.find((x) => x.connId === connId);
-        if (t) {
-          // the terminal already prints the reason; release the backend connection
-          t.state = "closed";
-          api.sshDisconnect(connId).catch(() => {});
-        }
-      }),
-    );
+    app.init();
+    listen<HostKeyPrompt>("hostkey-prompt", (e) => app.hostKeys.push(e.payload)).then((u) => unsubs.push(u));
+    unsubs.push(onConnectionClosed((connId) => app.onConnectionClosed(connId)));
     return () => unsubs.forEach((u) => u());
   });
 </script>
 
 <svelte:window onkeydown={keys} />
 
-<div class="app" style:--sidebar="{sidebarWidth}px">
-  <aside>
-    <nav class="sidetabs">
-      <button class:on={sideTab === "sessions"} onclick={() => (sideTab = "sessions")}>Sessions</button>
-      {#if hasSftp}
-        <button class:on={sideTab === "sftp"} onclick={() => (sideTab = "sftp")}>SFTP</button>
-      {/if}
-    </nav>
+<div class="app">
+  {#if app.prefs.menubar}<MenuBar {menus} />{/if}
+  {#if app.prefs.toolbar}<Toolbar left={toolsLeft} right={toolsRight} />{/if}
 
-    <div class="sidebody" class:hide={sideTab !== "sessions"}>
-      <div class="sessbar">
-        <button class="primary" onclick={() => (editing = newSession())}>＋ Session</button>
-        <button onclick={() => newFolder("")}>＋ Dossier</button>
-      </div>
-      <input class="search" placeholder="Rechercher…" bind:value={filter} />
-      <div class="scroll">
-        <SessionTree
-          {store}
-          {filter}
-          onopen={openSession}
-          onedit={(s) => (editing = s)}
-          onnewsession={(f) => (editing = newSession(f))}
-          onnewfolder={newFolder}
-          onrenamefolder={renameFolder}
-          ondeletesession={deleteSession}
-          ondeletefolder={deleteFolder}
-          onduplicate={duplicate}
-        />
-      </div>
-    </div>
+  <div class="work">
+    <Sidebar />
+    {#if app.prefs.sidebar}
+      <div class="splitter" role="separator" aria-orientation="vertical" onpointerdown={startResize}></div>
+    {/if}
 
-    <div class="sidebody" class:hide={sideTab !== "sftp"}>
-      {#each tabs as t (t.key)}
-        {#if t.connId && t.state === "open" && t.session.sftp_enabled}
-          <div class="fill" class:hide={t.key !== activeKey}>
-            <SftpPanel
-              connId={t.connId}
-              visible={sideTab === "sftp" && t.key === activeKey}
-              {askText}
-              confirm={confirmBox}
-            />
-          </div>
-        {/if}
-      {/each}
-    </div>
-  </aside>
-
-  <div class="splitter" role="separator" aria-orientation="vertical" onpointerdown={startResize}></div>
-
-  <main>
-    <div class="tabbar">
-      {#each tabs as t (t.key)}
-        <div
-          class="tab"
-          class:on={t.key === activeKey}
+    <main>
+      <div class="tabbar" role="tablist">
+        <button
+          class="tab home"
+          class:on={app.activeKey === HOME}
           role="tab"
-          tabindex="0"
-          aria-selected={t.key === activeKey}
-          onclick={() => (activeKey = t.key)}
-          onkeydown={(e) => e.key === "Enter" && (activeKey = t.key)}
-          onauxclick={(e) => e.button === 1 && closeTab(t)}
+          aria-selected={app.activeKey === HOME}
+          title="Accueil"
+          data-tab="home"
+          onclick={() => (app.activeKey = HOME)}
         >
-          <span class="dot {t.state}"></span>
-          <span class="tname">{t.session.name}</span>
-          <button class="x" title="Fermer (Ctrl+Maj+W)" onclick={(e) => { e.stopPropagation(); closeTab(t); }}>✕</button>
-        </div>
-      {/each}
-    </div>
+          <Icon name="home" size={16} />
+        </button>
+        {#each app.tabs as t, i (t.key)}
+          <div
+            class="tab"
+            class:on={t.key === app.activeKey}
+            role="tab"
+            tabindex="0"
+            aria-selected={t.key === app.activeKey}
+            title={describe(t.session)}
+            data-tab={t.title}
+            onclick={() => (app.activeKey = t.key)}
+            onkeydown={(e) => e.key === "Enter" && (app.activeKey = t.key)}
+            onauxclick={(e) => e.button === 1 && app.closeTab(t)}
+            oncontextmenu={(e) => tabMenu(e, t)}
+          >
+            <span class="dot {t.state}"></span>
+            <Icon name={protocol(t.session.kind).icon} size={15} />
+            <span class="tname">{i + 1}. {t.title}</span>
+            <button
+              class="x"
+              title="Fermer (Ctrl+Maj+W)"
+              aria-label="Fermer l'onglet"
+              onclick={(e) => {
+                e.stopPropagation();
+                app.closeTab(t);
+              }}><Icon name="close" size={11} /></button
+            >
+          </div>
+        {/each}
+        <button class="tab plus" title="Nouveau terminal local (Ctrl+Maj+T)" aria-label="Nouveau terminal local" onclick={() => app.startLocalTerminal()}>
+          <Icon name="plus" size={14} />
+        </button>
+      </div>
 
-    <div class="terms">
-      {#each tabs as t (t.key)}
-        <div class="termwrap" class:hide={t.key !== activeKey} data-conn={t.connId ?? ""}>
-          <Terminal connId={t.connId} settings={t.session.terminal} active={t.key === activeKey} status={t.status} />
-          {#if t.state === "closed" || t.state === "error"}
-            <div class="overlay">
-              <button class="primary" onclick={() => reconnect(t)}>⟳ Reconnecter</button>
-              <button onclick={() => closeTab(t)}>Fermer l'onglet</button>
-            </div>
-          {/if}
-        </div>
-      {:else}
-        <div class="welcome">
-          <h1>Orbiterm</h1>
-          <p>Double-clique sur une session à gauche, ou crée-en une avec <b>＋ Session</b>.</p>
-          <p class="muted">Ctrl+Maj+C / Ctrl+Maj+V : copier / coller · Ctrl+Tab : onglet suivant · Ctrl+Maj+W : fermer</p>
-        </div>
-      {/each}
-    </div>
-  </main>
+      <div class="terms">
+        <div class="termwrap" class:hide={app.activeKey !== HOME}><HomeTab /></div>
+        {#each app.tabs as t (t.key)}
+          <div class="termwrap" class:hide={t.key !== app.activeKey} data-conn={t.connId ?? ""}>
+            <Terminal tabKey={t.key} connId={t.connId} settings={t.session.terminal} active={t.key === app.activeKey} status={t.status} />
+            {#if t.state === "closed" || t.state === "error"}
+              <div class="overlay">
+                <button class="primary" onclick={() => app.reconnect(t)}><Icon name="refresh" size={14} /> Redémarrer la session</button>
+                <button onclick={() => app.closeTab(t)}>Fermer l'onglet</button>
+              </div>
+            {/if}
+          </div>
+        {/each}
+      </div>
+    </main>
+  </div>
+
+  {#if app.prefs.statusbar}
+    <footer class="status">
+      <span class="cell"><Logo size={14} /> Orbiterm {VERSION}</span>
+      <span class="cell grow">
+        {#if app.active}
+          <Icon name={protocol(app.active.session.kind).icon} size={13} />
+          {describe(app.active.session)} — {stateLabel[app.active.state]}
+        {:else}
+          Accueil
+        {/if}
+      </span>
+      <span class="cell">{app.tabs.length} onglet(s) · {app.store.sessions.length} session(s) enregistrée(s)</span>
+      <span class="cell" title="Serveur X (prochaine étape)"><Icon name="xserver_off" size={13} /> X arrêté</span>
+    </footer>
+  {/if}
 </div>
 
-{#if editing}
-  <SessionDialog session={editing} folders={store.folders} onsave={saveSession} oncancel={() => (editing = null)} />
+<ContextMenu />
+
+{#if app.editing}
+  <SessionDialog session={app.editing} />
 {/if}
 
-{#if hostKeys.length}
-  {@const hk = hostKeys[0]}
-  <Modal title={hk.status === "changed" ? "⚠ La clé du serveur a CHANGÉ" : "Serveur inconnu"} onclose={() => answerHostKey(false)} width="560px">
-    {#if hk.status === "changed"}
-      <p class="danger">
-        La clé d'identification de <b>{hk.host}:{hk.port}</b> ne correspond pas à celle enregistrée.
-        Cela peut indiquer une attaque (interception) — ou une réinstallation du serveur.
-        N'accepte que si tu sais pourquoi la clé a changé.
-      </p>
-    {:else}
-      <p>Première connexion à <b>{hk.host}:{hk.port}</b>. Vérifie que l'empreinte correspond à celle du serveur :</p>
-    {/if}
-    <p class="fp"><span class="muted">{hk.algorithm}</span><br />{hk.fingerprint}</p>
+{#if app.hostKeys.length}
+  {@const hk = app.hostKeys[0]}
+  <Modal title={hk.status === "changed" ? "⚠ La clé du serveur a CHANGÉ" : "Serveur inconnu"} onclose={() => app.answerHostKey(false)} width="560px">
+    <div class="msg">
+      <Icon name={hk.status === "changed" ? "warning" : "info"} size={32} />
+      <div>
+        {#if hk.status === "changed"}
+          <p class="danger">
+            La clé d'identification de <b>{hk.host}:{hk.port}</b> ne correspond pas à celle enregistrée. Cela peut
+            indiquer une attaque (interception) — ou une réinstallation du serveur. N'accepte que si tu sais pourquoi la clé
+            a changé.
+          </p>
+        {:else}
+          <p>Première connexion à <b>{hk.host}:{hk.port}</b>. Vérifie que l'empreinte correspond à celle du serveur :</p>
+        {/if}
+        <p class="fp"><span class="muted">{hk.algorithm}</span><br />{hk.fingerprint}</p>
+      </div>
+    </div>
     {#snippet actions()}
-      <button onclick={() => answerHostKey(false)}>Refuser</button>
-      <button class={hk.status === "changed" ? "danger-btn" : "primary"} onclick={() => answerHostKey(true)}>
+      <button class={hk.status === "changed" ? "danger-btn" : "primary"} onclick={() => app.answerHostKey(true)}>
         {hk.status === "changed" ? "Accepter la nouvelle clé" : "Faire confiance"}
       </button>
+      <button onclick={() => app.answerHostKey(false)}>Refuser</button>
     {/snippet}
   </Modal>
 {/if}
 
-{#if textAsk}
-  <Modal title={textAsk.title} onclose={() => closeAsk(false)}>
-    <form onsubmit={(e) => { e.preventDefault(); closeAsk(true); }}>
+{#if app.textAsk}
+  <Modal title={app.textAsk.title} onclose={() => app.closeAsk(false)}>
+    <form
+      onsubmit={(e) => {
+        e.preventDefault();
+        app.closeAsk(true);
+      }}
+    >
       <!-- svelte-ignore a11y_autofocus -->
-      <input class="full" type={textAsk.secret ? "password" : "text"} bind:value={textAsk.value} autofocus />
-      {#if textAsk.check}
-        <label class="inline"><input type="checkbox" bind:checked={textAsk.checked} /> {textAsk.check}</label>
+      <input class="full" type={app.textAsk.secret ? "password" : "text"} bind:value={app.textAsk.value} autofocus />
+      {#if app.textAsk.check}
+        <label class="inline"><input type="checkbox" bind:checked={app.textAsk.checked} /> {app.textAsk.check}</label>
       {/if}
     </form>
     {#snippet actions()}
-      <button onclick={() => closeAsk(false)}>Annuler</button>
-      <button class="primary" onclick={() => closeAsk(true)}>OK</button>
+      <button class="primary dlg" onclick={() => app.closeAsk(true)}>OK</button>
+      <button class="dlg" onclick={() => app.closeAsk(false)}>Annuler</button>
     {/snippet}
   </Modal>
 {/if}
 
-{#if confirmAsk}
-  <Modal title="Confirmation" onclose={() => closeConfirm(false)}>
-    <p>{confirmAsk.message}</p>
+{#if app.confirmAsk}
+  <Modal title="Confirmation" onclose={() => app.closeConfirm(false)}>
+    <div class="msg"><Icon name="warning" size={32} /><p>{app.confirmAsk.message}</p></div>
     {#snippet actions()}
-      <button onclick={() => closeConfirm(false)}>Annuler</button>
-      <button class="danger-btn" onclick={() => closeConfirm(true)}>Confirmer</button>
+      <button class="danger-btn dlg" onclick={() => app.closeConfirm(true)}>Oui</button>
+      <button class="dlg" onclick={() => app.closeConfirm(false)}>Non</button>
     {/snippet}
   </Modal>
 {/if}
 
-{#if alertText}
-  <Modal title="Erreur" onclose={() => (alertText = "")}>
-    <p>{alertText}</p>
+{#if app.alertText}
+  <Modal title="Erreur" onclose={() => (app.alertText = "")}>
+    <div class="msg"><Icon name="warning" size={32} /><p>{app.alertText}</p></div>
     {#snippet actions()}
-      <button class="primary" onclick={() => (alertText = "")}>OK</button>
+      <button class="primary dlg" onclick={() => (app.alertText = "")}>OK</button>
+    {/snippet}
+  </Modal>
+{/if}
+
+{#if app.infoText}
+  <Modal title="Information" onclose={() => (app.infoText = "")}>
+    <div class="msg"><Icon name="info" size={32} /><p>{app.infoText}</p></div>
+    {#snippet actions()}
+      <button class="primary dlg" onclick={() => (app.infoText = "")}>OK</button>
+    {/snippet}
+  </Modal>
+{/if}
+
+{#if about}
+  <Modal title="À propos d'Orbiterm" onclose={() => (about = false)} width="440px">
+    <div class="msg">
+      <Logo size={56} />
+      <div>
+        <p><b>Orbiterm {VERSION}</b></p>
+        <p>Terminal multi-protocoles pour Windows et Linux : SSH, SFTP, Telnet, Rlogin, port série, Mosh, shells locaux et WSL.</p>
+        <p class="muted">Tauri 2 · Rust · Svelte · xterm.js</p>
+      </div>
+    </div>
+    {#snippet actions()}
+      <button class="primary dlg" onclick={() => (about = false)}>OK</button>
+    {/snippet}
+  </Modal>
+{/if}
+
+{#if shortcuts}
+  <Modal title="Raccourcis clavier" onclose={() => (shortcuts = false)} width="480px">
+    <table class="keys">
+      <tbody>
+        <tr><td>Ctrl+Maj+T</td><td>Nouveau terminal local</td></tr>
+        <tr><td>Ctrl+Maj+N</td><td>Nouvelle session</td></tr>
+        <tr><td>Ctrl+Maj+W</td><td>Fermer l'onglet</td></tr>
+        <tr><td>Ctrl+Tab / Ctrl+Maj+Tab</td><td>Onglet suivant / précédent</td></tr>
+        <tr><td>Ctrl+Maj+C / Ctrl+Maj+V</td><td>Copier / coller</td></tr>
+        <tr><td>Sélection / clic droit</td><td>Copie automatique / coller</td></tr>
+        <tr><td>Maj+Inser</td><td>Coller</td></tr>
+        <tr><td>Ctrl+Maj+= / - / 0</td><td>Taille du texte</td></tr>
+        <tr><td>Ctrl+Maj+B</td><td>Afficher / masquer la barre latérale</td></tr>
+        <tr><td>F11</td><td>Plein écran</td></tr>
+      </tbody>
+    </table>
+    {#snippet actions()}
+      <button class="primary dlg" onclick={() => (shortcuts = false)}>OK</button>
     {/snippet}
   </Modal>
 {/if}
 
 <style>
   :global(:root) {
-    --bg: #1b1d23;
-    --panel: #21252b;
-    --border: #333842;
-    --hover: #2c313a;
-    --selected: #2f3b52;
-    --fg: #d7dae0;
-    --muted: #8a919e;
-    --accent: #61afef;
-    --danger: #e06c75;
-    --ok: #98c379;
+    --chrome: #f0f0f0;
+    --chrome-border: #cfcfcf;
+    --chrome-border-dark: #a0a0a0;
+    --panel: #ffffff;
+    --hover: #e5f1fb;
+    --hover-border: #a8cdef;
+    --selected: #cce4f7;
+    --text: #1b1b1b;
+    --text-disabled: #a0a0a0;
+    --muted: #6b6b6b;
+    --accent: #0a64c2;
+    --brand: #1b4f8f;
+    --danger: #c42b1c;
+    --ok: #2e9d4a;
+    --input-bg: #ffffff;
+    --toolbar-top: #fbfbfb;
+    --toolbar-bottom: #e8ebee;
+    --titlebar: #ffffff;
+    --titlebar-text: #1b1b1b;
+    --home-bg: #e4e8ec;
     --mono: "Cascadia Mono", Consolas, "DejaVu Sans Mono", monospace;
-    color-scheme: dark;
+    /* aliases used by older components */
+    --fg: var(--text);
+    --bg: var(--panel);
+    --border: var(--chrome-border);
+    color-scheme: light;
   }
   :global(html, body) {
     margin: 0;
     height: 100%;
-    background: var(--bg);
-    color: var(--fg);
-    font: 13px/1.4 "Segoe UI", system-ui, "Noto Sans", sans-serif;
+    background: var(--chrome);
+    color: var(--text);
+    font: 12.5px/1.4 "Segoe UI", system-ui, "Noto Sans", sans-serif;
     overflow: hidden;
   }
   :global(button) {
     font: inherit;
-    color: var(--fg);
-    background: var(--hover);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    padding: 4px 10px;
-    cursor: pointer;
+    color: var(--text);
+    background: #fdfdfd;
+    border: 1px solid #adadad;
+    border-radius: 2px;
+    padding: 3px 10px;
+    cursor: default;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
   }
-  :global(button:hover) {
-    border-color: var(--accent);
+  :global(button:hover:not(:disabled)) {
+    background: var(--hover);
+    border-color: #0078d7;
+  }
+  :global(button:disabled) {
+    color: var(--text-disabled);
   }
   :global(button.primary) {
-    background: #2b5d8a;
-    border-color: #3a76ad;
+    border-color: #0078d7;
+    box-shadow: inset 0 0 0 1px #0078d7;
   }
   :global(button.danger-btn) {
-    background: #7a2e35;
-    border-color: #a13d47;
+    border-color: var(--danger);
+    color: var(--danger);
   }
   :global(input, select) {
     font: inherit;
-    color: var(--fg);
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    padding: 4px 6px;
+    color: var(--text);
+    background: var(--input-bg);
+    border: 1px solid #a0a0a0;
+    border-radius: 0;
+    padding: 3px 5px;
     min-width: 0;
   }
+  :global(input:disabled, select:disabled) {
+    background: var(--chrome);
+    color: var(--text-disabled);
+  }
   :global(input:focus, select:focus) {
-    outline: 1px solid var(--accent);
+    outline: none;
+    border-color: #0078d7;
   }
   :global(::-webkit-scrollbar) {
-    width: 10px;
-    height: 10px;
+    width: 12px;
+    height: 12px;
   }
   :global(::-webkit-scrollbar-track) {
-    background: transparent;
+    background: #f0f0f0;
   }
   :global(::-webkit-scrollbar-thumb) {
-    background: #3a3f4b;
-    border-radius: 5px;
-    border: 2px solid transparent;
-    background-clip: padding-box;
+    background: #c1c1c1;
+    border: 3px solid #f0f0f0;
   }
-  :global(::-webkit-scrollbar-button) {
-    display: none;
+  :global(::-webkit-scrollbar-thumb:hover) {
+    background: #a8a8a8;
   }
   :global(.hide) {
     display: none !important;
@@ -480,124 +589,114 @@
   }
 
   .app {
-    display: grid;
-    grid-template-columns: var(--sidebar) 4px 1fr;
+    display: flex;
+    flex-direction: column;
     height: 100vh;
   }
-  aside {
+  .work {
+    flex: 1;
     display: flex;
-    flex-direction: column;
     min-height: 0;
-    overflow: hidden;
-    background: var(--panel);
-    min-width: 0;
-  }
-  .sidetabs {
-    display: flex;
-    border-bottom: 1px solid var(--border);
-  }
-  .sidetabs button {
-    flex: 1;
-    border: none;
-    border-radius: 0;
-    background: none;
-    padding: 8px;
-    color: var(--muted);
-  }
-  .sidetabs button.on {
-    color: var(--fg);
-    box-shadow: inset 0 -2px 0 var(--accent);
-  }
-  .sidebody {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    min-height: 0;
-  }
-  .fill {
-    flex: 1;
-    min-height: 0;
-    display: flex;
-    flex-direction: column;
-  }
-  .sessbar {
-    display: flex;
-    gap: 6px;
-    padding: 8px;
-  }
-  .search {
-    margin: 0 8px 8px;
-  }
-  .scroll {
-    flex: 1;
-    overflow: auto;
-    padding: 0 4px 8px;
-  }
-  .pad {
-    padding: 16px;
   }
   .splitter {
+    width: 4px;
     cursor: col-resize;
-    background: var(--border);
+    background: var(--chrome);
+    border-left: 1px solid var(--chrome-border);
+    border-right: 1px solid var(--chrome-border);
   }
   main {
+    flex: 1;
     display: flex;
     flex-direction: column;
     min-width: 0;
   }
   .tabbar {
     display: flex;
-    background: var(--panel);
-    border-bottom: 1px solid var(--border);
+    align-items: flex-end;
+    gap: 1px;
+    background: var(--chrome);
+    border-bottom: 1px solid var(--chrome-border-dark);
     overflow-x: auto;
-    min-height: 34px;
+    overflow-y: hidden;
+    height: 27px;
+    padding: 2px 2px 0;
+    flex: 0 0 auto;
+  }
+  .tabbar::-webkit-scrollbar {
+    height: 0;
   }
   .tab {
     display: flex;
     align-items: center;
-    gap: 6px;
-    padding: 0 6px 0 12px;
-    border-right: 1px solid var(--border);
-    cursor: pointer;
+    gap: 5px;
+    height: 24px;
+    padding: 0 4px 0 8px;
+    border: 1px solid var(--chrome-border);
+    border-bottom: none;
+    border-radius: 3px 3px 0 0;
+    background: #e3e3e3;
+    cursor: default;
     white-space: nowrap;
-    color: var(--muted);
+    color: var(--text);
+    box-sizing: border-box;
+  }
+  .tab:hover {
+    background: var(--hover);
   }
   .tab.on {
-    background: var(--bg);
-    color: var(--fg);
+    background: var(--panel);
+    border-color: var(--chrome-border-dark);
+    height: 25px;
+    margin-bottom: -1px;
+    box-shadow: inset 0 2px 0 var(--accent);
+  }
+  .tab.home,
+  .tab.plus {
+    padding: 0 8px;
+  }
+  .tab.plus {
+    background: none;
+    border-color: transparent;
   }
   .tname {
-    max-width: 180px;
+    max-width: 200px;
     overflow: hidden;
     text-overflow: ellipsis;
   }
   .x {
     border: none;
     background: none;
-    padding: 0 4px;
-    font-size: 11px;
+    padding: 3px;
     color: var(--muted);
+    border-radius: 2px;
+  }
+  .x:hover:not(:disabled) {
+    background: #e81123;
+    color: #fff;
+    border: none;
   }
   .dot {
-    width: 8px;
-    height: 8px;
+    width: 7px;
+    height: 7px;
     border-radius: 50%;
     background: var(--muted);
   }
   .dot.open {
-    background: var(--ok);
+    background: #2fbf5a;
   }
   .dot.connecting {
-    background: #e5c07b;
+    background: #e5a50a;
   }
   .dot.error,
   .dot.closed {
-    background: var(--danger);
+    background: #d9363e;
   }
   .terms {
     position: relative;
     flex: 1;
     min-height: 0;
+    background: #000;
   }
   .termwrap {
     position: absolute;
@@ -610,20 +709,40 @@
     display: flex;
     gap: 8px;
   }
-  .welcome {
-    padding: 48px;
-    max-width: 640px;
+  .status {
+    display: flex;
+    height: 22px;
+    background: var(--chrome);
+    border-top: 1px solid var(--chrome-border);
+    font-size: 11.5px;
+    color: #333;
+    user-select: none;
   }
-  .welcome h1 {
-    font-weight: 300;
-    font-size: 32px;
-    margin: 0 0 12px;
+  .cell {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 0 10px;
+    border-right: 1px solid var(--chrome-border);
+    white-space: nowrap;
+  }
+  .cell.grow {
+    flex: 1;
+    overflow: hidden;
+  }
+  .msg {
+    display: flex;
+    gap: 14px;
+    align-items: flex-start;
+  }
+  .msg p {
+    margin: 0 0 8px;
   }
   .fp {
     font-family: var(--mono);
-    background: var(--bg);
-    padding: 10px;
-    border-radius: 4px;
+    background: var(--chrome);
+    border: 1px solid var(--chrome-border);
+    padding: 8px;
     word-break: break-all;
   }
   .danger {
@@ -638,5 +757,16 @@
     gap: 6px;
     align-items: center;
     margin-top: 10px;
+  }
+  .dlg {
+    min-width: 90px;
+    justify-content: center;
+  }
+  .keys td {
+    padding: 3px 12px 3px 0;
+  }
+  .keys td:first-child {
+    font-family: var(--mono);
+    white-space: nowrap;
   }
 </style>

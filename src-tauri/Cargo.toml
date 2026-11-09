@@ -1,6 +1,6 @@
 [package]
 name = "orbiterm"
-version = "0.1.0"
+version = "0.2.0"
 description = "Orbiterm - SSH terminal & SFTP browser"
 authors = ["Raphael"]
 edition = "2024"
@@ -35,6 +35,9 @@ anyhow = "1"
 log = "0.4"
 base64 = "0.22"
 sha2 = "0.10"
+portable-pty = "0.9"
+serialport = { version = "4", default-features = false }
+which = "7"
 
 [dev-dependencies]
 tempfile = "3"

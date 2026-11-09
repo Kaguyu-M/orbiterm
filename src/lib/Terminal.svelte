@@ -1,5 +1,19 @@
+<script lang="ts" module>
+  /** Controls of every mounted terminal, by tab key (used by menus / toolbar). */
+  export interface TermControls {
+    copy: () => void;
+    paste: () => void;
+    clear: () => void;
+    selectAll: () => void;
+    zoom: (delta: number) => void;
+    focus: () => void;
+    write: (text: string) => void;
+  }
+  export const terminals = new Map<string, TermControls>();
+</script>
+
 <script lang="ts">
-  // One xterm.js terminal bound to one SSH connection.
+  // One xterm.js terminal bound to one backend connection (any protocol).
   import { onMount } from "svelte";
   import { Terminal } from "@xterm/xterm";
   import { FitAddon } from "@xterm/addon-fit";
@@ -10,16 +24,28 @@
   import { attach } from "./bus";
 
   let {
+    tabKey,
     connId,
     settings,
     active,
     status,
+    oninput,
   }: {
+    tabKey: string;
     connId: string | null;
     settings: TerminalSettings;
     active: boolean;
     status: string;
+    /** Extra listener for typed data (MultiExec). */
+    oninput?: (data: string) => void;
   } = $props();
+
+  const THEMES: Record<string, Record<string, string>> = {
+    dark: { background: "#000000", foreground: "#e6e6e6", cursor: "#e6e6e6", selectionBackground: "#4a5a78" },
+    light: { background: "#ffffff", foreground: "#1d2027", cursor: "#1d2027", selectionBackground: "#b5d0f5",
+      black: "#1d2027", brightBlack: "#5b6470", white: "#c9d1db", brightWhite: "#ffffff", yellow: "#a87b00", brightYellow: "#b88a00" },
+    solarized: { background: "#002b36", foreground: "#93a1a1", cursor: "#93a1a1", selectionBackground: "#2a4a55" },
+  };
 
   let host: HTMLDivElement;
   let term: Terminal | undefined;
@@ -27,13 +53,14 @@
   let attachedTo: string | null = null;
   let detach: (() => void) | undefined;
   let lastSize = "";
+  const bg = $derived((THEMES[settings.theme] ?? THEMES.dark).background);
 
   function sendSize() {
     if (!term || !connId) return;
     const size = `${term.cols}x${term.rows}`;
     if (size === lastSize) return;
     lastSize = size;
-    api.sshResize(connId, term.cols, term.rows).catch(() => {});
+    api.termResize(connId, term.cols, term.rows).catch(() => {});
   }
 
   function refit() {
@@ -46,6 +73,10 @@
     }
   }
 
+  function send(d: string) {
+    if (connId) api.termWrite(connId, d).catch(() => {});
+  }
+
   onMount(() => {
     term = new Terminal({
       fontFamily: settings.font_family,
@@ -53,36 +84,64 @@
       scrollback: settings.scrollback,
       cursorBlink: true,
       allowProposedApi: true,
-      theme: {
-        background: "#1b1d23",
-        foreground: "#d7dae0",
-        cursor: "#61afef",
-        selectionBackground: "#3e4451",
-      },
+      theme: THEMES[settings.theme] ?? THEMES.dark,
     });
     fit = new FitAddon();
     term.loadAddon(fit);
     term.loadAddon(new WebLinksAddon((_e, uri) => openUrl(uri)));
     term.open(host);
 
-    // keyboard -> server
     term.onData((d) => {
-      if (connId) api.sshWrite(connId, d).catch(() => {});
+      send(d);
+      oninput?.(d);
     });
 
-    // Copy on Ctrl+Shift+C, paste on Ctrl+Shift+V (Ctrl+C stays "interrupt").
+    const copy = () => {
+      const sel = term!.getSelection();
+      if (sel) navigator.clipboard.writeText(sel);
+    };
+    const paste = () => navigator.clipboard.readText().then((t) => t && term!.paste(t));
+
+    // Copy on Ctrl+Shift+C, paste on Ctrl+Shift+V / Shift+Insert (Ctrl+C stays "interrupt").
     term.attachCustomKeyEventHandler((ev) => {
-      if (ev.type !== "keydown" || !ev.ctrlKey || !ev.shiftKey) return true;
+      if (ev.type !== "keydown") return true;
+      if (ev.shiftKey && ev.code === "Insert") {
+        paste();
+        return false;
+      }
+      if (!ev.ctrlKey || !ev.shiftKey) return true;
       if (ev.code === "KeyC") {
-        const sel = term!.getSelection();
-        if (sel) navigator.clipboard.writeText(sel);
+        copy();
         return false;
       }
       if (ev.code === "KeyV") {
-        navigator.clipboard.readText().then((t) => t && term!.paste(t));
+        paste();
         return false;
       }
       return true;
+    });
+    // right click = paste, like most Unix terminals (selection is copied automatically)
+    host.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      paste();
+    });
+    term.onSelectionChange(() => {
+      const sel = term!.getSelection();
+      if (sel) navigator.clipboard.writeText(sel).catch(() => {});
+    });
+
+    terminals.set(tabKey, {
+      copy,
+      paste,
+      clear: () => term!.clear(),
+      selectAll: () => term!.selectAll(),
+      zoom: (delta) => {
+        const size = delta === 0 ? settings.font_size : Math.min(40, Math.max(6, (term!.options.fontSize ?? 14) + delta));
+        term!.options.fontSize = size;
+        refit();
+      },
+      focus: () => term!.focus(),
+      write: (text) => send(text),
     });
 
     const ro = new ResizeObserver(() => refit());
@@ -90,6 +149,7 @@
     refit();
 
     return () => {
+      terminals.delete(tabKey);
       ro.disconnect();
       detach?.();
       term?.dispose();
@@ -130,19 +190,18 @@
   });
 </script>
 
-<div class="term" bind:this={host}></div>
+<div class="term" bind:this={host} style:background={bg} style:--term-bg={bg}></div>
 
 <style>
   .term {
     position: absolute;
     inset: 0;
-    padding: 4px 0 0 6px;
-    background: #1b1d23;
+    padding: 3px 0 0 5px;
   }
   .term :global(.xterm) {
     height: 100%;
   }
   .term :global(.xterm-viewport) {
-    background-color: #1b1d23 !important;
+    background-color: var(--term-bg) !important;
   }
 </style>

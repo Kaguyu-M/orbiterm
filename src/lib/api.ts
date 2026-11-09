@@ -23,6 +23,8 @@ export interface Session {
   remember_password: boolean;
   sftp_enabled: boolean;
   terminal: TerminalSettings;
+  /** Protocol-specific options (string values). */
+  extra: Record<string, string>;
 }
 
 export interface Folder {
@@ -66,14 +68,14 @@ export function asApiError(e: unknown): ApiError {
   return { kind: "unknown", message: String(e) };
 }
 
-export function newSession(folder = ""): Session {
+export function newSession(folder = "", kind = "ssh"): Session {
   return {
     id: "",
     name: "",
     folder,
-    kind: "ssh",
+    kind,
     host: "",
-    port: 22,
+    port: protocol(kind).port,
     username: "",
     auth: "password",
     key_path: "",
@@ -85,7 +87,55 @@ export function newSession(folder = ""): Session {
       scrollback: 10000,
       theme: "dark",
     },
+    extra: {},
   };
+}
+
+export interface LocalShell {
+  id: string;
+  label: string;
+  program: string;
+  args: string[];
+}
+
+export interface Protocol {
+  kind: string;
+  label: string;
+  icon: string;
+  port: number;
+  /** false = shown but not available yet */
+  ready: boolean;
+  /** needs a remote host */
+  remote: boolean;
+}
+
+/** Session types, in the order of the session dialog. */
+export const PROTOCOLS: Protocol[] = [
+  { kind: "ssh", label: "SSH", icon: "ssh", port: 22, ready: true, remote: true },
+  { kind: "telnet", label: "Telnet", icon: "telnet", port: 23, ready: true, remote: true },
+  { kind: "rlogin", label: "Rlogin", icon: "rlogin", port: 513, ready: true, remote: true },
+  { kind: "rdp", label: "RDP", icon: "rdp", port: 3389, ready: false, remote: true },
+  { kind: "vnc", label: "VNC", icon: "vnc", port: 5900, ready: false, remote: true },
+  { kind: "ftp", label: "FTP", icon: "ftp", port: 21, ready: false, remote: true },
+  { kind: "sftp", label: "SFTP", icon: "sftp", port: 22, ready: false, remote: true },
+  { kind: "serial", label: "Série", icon: "serial", port: 0, ready: true, remote: false },
+  { kind: "shell", label: "Shell", icon: "shell", port: 0, ready: true, remote: false },
+  { kind: "browser", label: "Navigateur", icon: "browser", port: 443, ready: false, remote: true },
+  { kind: "mosh", label: "Mosh", icon: "mosh", port: 22, ready: true, remote: true },
+  { kind: "wsl", label: "WSL", icon: "wsl", port: 0, ready: true, remote: false },
+];
+
+export function protocol(kind: string): Protocol {
+  return PROTOCOLS.find((p) => p.kind === kind) ?? PROTOCOLS[0];
+}
+
+/** Short description shown in tooltips / status bar. */
+export function describe(s: Session): string {
+  const p = protocol(s.kind);
+  if (s.kind === "shell") return s.extra?.program || s.name || "Terminal local";
+  if (s.kind === "wsl") return `WSL ${s.extra?.distro || "(par défaut)"}`;
+  if (s.kind === "serial") return `Série ${s.extra?.serial_port || s.host} @ ${s.extra?.baud || "115200"}`;
+  return `${p.label} ${s.username ? s.username + "@" : ""}${s.host}${s.port && s.port !== p.port ? ":" + s.port : ""}`;
 }
 
 export const api = {
@@ -96,20 +146,22 @@ export const api = {
   folderDelete: (id: string) => invoke<void>("folder_delete", { id }),
   passwordForget: (id: string) => invoke<void>("password_forget", { id }),
 
-  sshConnect: (args: {
-    session_id: string;
+  termOpen: (args: {
+    session: Session;
     cols: number;
     rows: number;
     password?: string;
     passphrase?: string;
     remember?: boolean;
-  }) => invoke<string>("ssh_connect", { args }),
+  }) => invoke<string>("term_open", { args }),
   hostkeyAnswer: (requestId: string, accept: boolean) =>
     invoke<void>("hostkey_answer", { requestId, accept }),
-  sshWrite: (connId: string, data: string) => invoke<void>("ssh_write", { connId, data }),
-  sshResize: (connId: string, cols: number, rows: number) =>
-    invoke<void>("ssh_resize", { connId, cols, rows }),
-  sshDisconnect: (connId: string) => invoke<void>("ssh_disconnect", { connId }),
+  termWrite: (connId: string, data: string) => invoke<void>("term_write", { connId, data }),
+  termResize: (connId: string, cols: number, rows: number) =>
+    invoke<void>("term_resize", { connId, cols, rows }),
+  termClose: (connId: string) => invoke<void>("term_close", { connId }),
+  localShells: () => invoke<LocalShell[]>("local_shells"),
+  serialPorts: () => invoke<string[]>("serial_ports"),
 
   sftpHome: (connId: string) => invoke<string>("sftp_home", { connId }),
   sftpList: (connId: string, path: string) => invoke<Entry[]>("sftp_list", { connId, path }),

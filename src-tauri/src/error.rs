@@ -29,6 +29,10 @@ pub enum AppError {
     Ssh(String),
     #[error("SFTP : {0}")]
     Sftp(String),
+    #[error("{0}")]
+    Conn(String),
+    #[error("Non pris en charge : {0}")]
+    Unsupported(String),
     #[error("E/S : {0}")]
     Io(#[from] std::io::Error),
 }
@@ -47,6 +51,8 @@ impl AppError {
             AppError::Keyring(_) => "keyring",
             AppError::Ssh(_) => "ssh",
             AppError::Sftp(_) => "sftp",
+            AppError::Conn(_) => "conn",
+            AppError::Unsupported(_) => "unsupported",
             AppError::Io(_) => "io",
         }
     }

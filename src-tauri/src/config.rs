@@ -71,6 +71,18 @@ pub struct Session {
     pub sftp_enabled: bool,
     #[serde(default)]
     pub terminal: TerminalSettings,
+    /// Protocol-specific options (shell command, serial settings, tunnels, X11…).
+    #[serde(default)]
+    pub extra: std::collections::BTreeMap<String, String>,
+}
+
+impl Session {
+    pub fn opt(&self, key: &str) -> &str {
+        self.extra.get(key).map(String::as_str).unwrap_or("")
+    }
+    pub fn opt_bool(&self, key: &str) -> bool {
+        matches!(self.opt(key), "1" | "true" | "yes")
+    }
 }
 
 fn default_kind() -> String {
@@ -219,6 +231,7 @@ mod tests {
             remember_password: true,
             sftp_enabled: true,
             terminal: TerminalSettings::default(),
+            extra: Default::default(),
         }
     }
 

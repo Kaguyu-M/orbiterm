@@ -5,6 +5,7 @@
   import { listen } from "@tauri-apps/api/event";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import { api, asApiError, formatSize, remoteJoin, remoteParent, type Entry } from "./api";
+  import Icon from "./Icon.svelte";
 
   let {
     connId,
@@ -31,6 +32,7 @@
   type Transfer = { id: string; label: string; done: number; total: number; state: "run" | "ok" | "err"; msg?: string };
   let transfers: Transfer[] = $state([]);
 
+  const selectedEntry = $derived(entries.find((e) => e.path === selected) ?? null);
   const shown = $derived(entries.filter((e) => showHidden || !e.name.startsWith(".")));
 
   async function load(p: string) {
@@ -183,11 +185,13 @@
 
 <div class="sftp" class:drop={dropHover} bind:this={panel}>
   <div class="toolbar">
-    <button title="Dossier parent" onclick={() => load(remoteParent(path))}>..</button>
-    <button title="Dossier personnel" onclick={init}>⌂</button>
-    <button title="Rafraîchir" onclick={() => load(path)}>⟳</button>
-    <button title="Nouveau dossier" onclick={mkdir}>＋📁</button>
-    <button title="Envoyer des fichiers dans ce dossier" onclick={pickUpload}>Envoyer…</button>
+    <button title="Dossier parent" aria-label="Dossier parent" onclick={() => load(remoteParent(path))}><Icon name="up" size={16} /></button>
+    <button title="Dossier personnel" aria-label="Dossier personnel" onclick={init}><Icon name="home" size={16} /></button>
+    <button title="Rafraîchir" aria-label="Rafraîchir" onclick={() => load(path)}><Icon name="refresh" size={16} /></button>
+    <button title="Nouveau dossier" aria-label="Nouveau dossier" onclick={mkdir}><Icon name="newfolder" size={16} /></button>
+    <button title="Envoyer des fichiers dans ce dossier" aria-label="Envoyer des fichiers" onclick={pickUpload}><Icon name="upload" size={16} /></button>
+    <button title="Télécharger le fichier sélectionné" aria-label="Télécharger" disabled={!selectedEntry || selectedEntry.kind === "dir"} onclick={() => selectedEntry && download(selectedEntry)}><Icon name="download" size={16} /></button>
+    <button title="Supprimer la sélection" aria-label="Supprimer" disabled={!selectedEntry} onclick={() => selectedEntry && remove(selectedEntry)}><Icon name="trash" size={16} /></button>
     <label class="hidden-toggle" title="Afficher les fichiers cachés">
       <input type="checkbox" bind:checked={showHidden} /> .*
     </label>
@@ -214,7 +218,7 @@
         }}
         title="{e.perms}  {fmtDate(e.mtime)}"
       >
-        <span class="ico">{e.kind === "dir" ? "📁" : e.kind === "link" ? "🔗" : "📄"}</span>
+        <Icon name={e.kind === "dir" ? "folder" : e.kind === "link" ? "link" : "file"} size={16} />
         <span class="nm">{e.name}</span>
         <span class="sz">{e.kind === "dir" ? "" : formatSize(e.size)}</span>
         <span class="acts">
@@ -266,8 +270,18 @@
     padding: 6px;
     align-items: center;
   }
+  .toolbar {
+    border-bottom: 1px solid var(--border);
+    gap: 1px;
+    padding: 3px 4px;
+  }
   .toolbar button {
-    padding: 2px 7px;
+    padding: 2px 3px;
+    border-color: transparent;
+    background: none;
+  }
+  .toolbar button:disabled :global(svg) {
+    opacity: 0.4;
   }
   .hidden-toggle {
     margin-left: auto;
@@ -277,9 +291,9 @@
     color: var(--muted);
   }
   .path {
-    width: calc(100% - 12px);
+    width: calc(100% - 8px);
     box-sizing: border-box;
-    margin: 0 6px 6px;
+    margin: 4px;
     font-family: var(--mono);
     font-size: 12px;
   }
@@ -295,7 +309,8 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    padding: 3px 8px;
+    padding: 1px 6px;
+    height: 20px;
     cursor: default;
   }
   .item:hover {
