@@ -149,3 +149,75 @@ async fn embedded_rdp_client() {
     assert!(l.contains("click:300,200"), "server log: {l}");
     drop(s);
 }
+
+/// Against a real RDP server, only when configured (nothing is stored in the repository):
+/// `ORBITERM_RDP_REAL=host[:port]`, `ORBITERM_RDP_USER`, `ORBITERM_RDP_PASSWORD`.
+/// Checks NLA logon, the first image, a dynamic resize (Display Control) and a clean close.
+#[tokio::test]
+async fn real_rdp_server() {
+    let Ok(target) = std::env::var("ORBITERM_RDP_REAL") else {
+        eprintln!("ORBITERM_RDP_REAL non défini : test ignoré");
+        return;
+    };
+    let (host, port) = match target.rsplit_once(':') {
+        Some((h, p)) => (h.to_string(), p.parse().unwrap()),
+        None => (target.clone(), 3389),
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let mut p = params(port, &std::env::var("ORBITERM_RDP_PASSWORD").unwrap_or_default(), &dir.path().join("k"));
+    p.host = host.clone();
+    p.cert_host = host;
+    p.username = std::env::var("ORBITERM_RDP_USER").unwrap_or_default();
+    p.width = 1280;
+    p.height = 720;
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let reason = Arc::new(Mutex::new(String::new()));
+    let r2 = reason.clone();
+    let closed: CloseSink = Arc::new(move |r| *r2.lock().unwrap() = r);
+
+    // wrong password first: must be reported as an authentication failure
+    let mut bad = params(port, "certainement-pas-le-bon", &dir.path().join("k"));
+    (bad.host, bad.cert_host, bad.username) = (p.host.clone(), p.cert_host.clone(), p.username.clone());
+    let e = connect(bad, prompter(seen.clone()), closed.clone()).await.err().expect("must fail");
+    eprintln!("mauvais mot de passe → {e:?}");
+    assert!(matches!(e, AppError::AuthFailed), "{e:?}");
+
+    let t0 = std::time::Instant::now();
+    let s = connect(p, prompter(seen.clone()), closed).await.expect("connect");
+    eprintln!("connecté en {:?}, bureau {:?}, certificat demandé {} fois", t0.elapsed(), s.desktop, seen.lock().unwrap().len());
+
+    let (ws, _) = tokio_tungstenite::connect_async(s.url()).await.expect("viewer");
+    let (mut tx, mut rx) = ws.split();
+    let mut rects = 0usize;
+    let mut bytes = 0usize;
+    let mut non_black = false;
+    wait_msg(&mut rx, "first image", |m| {
+        if m.first() == Some(&1) {
+            rects += 1;
+            bytes += m.len();
+            non_black |= m[9..].chunks(4).any(|p| p[0] > 16 || p[1] > 16 || p[2] > 16);
+        }
+        rects >= 3 && non_black
+    })
+    .await;
+    eprintln!("image reçue : {rects} rectangles, {} Ko", bytes / 1024);
+
+    // dynamic resize
+    tx.send(Message::text(r#"{"t":"r","w":1600,"h":900}"#)).await.unwrap();
+    let mut got = (0u16, 0u16);
+    wait_msg(&mut rx, "resize", |m| {
+        if m.first() == Some(&2) {
+            got = (u16::from_le_bytes([m[1], m[2]]), u16::from_le_bytes([m[3], m[4]]));
+            return true;
+        }
+        false
+    })
+    .await;
+    eprintln!("redimensionné : {got:?}");
+    assert_eq!(got, (1600, 900));
+    wait_msg(&mut rx, "image after resize", |m| m.first() == Some(&1)).await;
+
+    s.close();
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    eprintln!("fermeture : {}", reason.lock().unwrap());
+}
