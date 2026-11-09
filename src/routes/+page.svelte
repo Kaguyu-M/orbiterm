@@ -2,7 +2,11 @@
   import { onMount, untrack } from "svelte";
   import { listen } from "@tauri-apps/api/event";
   import { getCurrentWindow } from "@tauri-apps/api/window";
-  import { api, describe, forwardLabel, protocol, type HostKeyPrompt } from "$lib/api";
+  import { api, describe, forwardLabel, protocol, viewOf, type HostKeyPrompt } from "$lib/api";
+  import BrowserView from "$lib/BrowserView.svelte";
+  import ExternalView from "$lib/ExternalView.svelte";
+  import SftpPanel from "$lib/SftpPanel.svelte";
+  import VncView from "$lib/VncView.svelte";
   import { app, HOME, SPLIT_LABELS, type SplitMode, type Tab } from "$lib/app.svelte";
   import ImportDialog from "$lib/ImportDialog.svelte";
   import SettingsDialog from "$lib/SettingsDialog.svelte";
@@ -453,6 +457,8 @@
         {/if}
         {#each app.tabs as t (t.key)}
           {@const pi = splitOn ? app.panes.indexOf(t.key) : -1}
+          {@const view = viewOf(t.session.kind)}
+          {@const shown = app.activeKey !== HOME && (splitOn ? pi >= 0 : t.key === app.activeKey)}
           <div
             class="termwrap"
             class:pane={splitOn}
@@ -476,16 +482,30 @@
               </div>
             {/if}
             <div class="tbody" class:withhead={splitOn}>
-              <Terminal
-                tabKey={t.key}
-                connId={t.connId}
-                settings={t.session.terminal}
-                active={t.key === app.activeKey}
-                status={t.status}
-                prefs={app.prefs}
-                oninput={(d) => app.onInput(t.key, d)}
-              />
-              {#if t.state === "closed" || t.state === "error"}
+              {#if view === "terminal"}
+                <Terminal
+                  tabKey={t.key}
+                  connId={t.connId}
+                  settings={t.session.terminal}
+                  active={t.key === app.activeKey}
+                  status={t.status}
+                  prefs={app.prefs}
+                  oninput={(d) => app.onInput(t.key, d)}
+                />
+              {:else if view === "files"}
+                {#if t.connId && t.state === "open"}
+                  <SftpPanel wide connId={t.connId} visible={shown} askText={app.askText} confirm={app.confirm} />
+                {:else if t.state === "connecting"}
+                  <div class="viewmsg">{t.status || "Connexion…"}</div>
+                {/if}
+              {:else if view === "vnc"}
+                <VncView tab={t} active={t.key === app.activeKey} />
+              {:else if view === "external"}
+                <ExternalView tab={t} />
+              {:else if view === "browser"}
+                <BrowserView tab={t} visible={shown} />
+              {/if}
+              {#if (t.state === "closed" || t.state === "error") && view !== "external" && view !== "browser"}
                 <div class="overlay">
                   <button class="primary" onclick={() => app.reconnect(t)}><Icon name="refresh" size={14} /> Redémarrer la session</button>
                   <button onclick={() => app.closeTab(t)}>Fermer l'onglet</button>
@@ -882,6 +902,15 @@
   }
   .tbody.withhead {
     top: 20px;
+  }
+  .viewmsg {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--panel);
+    color: var(--muted);
   }
   .termwrap.pane {
     inset: auto;

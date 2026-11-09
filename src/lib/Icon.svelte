@@ -36,6 +36,8 @@
     link: `<path d="M10 14l4-4M8.5 11.5l-2 2a2.8 2.8 0 0 0 4 4l2-2M15.5 12.5l2-2a2.8 2.8 0 0 0-4-4l-2 2" stroke="#2f6db5" stroke-width="1.8" fill="none" ${S}/>`,
     home: `<path d="M3 11.5L12 4l9 7.5" stroke="#47607e" stroke-width="1.8" fill="none" ${S}/><path d="M5.5 10v10h13V10" fill="#fff" stroke="#47607e" stroke-width="1.5"/><rect x="10" y="14" width="4" height="6" fill="#d9822b"/>`,
     plus: `<path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" ${S}/>`,
+    back: `<path d="M15 5l-7 7 7 7" stroke="currentColor" stroke-width="2.2" fill="none" ${S}/>`,
+    forward: `<path d="M9 5l7 7-7 7" stroke="currentColor" stroke-width="2.2" fill="none" ${S}/>`,
     close: `<path d="M6.5 6.5l11 11M17.5 6.5l-11 11" stroke="currentColor" stroke-width="2" ${S}/>`,
     refresh: `<path d="M19 12a7 7 0 1 1-2.1-5" stroke="#2e9d4a" stroke-width="2" fill="none" ${S}/><path d="M17.5 3.5v4h-4" stroke="#2e9d4a" stroke-width="2" fill="none" ${S}/>`,
     up: `<path d="M12 19V6M6.5 11.5L12 6l5.5 5.5" stroke="#2f6db5" stroke-width="2" fill="none" ${S}/>`,

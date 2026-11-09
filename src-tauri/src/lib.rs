@@ -1,9 +1,13 @@
 //! Orbiterm backend entry point.
 
+pub mod browser;
 pub mod commands;
 pub mod config;
 pub mod error;
 pub mod forward;
+pub mod ftp;
+pub mod rdp;
+pub mod vnc;
 pub mod importer;
 pub mod known_hosts;
 pub mod pty;
@@ -40,6 +44,15 @@ pub fn run() {
             commands::macro_save,
             commands::macro_delete,
             commands::config_path,
+            commands::vnc_url,
+            commands::vnc_password_get,
+            commands::vnc_password_set,
+            commands::external_running,
+            browser::browser_open,
+            browser::browser_bounds,
+            browser::browser_navigate,
+            browser::browser_action,
+            browser::browser_close,
             commands::term_open,
             commands::hostkey_answer,
             commands::term_write,

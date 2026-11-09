@@ -1,6 +1,6 @@
 [package]
 name = "orbiterm"
-version = "0.4.0"
+version = "0.5.0"
 description = "Orbiterm - SSH terminal & SFTP browser"
 authors = ["Raphael"]
 edition = "2024"
@@ -18,7 +18,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["unstable"] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -38,6 +38,10 @@ sha2 = "0.10"
 portable-pty = "0.9"
 serialport = { version = "4", default-features = false }
 which = "7"
+suppaftp = { version = "12", features = ["tokio", "tokio-async-native-tls"] }
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
+async-native-tls = { version = "0.6", default-features = false, features = ["runtime-tokio"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"
@@ -46,6 +50,12 @@ winreg = "0.55"
 tempfile = "3"
 rand = "0.10"
 env_logger = "0.11"
+des = "0.8"
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect"] }
+libunftp = "0.24"
+unftp-sbe-fs = "0.4"
+unftp-core = "0.1"
+async-trait = "0.1"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

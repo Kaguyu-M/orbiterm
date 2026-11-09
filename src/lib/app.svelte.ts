@@ -5,6 +5,7 @@ import {
   describe,
   newSession,
   protocol,
+  viewOf,
   type Folder,
   type HostKeyPrompt,
   type LocalShell,
@@ -139,6 +140,7 @@ class App {
   recent: Recent[] = $state([]);
   prefs: Prefs = $state(loadJson(PREFS_KEY, DEFAULT_PREFS));
   showSettings = $state(false);
+  menuOpen = $state(false);
   showImport = $state(false);
 
   // split screen
@@ -166,6 +168,11 @@ class App {
   ctx: { x: number; y: number; items: MenuItem[] } | null = $state(null);
 
   active = $derived(this.tabs.find((t) => t.key === this.activeKey) ?? null);
+  /** Something is drawn above the tab area (native browser webviews must hide). */
+  overlay = $derived(
+    !!this.ctx || !!this.editing || !!this.textAsk || !!this.confirmAsk || !!this.alertText || !!this.infoText ||
+      this.showSettings || this.showImport || this.showTunnels || this.menuOpen || this.hostKeys.length > 0,
+  );
   /** SFTP side tab exists only while the active terminal is a live SSH connection. */
   hasSftp = $derived(
     !!this.active &&
@@ -426,7 +433,7 @@ class App {
 
   /** Terminals that receive MultiExec input / macros. */
   targets(): Tab[] {
-    const live = this.tabs.filter((t) => t.state === "open" && t.connId);
+    const live = this.tabs.filter((t) => t.state === "open" && t.connId && viewOf(t.session.kind) === "terminal");
     if (this.multiExec) return live.filter((t) => this.meIncluded(t.key));
     return live.filter((t) => t.key === this.activeKey);
   }
@@ -637,9 +644,21 @@ class App {
   async connect(tab: Tab): Promise<void> {
     const s = tab.session;
     tab.state = "connecting";
+    if (s.kind === "browser") {
+      // no backend connection: the BrowserView owns its webview
+      tab.state = "open";
+      tab.status = "";
+      return;
+    }
     tab.status = protocol(s.kind).remote ? `Connexion à ${describe(s)}…` : `Démarrage : ${describe(s)}…`;
     try {
       const snap = $state.snapshot(s) as Session;
+      if (snap.kind === "rdp") {
+        // "adapt to the window": size of the tab area, in physical pixels
+        const r = document.querySelector(".terms")?.getBoundingClientRect();
+        const k = window.devicePixelRatio || 1;
+        if (r) snap.extra = { ...snap.extra, rdp_w: String(Math.round(r.width * k)), rdp_h: String(Math.round(r.height * k)) };
+      }
       if (snap.kind === "ssh") {
         snap.extra = { ...snap.extra, keepalive: String(this.prefs.keepalive) };
         // like the original: the X server is started on demand for X11 sessions
@@ -669,6 +688,7 @@ class App {
 
   async closeTab(tab: Tab) {
     if (tab.connId) await api.termClose(tab.connId).catch(() => {});
+    if (tab.session.kind === "browser") await api.browserClose(`browser-${tab.key}`).catch(() => {});
     const i = this.tabs.findIndex((t) => t.key === tab.key);
     if (i < 0) return;
     this.tabs.splice(i, 1);

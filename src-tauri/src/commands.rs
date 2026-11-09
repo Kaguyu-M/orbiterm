@@ -23,8 +23,11 @@ use crate::ssh::{
     SshConnection,
 };
 use crate::x11;
+use crate::ftp::{FtpConnection, FtpParams, FtpTls};
+use crate::rdp::{self, ExternalProcess, RdpOptions};
 use crate::telnet::{Mode, TcpTermConnection};
 use crate::terminal::Conn;
+use crate::vnc::VncBridge;
 
 pub struct AppState {
     pub config_dir: PathBuf,
@@ -33,6 +36,14 @@ pub struct AppState {
     pub hostkey_waiters: Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>,
     /// running standalone tunnels (tunnel manager), by tunnel id
     pub tunnels: Mutex<HashMap<String, Arc<SshConnection>>>,
+    /// SSH gateways of RDP / VNC tabs, by connection id (closed with the tab)
+    pub gateways: Mutex<HashMap<String, Arc<SshConnection>>>,
+}
+
+/// Remote file access of a tab: SFTP (SSH sessions) or FTP.
+enum Files {
+    Sftp(Arc<russh_sftp::client::SftpSession>),
+    Ftp(Arc<FtpConnection>),
 }
 
 impl AppState {
@@ -44,7 +55,16 @@ impl AppState {
             conns: Mutex::new(HashMap::new()),
             hostkey_waiters: Arc::new(Mutex::new(HashMap::new())),
             tunnels: Mutex::new(HashMap::new()),
+            gateways: Mutex::new(HashMap::new()),
         })
+    }
+
+    async fn files(&self, id: &str) -> AppResult<Files> {
+        match self.conn(id).await? {
+            Conn::Ssh(c) => Ok(Files::Sftp(c.sftp().await?)),
+            Conn::Ftp(f) => Ok(Files::Ftp(f)),
+            _ => Err(AppError::Unsupported("pas d'accès aux fichiers pour cette session".into())),
+        }
     }
 
     async fn conn(&self, id: &str) -> AppResult<Conn> {
@@ -81,6 +101,7 @@ pub async fn session_delete(state: State<'_, AppState>, id: String) -> AppResult
     store.save(&state.config_dir)?;
     let _ = secrets::delete_password(&id);
     let _ = secrets::delete_password(&jump_account(&id));
+    let _ = secrets::delete_password(&vnc_account(&id));
     Ok(())
 }
 
@@ -415,6 +436,78 @@ async fn open_ssh(
 }
 
 /// Opens a terminal tab for any session kind. Returns the connection id.
+/// For RDP / VNC sessions with an SSH gateway (`jump_host`): connects to the gateway
+/// and opens a local tunnel to the target. Returns the address to connect to.
+async fn via_gateway(
+    app: &AppHandle,
+    state: &AppState,
+    session: &Session,
+    secrets_in: &SshSecrets,
+) -> AppResult<(String, u16, Option<Arc<SshConnection>>)> {
+    let gw = session.opt("jump_host").trim();
+    if gw.is_empty() {
+        return Ok((session.host.clone(), session.port, None));
+    }
+    let key = session.opt("jump_key").trim();
+    let user = session.opt("jump_user").trim();
+    let gateway = Session {
+        // the gateway password lives under the "{id}#jump" keyring account
+        id: if session.id.is_empty() { String::new() } else { jump_account(&session.id) },
+        name: format!("{} (passerelle)", session.name),
+        folder: String::new(),
+        kind: "ssh".into(),
+        host: gw.to_string(),
+        port: session.opt("jump_port").trim().parse().unwrap_or(22),
+        username: if user.is_empty() { session.username.clone() } else { user.to_string() },
+        auth: if key.is_empty() { AuthMethod::Password } else { AuthMethod::Key },
+        key_path: key.to_string(),
+        remember_password: session.remember_password,
+        sftp_enabled: false,
+        terminal: Default::default(),
+        extra: Default::default(),
+        forwards: vec![],
+    };
+    let creds = SshSecrets {
+        password: secrets_in.jump_password.clone(),
+        passphrase: None,
+        jump_password: None,
+        remember: secrets_in.remember,
+    };
+    let quiet_data: DataSink = Arc::new(|_| {});
+    let quiet_close: CloseSink = Arc::new(|_| {});
+    let c = match open_ssh(app, state, &gateway, &creds, ShellMode::None, 80, 24, quiet_data, quiet_close).await {
+        Ok(c) => c,
+        Err(AppError::NeedPassword) => return Err(AppError::NeedJumpPassword),
+        Err(AppError::AuthFailed) => return Err(AppError::JumpAuthFailed),
+        Err(e) => return Err(e),
+    };
+    let tunnel = Forward {
+        kind: ForwardKind::Local,
+        bind_host: "127.0.0.1".into(),
+        bind_port: 0,
+        dest_host: session.host.clone(),
+        dest_port: session.port,
+    };
+    match c.start_forward(&tunnel).await {
+        Ok(port) => Ok(("127.0.0.1".into(), port, Some(c))),
+        Err(e) => {
+            c.disconnect().await;
+            Err(e)
+        }
+    }
+}
+
+/// Password of a non-SSH session (FTP): typed, or from the keyring.
+fn session_password(session: &Session, typed: &Option<String>) -> AppResult<String> {
+    match typed {
+        Some(p) => Ok(p.clone()),
+        None if !session.id.is_empty() && session.remember_password => {
+            secrets::get_password(&session.id)?.ok_or(AppError::NeedPassword)
+        }
+        None => Err(AppError::NeedPassword),
+    }
+}
+
 #[tauri::command]
 pub async fn term_open(app: AppHandle, state: State<'_, AppState>, args: OpenArgs) -> AppResult<String> {
     // a saved session is authoritative (the UI may hold a stale copy)
@@ -451,6 +544,88 @@ pub async fn term_open(app: AppHandle, state: State<'_, AppState>, args: OpenArg
                 }
             }
             Conn::Ssh(c)
+        }
+        "sftp" => {
+            // file browser only: SSH connection without a shell
+            let creds = SshSecrets {
+                password: args.password.clone(),
+                passphrase: args.passphrase.clone(),
+                jump_password: args.jump_password.clone(),
+                remember: args.remember,
+            };
+            Conn::Ssh(open_ssh(&app, &state, &session, &creds, ShellMode::None, 80, 24, on_data, on_close).await?)
+        }
+        "ftp" => {
+            let anonymous = session.username.trim().is_empty() || session.username.eq_ignore_ascii_case("anonymous");
+            let password = if anonymous { String::new() } else { session_password(&session, &args.password)? };
+            let params = FtpParams {
+                host: session.host.clone(),
+                port: session.port,
+                username: session.username.trim().to_string(),
+                password: password.clone(),
+                tls: if session.opt("ftp_tls") == "explicit" { FtpTls::Explicit } else { FtpTls::None },
+                insecure: session.opt_bool("ftp_insecure"),
+            };
+            let c = match FtpConnection::connect(params).await {
+                Err(AppError::AuthFailed) if args.password.is_none() && !anonymous => return Err(AppError::NeedPassword),
+                r => r?,
+            };
+            if !anonymous && args.remember && session.remember_password && !session.id.is_empty() && args.password.is_some() {
+                let _ = secrets::set_password(&session.id, &password);
+            }
+            Conn::Ftp(Arc::new(c))
+        }
+        "rdp" => {
+            let creds = SshSecrets { password: None, passphrase: None, jump_password: args.jump_password.clone(), remember: args.remember };
+            let (host, port, gateway) = via_gateway(&app, &state, &session, &creds).await?;
+            let opts = RdpOptions::from_session(&session);
+            let conn = if cfg!(windows) {
+                let content = rdp::rdp_file(&host, port, &session.username, &opts);
+                let name = format!("orbiterm-{conn_id}");
+                match ExternalProcess::launch_mstsc(&state.config_dir.join("rdp"), &name, &content, on_close) {
+                    Ok(p) => Conn::External(p),
+                    Err(e) => {
+                        if let Some(g) = gateway {
+                            g.disconnect().await;
+                        }
+                        return Err(e);
+                    }
+                }
+            } else {
+                let spec = PtySpawn {
+                    program: rdp::freerdp()?.to_string_lossy().into_owned(),
+                    args: rdp::freerdp_args(&host, port, &session.username, &opts),
+                    cwd: None,
+                    env: vec![],
+                    cols: clamp16(args.cols),
+                    rows: clamp16(args.rows),
+                };
+                let c = tokio::task::spawn_blocking(move || PtyConnection::spawn(spec, on_data, on_close))
+                    .await
+                    .map_err(|e| AppError::Conn(e.to_string()))??;
+                Conn::Pty(c)
+            };
+            if let Some(g) = gateway {
+                state.gateways.lock().await.insert(conn_id.clone(), g);
+            }
+            conn
+        }
+        "vnc" => {
+            let creds = SshSecrets { password: None, passphrase: None, jump_password: args.jump_password.clone(), remember: args.remember };
+            let (host, port, gateway) = via_gateway(&app, &state, &session, &creds).await?;
+            let bridge = match VncBridge::start(host, port, on_close).await {
+                Ok(b) => b,
+                Err(e) => {
+                    if let Some(g) = gateway {
+                        g.disconnect().await;
+                    }
+                    return Err(e);
+                }
+            };
+            if let Some(g) = gateway {
+                state.gateways.lock().await.insert(conn_id.clone(), g);
+            }
+            Conn::Vnc(Arc::new(bridge))
         }
         "telnet" | "rlogin" => {
             let mode = if session.kind == "telnet" { Mode::Telnet } else { Mode::Rlogin };
@@ -510,7 +685,51 @@ pub async fn term_close(state: State<'_, AppState>, conn_id: String) -> AppResul
     if let Some(c) = conn {
         c.close().await;
     }
+    let gateway = state.gateways.lock().await.remove(&conn_id);
+    if let Some(g) = gateway {
+        g.disconnect().await;
+    }
     Ok(())
+}
+
+/// WebSocket URL the VNC viewer connects to.
+#[tauri::command]
+pub async fn vnc_url(state: State<'_, AppState>, conn_id: String) -> AppResult<String> {
+    match state.conn(&conn_id).await? {
+        Conn::Vnc(b) => Ok(b.url()),
+        _ => Err(AppError::NotFound(conn_id)),
+    }
+}
+
+fn vnc_account(session_id: &str) -> String {
+    format!("{session_id}#vnc")
+}
+
+/// VNC password remembered for a saved session (keyring), if any.
+#[tauri::command]
+pub async fn vnc_password_get(state: State<'_, AppState>, session_id: String) -> AppResult<Option<String>> {
+    let store = state.store.lock().await;
+    match store.session(&session_id) {
+        Ok(s) if s.kind == "vnc" && s.remember_password => secrets::get_password(&vnc_account(&session_id)),
+        _ => Ok(None),
+    }
+}
+
+#[tauri::command]
+pub async fn vnc_password_set(session_id: String, password: Option<String>) -> AppResult<()> {
+    match password {
+        Some(p) => secrets::set_password(&vnc_account(&session_id), &p),
+        None => secrets::delete_password(&vnc_account(&session_id)),
+    }
+}
+
+/// Whether the external window (mstsc) of a tab is still open.
+#[tauri::command]
+pub async fn external_running(state: State<'_, AppState>, conn_id: String) -> AppResult<bool> {
+    match state.conn(&conn_id).await {
+        Ok(Conn::External(p)) => Ok(p.running()),
+        _ => Ok(false),
+    }
 }
 
 #[tauri::command]
@@ -525,34 +744,46 @@ pub async fn serial_ports() -> AppResult<Vec<String>> {
 
 // ---------------------------------------------------------------- sftp
 
+// The "sftp_*" commands serve every file browser: SFTP over SSH, or FTP.
+
 #[tauri::command]
 pub async fn sftp_home(state: State<'_, AppState>, conn_id: String) -> AppResult<String> {
-    let s = state.ssh(&conn_id).await?.sftp().await?;
-    sftp::home(&s).await
+    match state.files(&conn_id).await? {
+        Files::Sftp(s) => sftp::home(&s).await,
+        Files::Ftp(f) => Ok(f.home()),
+    }
 }
 
 #[tauri::command]
 pub async fn sftp_list(state: State<'_, AppState>, conn_id: String, path: String) -> AppResult<Vec<Entry>> {
-    let s = state.ssh(&conn_id).await?.sftp().await?;
-    sftp::list(&s, &path).await
+    match state.files(&conn_id).await? {
+        Files::Sftp(s) => sftp::list(&s, &path).await,
+        Files::Ftp(f) => f.list(&path).await,
+    }
 }
 
 #[tauri::command]
 pub async fn sftp_mkdir(state: State<'_, AppState>, conn_id: String, path: String) -> AppResult<()> {
-    let s = state.ssh(&conn_id).await?.sftp().await?;
-    sftp::mkdir(&s, &path).await
+    match state.files(&conn_id).await? {
+        Files::Sftp(s) => sftp::mkdir(&s, &path).await,
+        Files::Ftp(f) => f.mkdir(&path).await,
+    }
 }
 
 #[tauri::command]
 pub async fn sftp_rename(state: State<'_, AppState>, conn_id: String, from: String, to: String) -> AppResult<()> {
-    let s = state.ssh(&conn_id).await?.sftp().await?;
-    sftp::rename(&s, &from, &to).await
+    match state.files(&conn_id).await? {
+        Files::Sftp(s) => sftp::rename(&s, &from, &to).await,
+        Files::Ftp(f) => f.rename(&from, &to).await,
+    }
 }
 
 #[tauri::command]
 pub async fn sftp_remove(state: State<'_, AppState>, conn_id: String, path: String) -> AppResult<()> {
-    let s = state.ssh(&conn_id).await?.sftp().await?;
-    sftp::remove(&s, &path).await
+    match state.files(&conn_id).await? {
+        Files::Sftp(s) => sftp::remove(&s, &path).await,
+        Files::Ftp(f) => f.remove(&path).await,
+    }
 }
 
 #[derive(Clone, Serialize)]
@@ -584,11 +815,14 @@ pub async fn sftp_download(
     local_dir: String,
     transfer_id: String,
 ) -> AppResult<String> {
-    let s = state.ssh(&conn_id).await?.sftp().await?;
+    let files = state.files(&conn_id).await?;
     let name = remote.rsplit('/').next().unwrap_or("").to_string();
     let local = sftp::safe_local_join(std::path::Path::new(&local_dir), &name)?;
     let progress = progress_emitter(app, transfer_id);
-    sftp::download(&s, &remote, &local, &progress).await?;
+    match files {
+        Files::Sftp(s) => sftp::download(&s, &remote, &local, &progress).await?,
+        Files::Ftp(f) => f.download(&remote, &local, &progress).await?,
+    }
     Ok(local.to_string_lossy().into_owned())
 }
 
@@ -602,7 +836,7 @@ pub async fn sftp_upload(
     remote_dir: String,
     transfer_id: String,
 ) -> AppResult<String> {
-    let s = state.ssh(&conn_id).await?.sftp().await?;
+    let files = state.files(&conn_id).await?;
     let local_path = PathBuf::from(&local);
     let name = local_path
         .file_name()
@@ -610,7 +844,10 @@ pub async fn sftp_upload(
         .ok_or_else(|| AppError::InvalidPath(local.clone()))?;
     let remote = sftp::remote_join(&remote_dir, &name);
     let progress = progress_emitter(app, transfer_id);
-    sftp::upload(&s, &local_path, &remote, &progress).await?;
+    match files {
+        Files::Sftp(s) => sftp::upload(&s, &local_path, &remote, &progress).await?,
+        Files::Ftp(f) => f.upload(&local_path, &remote, &progress).await?,
+    }
     Ok(remote)
 }
 

@@ -22,7 +22,11 @@
   let specifyUser = $state(!!session.username || session.kind === "ssh");
 
   const p = $derived(protocol(s.kind));
-  const isRemote = $derived(["ssh", "telnet", "rlogin", "mosh"].includes(s.kind));
+  const isRemote = $derived(["ssh", "telnet", "rlogin", "mosh", "rdp", "vnc", "ftp", "sftp"].includes(s.kind));
+  const hasUser = $derived(s.kind !== "vnc");
+  const sshLike = $derived(s.kind === "ssh" || s.kind === "sftp");
+  const hasGateway = $derived(["ssh", "sftp", "rdp", "vnc"].includes(s.kind));
+  const RDP_SIZES = ["1024x768", "1280x800", "1366x768", "1600x900", "1920x1080", "2560x1440"];
   const wslDistros = $derived(app.shells.filter((x) => x.id.startsWith("wsl:")).map((x) => x.id.slice(4)));
   const localShells = $derived(app.shells.filter((x) => !x.id.startsWith("wsl:")));
 
@@ -99,7 +103,8 @@
       if (!s.host) return (error = "L'hôte distant est obligatoire.");
       if (!s.port || s.port < 1 || s.port > 65535) return (error = "Port invalide.");
     }
-    if (s.kind === "ssh" && s.auth === "key" && !s.key_path) return (error = "Choisis un fichier de clé privée.");
+    if (sshLike && s.auth === "key" && !s.key_path) return (error = "Choisis un fichier de clé privée.");
+    if (s.kind === "browser" && !s.host) return (error = "Saisis l'adresse de la page (URL).");
     if (s.kind === "serial" && !x("serial_port")) return (error = "Choisis un port série.");
     if (!s.name.trim()) s.name = defaultName();
     app.saveSession(s, isNew);
@@ -134,8 +139,10 @@
       <div class="line">
         <label for="host">Hôte distant <b class="req">*</b></label>
         <input id="host" class="host" bind:value={s.host} autocomplete="off" spellcheck="false" />
-        <label class="chk"><input type="checkbox" bind:checked={specifyUser} /> Spécifier l'utilisateur</label>
-        <input class="user" bind:value={s.username} disabled={!specifyUser} autocomplete="off" spellcheck="false" aria-label="Nom d'utilisateur" />
+        {#if hasUser}
+          <label class="chk"><input type="checkbox" bind:checked={specifyUser} /> Spécifier l'utilisateur</label>
+          <input class="user" bind:value={s.username} disabled={!specifyUser} autocomplete="off" spellcheck="false" aria-label="Nom d'utilisateur" placeholder={s.kind === "ftp" ? "anonymous" : ""} />
+        {/if}
         <label for="port">Port</label>
         <input id="port" class="port" type="number" min="1" max="65535" bind:value={s.port} />
       </div>
@@ -160,6 +167,11 @@
         <input id="cwd" value={x("cwd")} oninput={(e) => setX("cwd", e.currentTarget.value)} placeholder="(dossier personnel)" />
         <button type="button" onclick={pickDir}>…</button>
       </div>
+    {:else if s.kind === "browser"}
+      <div class="line">
+        <label for="host">Adresse (URL) <b class="req">*</b></label>
+        <input id="host" class="host" bind:value={s.host} placeholder="https://intranet.exemple.fr" autocomplete="off" spellcheck="false" />
+      </div>
     {:else if s.kind === "wsl"}
       <div class="line">
         <label for="distro">Distribution</label>
@@ -181,7 +193,7 @@
     </div>
     <div class="bpanel">
       {#if bottom === "advanced"}
-        {#if s.kind === "ssh"}
+        {#if sshLike}
           <div class="grid">
             <span class="lbl">Authentification</span>
             <div class="row">
@@ -198,6 +210,7 @@
                 <button type="button" onclick={pickKey}>…</button>
               </div>
             {/if}
+            {#if s.kind === "ssh"}
             <span class="lbl">Navigateur SFTP</span>
             <label class="chk"><input type="checkbox" bind:checked={s.sftp_enabled} /> Afficher le navigateur SFTP avec la session</label>
             <span class="lbl">Redirection X11</span>
@@ -209,7 +222,57 @@
             <label class="chk"><input type="checkbox" checked={x("compression") === "1"} onchange={(e) => setX("compression", e.currentTarget.checked ? "1" : "")} /> Compresser le trafic SSH (zlib)</label>
             <label class="lbl" for="rcmd">Commande à exécuter</label>
             <input id="rcmd" value={x("command")} oninput={(e) => setX("command", e.currentTarget.value)} placeholder="(shell interactif)" spellcheck="false" />
+            {/if}
           </div>
+        {:else if s.kind === "rdp"}
+          <div class="grid">
+            <label class="lbl" for="rsz">Taille de l'écran distant</label>
+            <select id="rsz" value={x("rdp_size", "fit")} onchange={(e) => setX("rdp_size", e.currentTarget.value)}>
+              <option value="fit">Adapter à la fenêtre d'Orbiterm</option>
+              <option value="fullscreen">Plein écran</option>
+              {#each RDP_SIZES as z (z)}<option value={z}>{z.replace("x", " × ")}</option>{/each}
+            </select>
+            <label class="lbl" for="rdom">Domaine</label>
+            <input id="rdom" value={x("rdp_domain")} oninput={(e) => setX("rdp_domain", e.currentTarget.value)} placeholder="(aucun)" spellcheck="false" />
+            <span class="lbl">Redirections</span>
+            <div class="row">
+              <label class="chk"><input type="checkbox" checked={x("rdp_clipboard", "1") === "1"} onchange={(e) => setX("rdp_clipboard", e.currentTarget.checked ? "1" : "0")} /> Presse-papiers</label>
+              <label class="chk"><input type="checkbox" checked={x("rdp_drives") === "1"} onchange={(e) => setX("rdp_drives", e.currentTarget.checked ? "1" : "0")} /> Disques locaux</label>
+              <label class="chk"><input type="checkbox" checked={x("rdp_printers") === "1"} onchange={(e) => setX("rdp_printers", e.currentTarget.checked ? "1" : "0")} /> Imprimantes</label>
+            </div>
+            <label class="lbl" for="rsnd">Son</label>
+            <select id="rsnd" value={x("rdp_sound", "local")} onchange={(e) => setX("rdp_sound", e.currentTarget.value)}>
+              <option value="local">Lire sur cet ordinateur</option>
+              <option value="remote">Lire sur l'ordinateur distant</option>
+              <option value="none">Ne pas lire</option>
+            </select>
+            <span class="lbl">Session</span>
+            <label class="chk"><input type="checkbox" checked={x("rdp_admin") === "1"} onchange={(e) => setX("rdp_admin", e.currentTarget.checked ? "1" : "0")} /> Session d'administration (console)</label>
+          </div>
+          <p class="muted note">Le mot de passe est demandé par le client Bureau à distance de Windows (mstsc), qui peut le mémoriser ; sous Linux, FreeRDP est utilisé.</p>
+        {:else if s.kind === "vnc"}
+          <div class="grid">
+            <span class="lbl">Mot de passe</span>
+            <label class="chk"><input type="checkbox" bind:checked={s.remember_password} /> Mémoriser le mot de passe VNC (trousseau du système)</label>
+            <span class="lbl">Affichage</span>
+            <div class="row">
+              <label class="chk"><input type="checkbox" checked={x("vnc_scale", "1") === "1"} onchange={(e) => setX("vnc_scale", e.currentTarget.checked ? "1" : "0")} /> Ajuster à la taille de l'onglet</label>
+              <label class="chk"><input type="checkbox" checked={x("vnc_viewonly") === "1"} onchange={(e) => setX("vnc_viewonly", e.currentTarget.checked ? "1" : "0")} /> Lecture seule</label>
+            </div>
+          </div>
+        {:else if s.kind === "ftp"}
+          <div class="grid">
+            <label class="lbl" for="ftls">Chiffrement</label>
+            <select id="ftls" value={x("ftp_tls")} onchange={(e) => setX("ftp_tls", e.currentTarget.value)}>
+              <option value="">Aucun (FTP)</option>
+              <option value="explicit">TLS explicite (FTPES / AUTH TLS)</option>
+            </select>
+            <span class="lbl">Certificat</span>
+            <label class="chk"><input type="checkbox" checked={x("ftp_insecure") === "1"} disabled={x("ftp_tls") !== "explicit"} onchange={(e) => setX("ftp_insecure", e.currentTarget.checked ? "1" : "")} /> Accepter un certificat auto-signé</label>
+            <span class="lbl">Mot de passe</span>
+            <label class="chk"><input type="checkbox" bind:checked={s.remember_password} /> Mémoriser le mot de passe (trousseau du système)</label>
+          </div>
+          <p class="muted note">Sans utilisateur, la connexion est anonyme.</p>
         {:else if s.kind === "serial"}
           <div class="grid">
             <label class="lbl" for="db">Bits de données</label>
@@ -261,7 +324,7 @@
           <input id="sbk" class="port" type="number" min="100" max="200000" step="1000" bind:value={s.terminal.scrollback} />
         </div>
       {:else if bottom === "network"}
-        {#if s.kind === "ssh"}
+        {#if hasGateway}
           <div class="net">
             <div class="sub"><Icon name="servers" size={14} /> Passerelle SSH (rebond / jump host)</div>
             <div class="line">
@@ -278,6 +341,7 @@
               <button type="button" onclick={pickJumpKey}>…</button>
             </div>
 
+            {#if s.kind === "ssh"}
             <div class="sub"><Icon name="tunnel" size={14} /> Redirections de ports ouvertes avec la session</div>
             <table class="fw">
               <thead><tr><th>Type</th><th>Écoute (hôte : port)</th><th>Destination (hôte : port)</th><th></th></tr></thead>
@@ -309,6 +373,9 @@
               </tbody>
             </table>
             <button type="button" onclick={() => s.forwards.push(newForward())}><Icon name="plus" size={12} /> Ajouter une redirection</button>
+            {:else}
+            <p class="muted">{s.kind === "sftp" ? "La connexion SFTP" : `La connexion ${p.label}`} passe par un tunnel SSH ouvert sur la passerelle.</p>
+            {/if}
           </div>
         {:else}
           <p class="muted">Aucun paramètre réseau pour ce type de session.</p>
@@ -465,6 +532,9 @@
   }
   .dlg {
     min-width: 90px;
+  }
+  .note {
+    margin: 10px 0 0;
   }
   .disp {
     flex: 1;

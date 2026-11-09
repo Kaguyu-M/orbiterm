@@ -15,9 +15,14 @@
 
 <script lang="ts">
   import Icon from "./Icon.svelte";
+  import { app } from "./app.svelte";
 
   let { menus }: { menus: Menu[] } = $props();
   let open: number | null = $state(null);
+  // embedded browser webviews must step aside while a menu is open
+  $effect(() => {
+    app.menuOpen = open !== null;
+  });
 
   function run(it: MenuItem) {
     if (it.sep || it.disabled) return;

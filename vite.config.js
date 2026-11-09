@@ -7,6 +7,9 @@ const host = process.env.TAURI_DEV_HOST;
 // https://vite.dev/config/
 export default defineConfig(() => ({
   plugins: [sveltekit()],
+  // noVNC uses top-level await (supported by WebView2 / WebKitGTK)
+  build: { target: "es2022" },
+  optimizeDeps: { esbuildOptions: { target: "es2022" } },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //

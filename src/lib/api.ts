@@ -191,16 +191,27 @@ export const PROTOCOLS: Protocol[] = [
   { kind: "ssh", label: "SSH", icon: "ssh", port: 22, ready: true, remote: true },
   { kind: "telnet", label: "Telnet", icon: "telnet", port: 23, ready: true, remote: true },
   { kind: "rlogin", label: "Rlogin", icon: "rlogin", port: 513, ready: true, remote: true },
-  { kind: "rdp", label: "RDP", icon: "rdp", port: 3389, ready: false, remote: true },
-  { kind: "vnc", label: "VNC", icon: "vnc", port: 5900, ready: false, remote: true },
-  { kind: "ftp", label: "FTP", icon: "ftp", port: 21, ready: false, remote: true },
-  { kind: "sftp", label: "SFTP", icon: "sftp", port: 22, ready: false, remote: true },
+  { kind: "rdp", label: "RDP", icon: "rdp", port: 3389, ready: true, remote: true },
+  { kind: "vnc", label: "VNC", icon: "vnc", port: 5900, ready: true, remote: true },
+  { kind: "ftp", label: "FTP", icon: "ftp", port: 21, ready: true, remote: true },
+  { kind: "sftp", label: "SFTP", icon: "sftp", port: 22, ready: true, remote: true },
   { kind: "serial", label: "Série", icon: "serial", port: 0, ready: true, remote: false },
   { kind: "shell", label: "Shell", icon: "shell", port: 0, ready: true, remote: false },
-  { kind: "browser", label: "Navigateur", icon: "browser", port: 443, ready: false, remote: true },
+  { kind: "browser", label: "Navigateur", icon: "browser", port: 443, ready: true, remote: true },
   { kind: "mosh", label: "Mosh", icon: "mosh", port: 22, ready: true, remote: true },
   { kind: "wsl", label: "WSL", icon: "wsl", port: 0, ready: true, remote: false },
 ];
+
+/** How a tab of this kind is displayed. */
+export type TabView = "terminal" | "files" | "vnc" | "external" | "browser";
+export const IS_WINDOWS = typeof navigator !== "undefined" && /windows/i.test(navigator.userAgent);
+export function viewOf(kind: string): TabView {
+  if (kind === "sftp" || kind === "ftp") return "files";
+  if (kind === "vnc") return "vnc";
+  if (kind === "browser") return "browser";
+  if (kind === "rdp") return IS_WINDOWS ? "external" : "terminal"; // mstsc window / FreeRDP in a PTY
+  return "terminal";
+}
 
 export function protocol(kind: string): Protocol {
   return PROTOCOLS.find((p) => p.kind === kind) ?? PROTOCOLS[0];
@@ -212,6 +223,7 @@ export function describe(s: Session): string {
   if (s.kind === "shell") return s.extra?.program || s.name || "Terminal local";
   if (s.kind === "wsl") return `WSL ${s.extra?.distro || "(par défaut)"}`;
   if (s.kind === "serial") return `Série ${s.extra?.serial_port || s.host} @ ${s.extra?.baud || "115200"}`;
+  if (s.kind === "browser") return s.host;
   return `${p.label} ${s.username ? s.username + "@" : ""}${s.host}${s.port && s.port !== p.port ? ":" + s.port : ""}`;
 }
 
@@ -257,6 +269,18 @@ export const api = {
   xserverStatus: () => invoke<XServerStatus>("xserver_status"),
   xserverStart: () => invoke<XServerStatus>("xserver_start"),
   xserverStop: () => invoke<XServerStatus>("xserver_stop"),
+
+  vncUrl: (connId: string) => invoke<string>("vnc_url", { connId }),
+  vncPasswordGet: (sessionId: string) => invoke<string | null>("vnc_password_get", { sessionId }),
+  vncPasswordSet: (sessionId: string, password: string | null) => invoke<void>("vnc_password_set", { sessionId, password }),
+  externalRunning: (connId: string) => invoke<boolean>("external_running", { connId }),
+  browserOpen: (label: string, url: string, x: number, y: number, w: number, h: number) =>
+    invoke<string>("browser_open", { label, url, x, y, w, h }),
+  browserBounds: (label: string, x: number, y: number, w: number, h: number, visible: boolean) =>
+    invoke<void>("browser_bounds", { label, x, y, w, h, visible }),
+  browserNavigate: (label: string, url: string) => invoke<string>("browser_navigate", { label, url }),
+  browserAction: (label: string, action: "back" | "forward" | "reload" | "stop") => invoke<void>("browser_action", { label, action }),
+  browserClose: (label: string) => invoke<void>("browser_close", { label }),
 
   sftpHome: (connId: string) => invoke<string>("sftp_home", { connId }),
   sftpList: (connId: string, path: string) => invoke<Entry[]>("sftp_list", { connId, path }),

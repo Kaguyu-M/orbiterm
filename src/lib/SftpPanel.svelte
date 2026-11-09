@@ -12,9 +12,12 @@
     visible,
     askText,
     confirm,
+    wide = false,
   }: {
     connId: string;
     visible: boolean;
+    /** full-tab layout with columns (SFTP / FTP sessions) */
+    wide?: boolean;
     askText: (title: string, initial: string) => Promise<string | null>;
     confirm: (message: string) => Promise<boolean>;
   } = $props();
@@ -144,9 +147,17 @@
     }
   }
 
-  function activate(e: Entry) {
+  async function activate(e: Entry) {
     if (e.kind === "dir") load(e.path);
-    else download(e);
+    else if (e.kind === "link") {
+      // FTP cannot tell where a link points: try it as a folder first
+      try {
+        await api.sftpList(connId, e.path);
+        load(e.path);
+      } catch {
+        download(e);
+      }
+    } else download(e);
   }
 
   onMount(() => {
@@ -183,7 +194,7 @@
   });
 </script>
 
-<div class="sftp" class:drop={dropHover} bind:this={panel}>
+<div class="sftp" class:drop={dropHover} class:wide bind:this={panel}>
   <div class="toolbar">
     <button title="Dossier parent" aria-label="Dossier parent" onclick={() => load(remoteParent(path))}><Icon name="up" size={16} /></button>
     <button title="Dossier personnel" aria-label="Dossier personnel" onclick={init}><Icon name="home" size={16} /></button>
@@ -202,6 +213,9 @@
 
   {#if error}<div class="error">{error}</div>{/if}
 
+  {#if wide}
+    <div class="cols"><span></span><span>Nom</span><span class="r">Taille</span><span>Modifié</span><span>Droits</span><span></span></div>
+  {/if}
   <div class="list" class:loading>
     {#each shown as e (e.path)}
       <div
@@ -221,6 +235,7 @@
         <Icon name={e.kind === "dir" ? "folder" : e.kind === "link" ? "link" : "file"} size={16} />
         <span class="nm">{e.name}</span>
         <span class="sz">{e.kind === "dir" ? "" : formatSize(e.size)}</span>
+        {#if wide}<span class="dt">{fmtDate(e.mtime)}</span><span class="pm">{e.perms}</span>{/if}
         <span class="acts">
           {#if e.kind !== "dir"}<button title="Télécharger" onclick={(ev) => { ev.stopPropagation(); download(e); }}>⬇</button>{/if}
           <button title="Renommer (F2)" onclick={(ev) => { ev.stopPropagation(); rename(e); }}>✎</button>
@@ -344,6 +359,48 @@
   }
   .acts button:hover {
     color: var(--fg);
+  }
+  .wide {
+    position: absolute;
+    inset: 0;
+    background: var(--panel);
+    font-size: 13px;
+  }
+  .cols,
+  .wide .item {
+    display: grid;
+    grid-template-columns: 18px minmax(160px, 1fr) 90px 170px 90px 70px;
+    gap: 8px;
+  }
+  .cols {
+    padding: 3px 8px;
+    color: var(--muted);
+    background: var(--chrome);
+    border-bottom: 1px solid var(--chrome-border);
+  }
+  .wide .item {
+    height: 22px;
+    padding: 1px 8px;
+    align-items: center;
+  }
+  .wide .sz,
+  .r {
+    text-align: right;
+  }
+  .dt,
+  .pm {
+    color: var(--muted);
+    font-size: 12px;
+  }
+  .pm {
+    font-family: var(--mono);
+  }
+  .wide .acts {
+    display: flex;
+    visibility: hidden;
+  }
+  .wide .item:hover .acts {
+    visibility: visible;
   }
   .error {
     color: var(--danger);
