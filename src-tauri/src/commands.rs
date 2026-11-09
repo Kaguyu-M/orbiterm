@@ -39,6 +39,8 @@ pub struct AppState {
     pub tunnels: Mutex<HashMap<String, Arc<SshConnection>>>,
     /// SSH gateways of RDP / VNC tabs, by connection id (closed with the tab)
     pub gateways: Mutex<HashMap<String, Arc<SshConnection>>>,
+    /// built-in HTTP / TFTP / FTP / SSH servers
+    pub servers: crate::servers::ServerManager,
 }
 
 /// Remote file access of a tab: SFTP (SSH sessions) or FTP.
@@ -51,6 +53,7 @@ impl AppState {
     pub fn new(config_dir: PathBuf) -> AppResult<Self> {
         let store = Store::load(&config_dir)?;
         Ok(Self {
+            servers: crate::servers::ServerManager::new(config_dir.clone()),
             config_dir,
             store: Mutex::new(store),
             conns: Mutex::new(HashMap::new()),

@@ -11,7 +11,11 @@ pub mod rdp_client;
 pub mod vnc;
 pub mod importer;
 pub mod known_hosts;
+pub mod nettools;
 pub mod pty;
+pub mod servers;
+pub mod sftp_server;
+pub mod tools_commands;
 pub mod secrets;
 pub mod serial;
 pub mod sftp;
@@ -31,6 +35,11 @@ pub fn run() {
             let dir = config::config_dir()?;
             std::fs::create_dir_all(&dir)?;
             app.manage(commands::AppState::new(dir)?);
+            // built-in servers marked "start with Orbiterm"
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                handle.state::<commands::AppState>().servers.autostart().await;
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -78,6 +87,16 @@ pub fn run() {
             commands::sftp_remove,
             commands::sftp_download,
             commands::sftp_upload,
+            tools_commands::servers_status,
+            tools_commands::server_save,
+            tools_commands::server_start,
+            tools_commands::server_stop,
+            tools_commands::server_clear_log,
+            tools_commands::scan_start,
+            tools_commands::scan_state,
+            tools_commands::scan_cancel,
+            tools_commands::wol_send,
+            tools_commands::open_ports,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -49,9 +49,9 @@
     {
       group: "Réseau",
       items: [
-        { label: "Scanner de ports", icon: "scan" },
-        { label: "Ports ouverts / connexions", icon: "ports" },
-        { label: "Wake-on-LAN", icon: "wol" },
+        { label: "Scanner de ports", icon: "scan", action: () => (app.netTool = "scan") },
+        { label: "Ports ouverts / connexions", icon: "ports", action: () => (app.netTool = "ports") },
+        { label: "Wake-on-LAN", icon: "wol", action: () => (app.netTool = "wol") },
         {
           label: "Gestionnaire de tunnels SSH",
           icon: "tunnel",
@@ -70,10 +70,17 @@
     {
       group: "Serveurs intégrés",
       items: [
-        { label: "Serveur HTTP", icon: "web" },
-        { label: "Serveur TFTP", icon: "servers" },
-        { label: "Serveur FTP", icon: "ftp" },
-        { label: "Serveur SSH", icon: "ssh" },
+        ...(
+          [
+            ["http", "Serveur HTTP", "web"],
+            ["tftp", "Serveur TFTP", "network"],
+            ["ftp", "Serveur FTP", "ftp"],
+            ["ssh", "Serveur SSH/SFTP", "ssh"],
+          ] as const
+        ).map(([k, l, icon]) => {
+          const s = app.servers.find((x) => x.config.kind === k);
+          return { label: s?.running ? `${l} (actif, port ${s.port})` : l, icon, action: () => app.openServers(k) };
+        }),
       ],
     },
     {

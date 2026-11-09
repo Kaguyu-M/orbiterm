@@ -2,7 +2,7 @@
   import { onMount, untrack } from "svelte";
   import { listen } from "@tauri-apps/api/event";
   import { getCurrentWindow } from "@tauri-apps/api/window";
-  import { api, describe, forwardLabel, protocol, viewOf, type HostKeyPrompt } from "$lib/api";
+  import { api, describe, forwardLabel, protocol, viewOf, type HostKeyPrompt, type ServerKind } from "$lib/api";
   import BrowserView from "$lib/BrowserView.svelte";
   import ExternalView from "$lib/ExternalView.svelte";
   import SftpPanel from "$lib/SftpPanel.svelte";
@@ -23,6 +23,10 @@
   import Terminal, { terminals } from "$lib/Terminal.svelte";
   import Toolbar, { type ToolButton } from "$lib/Toolbar.svelte";
   import TunnelManager from "$lib/TunnelManager.svelte";
+  import ServersDialog from "$lib/ServersDialog.svelte";
+  import PortScanner from "$lib/PortScanner.svelte";
+  import OpenPorts from "$lib/OpenPorts.svelte";
+  import WakeOnLan from "$lib/WakeOnLan.svelte";
 
   import pkg from "../../package.json";
   const VERSION = pkg.version;
@@ -151,12 +155,9 @@
           action: () => app.startLocalTerminal(sh.id),
         })),
         { sep: true },
-        { label: "Scanner de ports" + SOON, icon: "scan", disabled: true },
-        { label: "Ports ouverts / connexions" + SOON, icon: "ports", disabled: true },
-        { label: "Wake-on-LAN" + SOON, icon: "wol", disabled: true },
-        { label: "Gestionnaire de tunnels SSH", icon: "tunnel", action: openTunnels },
+        ...netItems(),
         { sep: true },
-        { label: "Serveurs intégrés (HTTP, TFTP, FTP, SSH)" + SOON, icon: "servers", disabled: true },
+        ...serverItems(),
       ],
     },
     {
@@ -179,6 +180,31 @@
     },
   ];
 
+  function netItems(): MenuItem[] {
+    return [
+      { label: "Scanner de ports…", icon: "scan", action: () => (app.netTool = "scan") },
+      { label: "Ports ouverts / connexions…", icon: "ports", action: () => (app.netTool = "ports") },
+      { label: "Wake-on-LAN…", icon: "wol", action: () => (app.netTool = "wol") },
+      { label: "Gestionnaire de tunnels SSH", icon: "tunnel", action: openTunnels },
+    ];
+  }
+
+  const SERVER_LABELS: Array<[ServerKind, string, string]> = [
+    ["http", "Serveur HTTP", "web"],
+    ["tftp", "Serveur TFTP", "network"],
+    ["ftp", "Serveur FTP", "ftp"],
+    ["ssh", "Serveur SSH/SFTP", "ssh"],
+  ];
+  function serverItems(): MenuItem[] {
+    return [
+      { label: "Serveurs intégrés…", icon: "servers", action: () => app.openServers() },
+      ...SERVER_LABELS.map(([k, l, icon]) => {
+        const s = app.servers.find((x) => x.config.kind === k);
+        return { label: s?.running ? `${l} — actif (port ${s.port})` : l, icon, checked: !!s?.running, action: () => app.openServers(k) } as MenuItem;
+      }),
+    ];
+  }
+
   function dropMenu(ev: MouseEvent, items: MenuItem[]) {
     const r = (ev.currentTarget as HTMLElement).getBoundingClientRect();
     app.ctx = { x: r.left, y: r.bottom, items };
@@ -190,20 +216,16 @@
       id: "servers",
       label: "Serveurs",
       icon: "servers",
-      title: "Serveurs intégrés",
-      action: () => {
-        app.sideTab = "tools";
-        app.prefs.sidebar = true;
-      },
+      title: "Serveurs intégrés (HTTP, TFTP, FTP, SSH)",
+      active: app.servers.some((s) => s.running),
+      action: () => app.openServers(),
     },
     {
       id: "tools",
       label: "Outils",
       icon: "tools",
-      action: () => {
-        app.sideTab = "tools";
-        app.prefs.sidebar = true;
-      },
+      title: "Outils réseau",
+      action: (e: MouseEvent) => dropMenu(e, [...netItems(), { sep: true }, ...app.shells.map((sh) => ({ label: sh.label, icon: sh.id.startsWith("wsl:") ? "wsl" : "shell", action: () => app.startLocalTerminal(sh.id) }))]),
     },
     { id: "sessions", label: "Sessions", icon: "sessions", title: "Sessions enregistrées", action: (e: MouseEvent) => dropMenu(e, sessionItems()) },
     { id: "view", label: "Affichage", icon: "view", action: (e: MouseEvent) => dropMenu(e, viewItems()) },
@@ -373,6 +395,7 @@
     const poll = setInterval(() => {
       app.refreshX();
       if (app.tunnels.some((t) => t.running) || app.showTunnels) app.refreshTunnels();
+      if (!app.showServers) app.refreshServers();
     }, 5000);
     unsubs.push(() => clearInterval(poll));
     return () => unsubs.forEach((u) => u());
@@ -548,6 +571,12 @@
           <Icon name="tunnel" size={13} /> {app.tunnels.filter((t) => t.running).length} tunnel(s) actif(s)
         </button>
       {/if}
+      {#if app.servers.some((s) => s.running)}
+        <button class="cell link" title="Serveurs intégrés" onclick={() => app.openServers(app.servers.find((s) => s.running)?.config.kind)} data-status-servers>
+          <Icon name="servers" size={13} />
+          {app.servers.filter((s) => s.running).map((s) => s.config.kind.toUpperCase() + " :" + s.port).join(" · ")}
+        </button>
+      {/if}
       <button class="cell link" title={xInfo()} onclick={() => app.toggleX()}>
         <Icon name={app.xserver?.running ? "xserver" : "xserver_off"} size={13} /> X {app.xserver?.running ? "actif" : "arrêté"}
       </button>
@@ -563,6 +592,18 @@
 
 {#if app.showTunnels}
   <TunnelManager />
+{/if}
+
+{#if app.showServers}
+  <ServersDialog />
+{/if}
+
+{#if app.netTool === "scan"}
+  <PortScanner />
+{:else if app.netTool === "ports"}
+  <OpenPorts />
+{:else if app.netTool === "wol"}
+  <WakeOnLan />
 {/if}
 
 {#if app.showSettings}

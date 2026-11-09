@@ -16,6 +16,8 @@ import {
   type Tunnel,
   type TunnelStatus,
   type XServerStatus,
+  type ServerKind,
+  type ServerStatus,
 } from "./api";
 
 import { terminals } from "./Terminal.svelte";
@@ -163,6 +165,11 @@ class App {
   hostKeys: HostKeyPrompt[] = $state([]);
   tunnels: TunnelStatus[] = $state([]);
   showTunnels = $state(false);
+  servers: ServerStatus[] = $state([]);
+  showServers = $state(false);
+  serverFocus: ServerKind = $state("http");
+  /** network tool window: port scanner, open ports, Wake-on-LAN */
+  netTool: "scan" | "ports" | "wol" | null = $state(null);
   xserver: XServerStatus | null = $state(null);
   /** Open context menu (right click), if any. */
   ctx: { x: number; y: number; items: MenuItem[] } | null = $state(null);
@@ -171,7 +178,7 @@ class App {
   /** Something is drawn above the tab area (native browser webviews must hide). */
   overlay = $derived(
     !!this.ctx || !!this.editing || !!this.textAsk || !!this.confirmAsk || !!this.alertText || !!this.infoText ||
-      this.showSettings || this.showImport || this.showTunnels || this.menuOpen || this.hostKeys.length > 0,
+      this.showSettings || this.showImport || this.showTunnels || this.showServers || !!this.netTool || this.menuOpen || this.hostKeys.length > 0,
   );
   /** SFTP side tab exists only while the active terminal is a live SSH connection. */
   hasSftp = $derived(
@@ -240,6 +247,7 @@ class App {
     this.shells = await api.localShells().catch(() => []);
     await this.refreshX();
     await this.refreshTunnels();
+    await this.refreshServers();
     // tunnels marked "start automatically"
     for (const t of this.tunnels.filter((x) => x.autostart && !x.running)) {
       await this.startTunnel(t, true);
@@ -259,6 +267,28 @@ class App {
     } catch (e) {
       this.alert(asApiError(e).message);
     }
+  }
+
+  // ------------------------------------------------------------ built-in servers
+  async refreshServers() {
+    this.servers = await api.serversStatus().catch(() => this.servers);
+  }
+
+  openServers(kind?: ServerKind) {
+    if (kind) this.serverFocus = kind;
+    this.refreshServers();
+    this.showServers = true;
+  }
+
+  async toggleServer(kind: ServerKind) {
+    const s = this.servers.find((x) => x.config.kind === kind);
+    try {
+      if (s?.running) await api.serverStop(kind);
+      else await api.serverStart(kind);
+    } catch (e) {
+      this.alert(asApiError(e).message);
+    }
+    await this.refreshServers();
   }
 
   // ------------------------------------------------------------ tunnels (manager)

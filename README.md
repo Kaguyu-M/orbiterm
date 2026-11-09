@@ -4,7 +4,7 @@ Terminal multi-protocoles multiplateforme (Windows + Linux) : onglets, sessions 
 X11, RDP, VNC, FTP, navigateur web, écran partagé, MultiExec et macros. Application originale dont l'ergonomie s'inspire de MobaXterm.
 Conception : [`docs/CONCEPTION.md`](docs/CONCEPTION.md).
 
-**Version 0.5.1**
+**Version 0.6.0**
 
 | Domaine | Fonctionnalités |
 |---|---|
@@ -14,19 +14,20 @@ Conception : [`docs/CONCEPTION.md`](docs/CONCEPTION.md).
 | Fichiers | onglets SFTP et FTP / FTPS autonomes (explorateur plein onglet avec colonnes, envoi / téléchargement / glisser-déposer) |
 | Navigateur | onglet web intégré (précédent / suivant / actualiser / barre d'adresse), sans aucun accès aux commandes d'Orbiterm |
 | Réseau | redirections -L / -R / -D (SOCKS) par session, gestionnaire de tunnels (démarrage auto), rebond SSH (jump host, aussi pour RDP / VNC), redirection X11 (VcXsrv / Xming / X natif) |
+| Outils | scanner de ports (plages, sous-réseaux /24, listes prédéfinies, ouverture directe d'une session SSH / RDP / VNC / web sur un port trouvé), ports ouverts et connexions du poste (avec le programme), Wake-on-LAN (machines mémorisées) |
+| Serveurs intégrés | HTTP (liste des dossiers, reprise de téléchargement), TFTP (blksize / tsize, PXE), FTP (compte ou anonyme), SSH/SFTP (shell du poste, commandes, SFTP limité au dossier partagé) ; lecture seule possible, écoute locale ou réseau, journal d'activité en direct, démarrage avec Orbiterm |
 | Terminal | écran partagé (2 côte à côte, 2 superposés, grille 2×2, mosaïque), MultiExec (saisie dans plusieurs terminaux), macros (enregistrer / rejouer), thèmes, zoom |
 | Import | MobaXterm (`MobaXterm.ini`, exports `.moba`), PuTTY, OpenSSH `~/.ssh/config` — sans jamais importer de mot de passe |
 | Configuration | fenêtre Paramètres : général, terminal, SSH, serveur X, affichage |
 
-Prochaines étapes : outils réseau (scanner de ports, Wake-on-LAN) et serveurs
-intégrés (HTTP, TFTP, FTP, SSH) ; version Linux.
+Prochaine étape : version Linux.
 
 ---
 
 ## Tester l'application (recette)
 
 ### 1. Installer
-Lance `livrables\Orbiterm_0.5.1_x64-setup.exe`.
+Lance `livrables\Orbiterm_0.6.0_x64-setup.exe`.
 
 > L'installateur n'est pas signé : Windows SmartScreen peut afficher « Windows a protégé votre ordinateur ».
 > Clique sur **Informations complémentaires → Exécuter quand même**.
@@ -56,7 +57,9 @@ ports et X11. Sa clé change à chaque démarrage : l'alerte « La clé du serve
 | 10 | **Session → VNC** 127.0.0.1:5901 → mot de passe `test` (cocher « Mémoriser ») → mire ; touche `a` = bas jaune |
 | 11 | **Session → RDP** 127.0.0.1:3390 (`test` / `test`) puis une machine Windows de ton réseau : le bureau s'affiche **dans l'onglet** ; clavier, souris, molette, redimensionnement de la fenêtre, **Plein écran** (survoler le haut de l'écran pour le quitter) |
 | 12 | **Session → Navigateur** : une URL (ex. `https://example.com`) ; ouvrir un menu masque la page le temps du menu |
-| 13 | Fermer / rouvrir : sessions, tunnels, macros et réglages conservés |
+| 13 | **Serveurs** : HTTP sur un dossier, Démarrer → ouvrir l'adresse affichée dans un navigateur ; journal mis à jour. FTP en anonyme, SSH avec un mot de passe (`ssh utilisateur@127.0.0.1`). Windows peut demander d'autoriser Orbiterm dans le pare-feu si « ce poste uniquement » est décoché |
+| 14 | **Outils → Scanner de ports** sur ton réseau (`192.168.x.0/24`, « communs ») ; bouton SSH / RDP / Web sur un port trouvé. **Ports ouverts** : filtre par programme. **Wake-on-LAN** : adresse MAC d'une machine |
+| 15 | Fermer / rouvrir : sessions, tunnels, macros, serveurs et réglages conservés |
 
 Les données sont dans `%APPDATA%\Orbiterm\Orbiterm\config\` (`sessions.toml`, `known_hosts`) ;
 les mots de passe dans le **Gestionnaire d'identifiants Windows** (entrées `…orbiterm`).
@@ -71,7 +74,7 @@ sous Linux `libwebkit2gtk-4.1-dev libssl-dev libsecret-1-dev libudev-dev` (voir 
 ```bash
 npm install
 npm run tauri dev            # lancer en mode développement
-cd src-tauri && cargo test   # tests unitaires + bout en bout (SSH, SFTP, FTP, VNC, tunnels, rebond, X11, PTY, Telnet, import)
+cd src-tauri && cargo test   # tests unitaires + bout en bout (SSH, SFTP, FTP, VNC, RDP, tunnels, rebond, X11, PTY, Telnet, import, serveurs intégrés, scanner)
 npm run check                # vérification TypeScript/Svelte
 npm run tauri build          # installateurs (.msi/.exe sous Windows, .deb/.AppImage sous Linux)
 cargo run --example test_server -- 2222   # serveur SSH/SFTP de test (user test / test)
@@ -95,6 +98,8 @@ src/                         interface (Svelte 5 + xterm.js)
   lib/VncView.svelte         visionneuse VNC (noVNC)
   lib/RdpView.svelte         bureau RDP dans l'onglet (canvas, clavier par scancodes)
   lib/ExternalView.svelte    onglet d'une session RDP ouverte dans une fenêtre séparée (mstsc)
+  lib/ServersDialog.svelte   fenêtre des serveurs intégrés
+  lib/PortScanner.svelte, OpenPorts.svelte, WakeOnLan.svelte  outils réseau
   lib/BrowserView.svelte     onglet navigateur (webview native enfant)
 src-tauri/src/               backend Rust
   ssh.rs, forward.rs, x11.rs SSH (russh), redirections, X11
@@ -105,7 +110,9 @@ src-tauri/src/               backend Rust
   rdp_client.rs              client RDP intégré (IronRDP) + pont WebSocket vers l'onglet
   ftp.rs, rdp.rs, vnc.rs     FTP/FTPS (suppaftp), RDP externe (mstsc / FreeRDP), pont WebSocket ↔ VNC
   browser.rs                 webviews enfants du navigateur
-  commands.rs                API exposée à l'interface
+  servers/                   serveurs intégrés HTTP, TFTP, FTP (libunftp), SSH (russh) ; sftp_server.rs
+  nettools.rs                scanner de ports, sockets du poste, Wake-on-LAN
+  commands.rs, tools_commands.rs  API exposée à l'interface
 src-tauri/examples/                 serveurs de test SSH/SFTP, FTP, VNC
 tools/rdp-test-server/              serveur RDP de test (projet Cargo séparé)
 src-tauri/tests/                    tests de bout en bout

@@ -1,0 +1,347 @@
+//! End-to-end tests of the built-in servers (HTTP, TFTP, FTP, SSH/SFTP) through the
+//! `ServerManager`, on 127.0.0.1 and random ports, with Orbiterm's own clients where
+//! they exist. Passwords are passed directly (the system keyring is not touched).
+
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use orbiterm_lib::error::AppError;
+use orbiterm_lib::ftp::{FtpConnection, FtpParams, FtpTls};
+use orbiterm_lib::servers::{ServerConfig, ServerKind, ServerManager};
+use orbiterm_lib::ssh::{ConnectParams, Credentials, SshConnection};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpStream, UdpSocket};
+
+fn cfg(kind: ServerKind, root: &std::path::Path) -> ServerConfig {
+    let mut c = ServerConfig::new(kind);
+    c.port = 0;
+    c.local_only = true;
+    c.root = root.to_string_lossy().into_owned();
+    c.user = "orbi".into();
+    c
+}
+
+async fn http(port: u16, req: &str) -> String {
+    let mut s = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    s.write_all(req.as_bytes()).await.unwrap();
+    let mut out = vec![];
+    tokio::time::timeout(Duration::from_secs(5), s.read_to_end(&mut out)).await.expect("http timeout").unwrap();
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+#[tokio::test]
+async fn http_server() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir(root.path().join("docs")).unwrap();
+    std::fs::write(root.path().join("docs").join("note été.txt"), "bonjour HTTP").unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let m = ServerManager::new(dir.path().to_path_buf());
+    let port = m.start_with(cfg(ServerKind::Http, root.path()), String::new()).await.unwrap();
+
+    let r = http(port, "GET / HTTP/1.0\r\n\r\n").await;
+    assert!(r.starts_with("HTTP/1.1 200") && r.contains("href=\"/docs/\""), "{r}");
+    let r = http(port, "GET /docs HTTP/1.0\r\n\r\n").await;
+    assert!(r.starts_with("HTTP/1.1 301") && r.contains("Location: /docs/"), "{r}");
+    let r = http(port, "GET /docs/note%20%C3%A9t%C3%A9.txt HTTP/1.0\r\n\r\n").await;
+    assert!(r.contains("Content-Type: text/plain") && r.ends_with("\r\n\r\nbonjour HTTP"), "{r}");
+    let r = http(port, "GET /docs/note%20%C3%A9t%C3%A9.txt HTTP/1.1\r\nRange: bytes=8-11\r\nConnection: close\r\n\r\n").await;
+    assert!(r.starts_with("HTTP/1.1 206") && r.contains("Content-Range: bytes 8-11/12") && r.ends_with("HTTP"), "{r}");
+    let r = http(port, "HEAD /docs/note%20%C3%A9t%C3%A9.txt HTTP/1.0\r\n\r\n").await;
+    assert!(r.contains("Content-Length: 12") && r.ends_with("\r\n\r\n"), "{r}");
+    // path traversal stays inside the shared folder
+    let r = http(port, "GET /../../../Windows/win.ini HTTP/1.0\r\n\r\n").await;
+    assert!(r.starts_with("HTTP/1.1 404"), "{r}");
+    let r = http(port, "GET /..%5C..%5Cx HTTP/1.0\r\n\r\n").await;
+    assert!(r.starts_with("HTTP/1.1 404"), "{r}");
+    let r = http(port, "POST / HTTP/1.0\r\n\r\n").await;
+    assert!(r.starts_with("HTTP/1.1 405"), "{r}");
+    // keep-alive: two requests on one connection
+    let mut s = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    s.write_all(b"HEAD / HTTP/1.1\r\nHost: x\r\n\r\nGET /docs/ HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n").await.unwrap();
+    let mut out = String::new();
+    s.read_to_string(&mut out).await.unwrap();
+    assert_eq!(out.matches("HTTP/1.1 200").count(), 2, "{out}");
+
+    let st = m.status().await;
+    let h = st.iter().find(|s| s.config.kind == ServerKind::Http).unwrap();
+    assert!(h.running && h.port == port);
+    assert!(h.log.iter().any(|l| l.msg.contains("GET /docs/note été.txt → 200")), "{:?}", h.log);
+    m.stop(ServerKind::Http).await;
+    assert!(TcpStream::connect(("127.0.0.1", port)).await.is_err(), "port must be closed after stop");
+}
+
+// ------------------------------------------------------------------ TFTP client (test only)
+
+fn rrq(op: u8, file: &str, opts: &[(&str, &str)]) -> Vec<u8> {
+    let mut v = vec![0, op];
+    for s in [file, "octet"].into_iter().chain(opts.iter().flat_map(|(k, v)| [*k, *v])) {
+        v.extend(s.as_bytes());
+        v.push(0);
+    }
+    v
+}
+
+async fn tftp_get(port: u16, file: &str, blksize: Option<usize>) -> Result<Vec<u8>, String> {
+    let s = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let bs = blksize.unwrap_or(512);
+    let b = bs.to_string();
+    let opts: Vec<(&str, &str)> = if blksize.is_some() { vec![("blksize", &b), ("tsize", "0")] } else { vec![] };
+    s.send_to(&rrq(1, file, &opts), ("127.0.0.1", port)).await.unwrap();
+    let mut buf = vec![0u8; bs + 4];
+    let mut out = vec![];
+    let mut expect = 1u16;
+    loop {
+        let (n, from) = tokio::time::timeout(Duration::from_secs(5), s.recv_from(&mut buf)).await.expect("tftp timeout").unwrap();
+        match u16::from_be_bytes([buf[0], buf[1]]) {
+            6 => s.send_to(&[0, 4, 0, 0], from).await.map(|_| ()).unwrap(), // OACK → ACK 0
+            3 => {
+                let blk = u16::from_be_bytes([buf[2], buf[3]]);
+                s.send_to(&[0, 4, buf[2], buf[3]], from).await.unwrap();
+                if blk == expect {
+                    out.extend(&buf[4..n]);
+                    expect += 1;
+                    if n - 4 < bs {
+                        return Ok(out);
+                    }
+                }
+            }
+            5 => return Err(String::from_utf8_lossy(&buf[4..n - 1]).into_owned()),
+            o => panic!("opcode {o}"),
+        }
+    }
+}
+
+async fn tftp_put(port: u16, file: &str, data: &[u8]) -> Result<(), String> {
+    let s = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    s.send_to(&rrq(2, file, &[]), ("127.0.0.1", port)).await.unwrap();
+    let mut buf = [0u8; 600];
+    let (n, from) = s.recv_from(&mut buf).await.unwrap();
+    if u16::from_be_bytes([buf[0], buf[1]]) == 5 {
+        return Err(String::from_utf8_lossy(&buf[4..n - 1]).into_owned());
+    }
+    let mut chunks: Vec<&[u8]> = data.chunks(512).collect();
+    if data.len().is_multiple_of(512) {
+        chunks.push(&[]);
+    }
+    for (i, c) in chunks.iter().enumerate() {
+        let blk = (i + 1) as u16;
+        let mut p = vec![0, 3];
+        p.extend(blk.to_be_bytes());
+        p.extend(*c);
+        s.send_to(&p, from).await.unwrap();
+        let (_, _) = tokio::time::timeout(Duration::from_secs(5), s.recv_from(&mut buf)).await.expect("ack").unwrap();
+        assert_eq!(&buf[..4], &[0, 4, (blk >> 8) as u8, blk as u8]);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn tftp_server() {
+    let root = tempfile::tempdir().unwrap();
+    let data: Vec<u8> = (0..5000u32).map(|i| (i % 253) as u8).collect();
+    std::fs::create_dir(root.path().join("boot")).unwrap();
+    std::fs::write(root.path().join("boot").join("image.bin"), &data).unwrap();
+    std::fs::write(root.path().join("exact.bin"), vec![7u8; 1024]).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let m = ServerManager::new(dir.path().to_path_buf());
+    let port = m.start_with(cfg(ServerKind::Tftp, root.path()), String::new()).await.unwrap();
+
+    assert_eq!(tftp_get(port, "boot/image.bin", None).await.unwrap(), data);
+    assert_eq!(tftp_get(port, "/boot/image.bin", Some(1428)).await.unwrap(), data);
+    assert_eq!(tftp_get(port, "exact.bin", None).await.unwrap(), vec![7u8; 1024]); // ends with an empty block
+    assert!(tftp_get(port, "absent.bin", None).await.is_err());
+    assert!(tftp_get(port, "../../../etc/passwd", None).await.is_err());
+
+    let up: Vec<u8> = (0..1300u32).map(|i| i as u8).collect();
+    tftp_put(port, "envois/config.txt", &up).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(std::fs::read(root.path().join("envois").join("config.txt")).unwrap(), up);
+    m.stop(ServerKind::Tftp).await;
+
+    // read-only: uploads refused
+    let mut c = cfg(ServerKind::Tftp, root.path());
+    c.writable = false;
+    let port = m.start_with(c, String::new()).await.unwrap();
+    assert!(tftp_put(port, "x.txt", b"x").await.is_err());
+    assert!(!root.path().join("x.txt").exists());
+    let log = m.status().await.into_iter().find(|s| s.config.kind == ServerKind::Tftp).unwrap().log;
+    assert!(log.iter().any(|l| l.msg.contains("a téléchargé /boot/image.bin (5000 octets)")), "{log:?}");
+    m.stop(ServerKind::Tftp).await;
+}
+
+fn ftp(port: u16, user: &str, pw: &str) -> FtpParams {
+    FtpParams { host: "127.0.0.1".into(), port, username: user.into(), password: pw.into(), tls: FtpTls::None, insecure: false }
+}
+
+#[tokio::test]
+async fn ftp_server() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("lisezmoi.txt"), "FTP Orbiterm").unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let m = ServerManager::new(dir.path().to_path_buf());
+    let port = m.start_with(cfg(ServerKind::Ftp, root.path()), "s3cret".into()).await.unwrap();
+
+    assert!(matches!(FtpConnection::connect(ftp(port, "orbi", "faux")).await, Err(AppError::AuthFailed)));
+    assert!(FtpConnection::connect(ftp(port, "", "")).await.is_err(), "anonymous is off by default");
+    let c = FtpConnection::connect(ftp(port, "orbi", "s3cret")).await.expect("login");
+    let names: Vec<String> = c.list("/").await.unwrap().into_iter().map(|e| e.name).collect();
+    assert_eq!(names, vec!["lisezmoi.txt"]);
+    let local = tempfile::tempdir().unwrap();
+    let src = local.path().join("envoi.bin");
+    std::fs::write(&src, vec![42u8; 70_000]).unwrap();
+    c.upload(&src, "/envoi.bin", &|_, _| {}).await.unwrap();
+    assert_eq!(std::fs::read(root.path().join("envoi.bin")).unwrap().len(), 70_000);
+    let dl = local.path().join("l.txt");
+    c.download("/lisezmoi.txt", &dl, &|_, _| {}).await.unwrap();
+    assert_eq!(std::fs::read_to_string(&dl).unwrap(), "FTP Orbiterm");
+    c.close().await;
+    m.stop(ServerKind::Ftp).await;
+
+    // read-only + anonymous
+    let mut c2 = cfg(ServerKind::Ftp, root.path());
+    c2.writable = false;
+    c2.anonymous = true;
+    let port = m.start_with(c2, String::new()).await.unwrap();
+    let a = FtpConnection::connect(ftp(port, "", "")).await.expect("anonymous");
+    assert_eq!(a.list("/").await.unwrap().len(), 2);
+    assert!(a.upload(&src, "/refus.bin", &|_, _| {}).await.is_err());
+    assert!(a.mkdir("/nouveau").await.is_err());
+    assert!(!root.path().join("refus.bin").exists() && !root.path().join("nouveau").exists());
+    a.close().await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let log = m.status().await.into_iter().find(|s| s.config.kind == ServerKind::Ftp).unwrap().log;
+    assert!(log.iter().any(|l| l.msg.contains("orbi a envoyé")), "{log:?}");
+    assert!(log.iter().any(|l| l.msg.contains("connexion refusée pour « orbi »")), "{log:?}");
+    m.stop(ServerKind::Ftp).await;
+}
+
+#[tokio::test]
+async fn ssh_server() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("partage.txt"), "SFTP Orbiterm").unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let m = ServerManager::new(dir.path().to_path_buf());
+    let mut c = cfg(ServerKind::Ssh, root.path());
+    if cfg!(windows) {
+        c.shell = "powershell".into();
+    }
+    assert!(m.start_with(c.clone(), String::new()).await.is_err(), "a password is mandatory");
+    let port = m.start_with(c, "mdp-ssh".into()).await.unwrap();
+    // the host key is created once and kept
+    let key1 = std::fs::read(dir.path().join("ssh_server_ed25519")).unwrap();
+
+    let known = dir.path().join("known_hosts");
+    let asked = Arc::new(AtomicUsize::new(0));
+    let a2 = asked.clone();
+    let prompter: orbiterm_lib::ssh::HostKeyPrompter = Arc::new(move |_| {
+        a2.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async { true })
+    });
+    let p = |pw: &str| ConnectParams::simple("127.0.0.1", port, "orbi", Credentials::Password(pw.into()), known.clone());
+    let r = SshConnection::connect(p("faux"), prompter.clone(), Arc::new(|_| {}), Arc::new(|_| {})).await;
+    assert!(matches!(r, Err(AppError::AuthFailed)), "{:?}", r.err());
+
+    let out = Arc::new(Mutex::new(Vec::<u8>::new()));
+    let o = out.clone();
+    let conn = SshConnection::connect(p("mdp-ssh"), prompter, Arc::new(move |b| o.lock().unwrap().extend(b)), Arc::new(|_| {}))
+        .await
+        .expect("ssh login");
+    // interactive shell in a pseudo-terminal: compute something so the echo of the input
+    // cannot match the expected output
+    let cmd: &[u8] = if cfg!(windows) { b"[string](6*7)+'zz'\r" } else { b"echo $((6*7))zz\r" };
+    // ConPTY first asks for the cursor position (ESC[6n) and waits: answer like a terminal
+    for _ in 0..100 {
+        if out.lock().unwrap().windows(4).any(|w| w == b"\x1b[6n") {
+            conn.write(b"\x1b[1;1R").await.unwrap();
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    conn.write(cmd).await.unwrap();
+    let mut ok = false;
+    for _ in 0..200 {
+        if String::from_utf8_lossy(&out.lock().unwrap()).contains("42zz") {
+            ok = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(ok, "shell output: {}", String::from_utf8_lossy(&out.lock().unwrap()));
+
+    // SFTP confined to the shared folder
+    let s = conn.sftp().await.unwrap();
+    let names: Vec<String> = s.read_dir("/").await.unwrap().map(|e| e.file_name()).collect();
+    assert!(names.contains(&"partage.txt".to_string()), "{names:?}");
+    let mut f = s.open("/partage.txt").await.unwrap();
+    let mut txt = String::new();
+    f.read_to_string(&mut txt).await.unwrap();
+    assert_eq!(txt, "SFTP Orbiterm");
+    let mut w = s.create("/../../envoi-sftp.txt").await.unwrap();
+    w.write_all(b"via sftp").await.unwrap();
+    w.shutdown().await.unwrap();
+    drop(w);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(std::fs::read_to_string(root.path().join("envoi-sftp.txt")).unwrap(), "via sftp");
+    conn.disconnect().await;
+    m.stop(ServerKind::Ssh).await;
+
+    // second start: same host key, the client does not ask again
+    let mut c = cfg(ServerKind::Ssh, root.path());
+    c.port = port;
+    c.writable = false;
+    m.start_with(c, "mdp-ssh".into()).await.unwrap();
+    assert_eq!(std::fs::read(dir.path().join("ssh_server_ed25519")).unwrap(), key1);
+    let p2 = ConnectParams::simple("127.0.0.1", port, "orbi", Credentials::Password("mdp-ssh".into()), known.clone());
+    let conn = SshConnection::connect(p2, Arc::new(|_| Box::pin(async { false })), Arc::new(|_| {}), Arc::new(|_| {}))
+        .await
+        .expect("known host key must not be asked again");
+    assert_eq!(asked.load(Ordering::SeqCst), 1);
+    let s = conn.sftp().await.unwrap();
+    assert!(s.create("/refus.txt").await.is_err(), "read-only SFTP must refuse uploads");
+    conn.disconnect().await;
+    let log = m.status().await.into_iter().find(|s| s.config.kind == ServerKind::Ssh).unwrap().log;
+    assert!(log.iter().any(|l| l.msg.contains("connecté en tant que orbi")), "{log:?}");
+    assert!(log.iter().any(|l| l.msg.contains("SFTP : envoi /envoi-sftp.txt")), "{log:?}");
+    m.stop(ServerKind::Ssh).await;
+}
+
+
+#[tokio::test]
+async fn port_scanner_and_wol() {
+    use orbiterm_lib::nettools;
+    let open = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let p = open.local_addr().unwrap().port();
+    let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap().local_addr().unwrap().port();
+    let total = nettools::scan_start("t".into(), "127.0.0.1", &format!("{p},{closed}"), 500, 64).await.unwrap();
+    assert_eq!(total, 2);
+    let mut st = None;
+    for _ in 0..100 {
+        let s = nettools::scan_state("t").unwrap();
+        if s.finished {
+            st = Some(s);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let st = st.expect("scan finished");
+    assert_eq!(st.done, 2);
+    let ports: Vec<u16> = st.hits.iter().map(|h| h.port).collect();
+    assert_eq!(ports, vec![p]);
+    nettools::scan_cancel("t");
+    assert!(nettools::scan_state("t").is_none());
+
+    // Wake-on-LAN magic packet, received on a local UDP port
+    let rx = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let port = rx.local_addr().unwrap().port();
+    nettools::wol_send("01:23:45:67:89:ab", "127.0.0.1", port).await.unwrap();
+    let mut buf = [0u8; 200];
+    let n = tokio::time::timeout(Duration::from_secs(2), rx.recv(&mut buf)).await.unwrap().unwrap();
+    assert_eq!(n, 102);
+    assert_eq!(&buf[6..12], &[0x01, 0x23, 0x45, 0x67, 0x89, 0xab]);
+
+    // this computer's sockets include the listener opened above
+    let socks = nettools::open_ports().await.unwrap();
+    assert!(socks.iter().any(|s| s.local_port == p && s.state == "ÉCOUTE"), "{} sockets", socks.len());
+}

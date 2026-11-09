@@ -10,15 +10,12 @@
 #![allow(dead_code)]
 
 use std::collections::HashMap;
-use std::io::{Read, Seek, SeekFrom, Write};
-use std::path::{Component, Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
+use orbiterm_lib::sftp_server::SftpServer;
 use russh::server::{Auth, Msg, Session};
 use russh::{Channel, ChannelId};
-use russh_sftp::protocol::{
-    Attrs, Data, File, FileAttributes, Handle, Name, OpenFlags, Status, StatusCode, Version,
-};
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 
@@ -287,7 +284,7 @@ impl russh::server::Handler for SshHandler {
         match (name, channel) {
             ("sftp", Some(channel)) => {
                 session.channel_success(channel_id)?;
-                let sftp = SftpHandler { root: self.root.clone(), handles: HashMap::new(), next: 0 };
+                let sftp = SftpServer::new(self.root.clone(), true);
                 russh_sftp::server::run(channel.into_stream(), sftp).await;
             }
             _ => session.channel_failure(channel_id)?,
@@ -322,201 +319,6 @@ async fn x11_test(handle: &russh::server::Handle, cookie: Option<String>) -> Str
     match tokio::time::timeout(std::time::Duration::from_secs(3), s.read(&mut buf)).await {
         Ok(Ok(n)) if n > 0 => format!("X11:{}", String::from_utf8_lossy(&buf[..n])),
         _ => "xtest: pas de réponse".into(),
-    }
-}
-
-// ------------------------------------------------------------------ SFTP side
-
-enum OpenHandle {
-    Dir { path: PathBuf, done: bool },
-    File(std::fs::File),
-}
-
-struct SftpHandler {
-    root: PathBuf,
-    handles: HashMap<String, OpenHandle>,
-    next: u64,
-}
-
-fn ok(id: u32) -> Status {
-    Status { id, status_code: StatusCode::Ok, error_message: "Ok".into(), language_tag: "en-US".into() }
-}
-
-fn io_err(e: std::io::Error) -> StatusCode {
-    match e.kind() {
-        std::io::ErrorKind::NotFound => StatusCode::NoSuchFile,
-        std::io::ErrorKind::PermissionDenied => StatusCode::PermissionDenied,
-        _ => StatusCode::Failure,
-    }
-}
-
-impl SftpHandler {
-    /// Normalizes a remote POSIX path to an absolute virtual path ("/a/b").
-    fn virt(path: &str) -> String {
-        let mut parts: Vec<&str> = vec![];
-        for c in path.split('/') {
-            match c {
-                "" | "." => {}
-                ".." => {
-                    parts.pop();
-                }
-                x => parts.push(x),
-            }
-        }
-        format!("/{}", parts.join("/"))
-    }
-
-    /// Maps a remote path to a real path inside `root` (can never escape it).
-    fn real(&self, path: &str) -> PathBuf {
-        let v = Self::virt(path);
-        let mut p = self.root.clone();
-        for c in Path::new(v.trim_start_matches('/')).components() {
-            if let Component::Normal(n) = c {
-                p.push(n);
-            }
-        }
-        p
-    }
-
-    fn add(&mut self, h: OpenHandle) -> String {
-        self.next += 1;
-        let id = self.next.to_string();
-        self.handles.insert(id.clone(), h);
-        id
-    }
-}
-
-impl russh_sftp::server::Handler for SftpHandler {
-    type Error = StatusCode;
-
-    fn unimplemented(&self) -> Self::Error {
-        StatusCode::OpUnsupported
-    }
-
-    async fn init(&mut self, _version: u32, _ext: HashMap<String, String>) -> Result<Version, Self::Error> {
-        Ok(Version::new())
-    }
-
-    async fn realpath(&mut self, id: u32, path: String) -> Result<Name, Self::Error> {
-        let v = Self::virt(&path);
-        Ok(Name { id, files: vec![File::dummy(v)] })
-    }
-
-    async fn stat(&mut self, id: u32, path: String) -> Result<Attrs, Self::Error> {
-        let md = std::fs::metadata(self.real(&path)).map_err(io_err)?;
-        Ok(Attrs { id, attrs: FileAttributes::from(&md) })
-    }
-
-    async fn lstat(&mut self, id: u32, path: String) -> Result<Attrs, Self::Error> {
-        let md = std::fs::symlink_metadata(self.real(&path)).map_err(io_err)?;
-        Ok(Attrs { id, attrs: FileAttributes::from(&md) })
-    }
-
-    async fn fstat(&mut self, id: u32, handle: String) -> Result<Attrs, Self::Error> {
-        match self.handles.get(&handle) {
-            Some(OpenHandle::File(f)) => Ok(Attrs { id, attrs: FileAttributes::from(&f.metadata().map_err(io_err)?) }),
-            Some(OpenHandle::Dir { path, .. }) => {
-                Ok(Attrs { id, attrs: FileAttributes::from(&std::fs::metadata(path).map_err(io_err)?) })
-            }
-            None => Err(StatusCode::Failure),
-        }
-    }
-
-    async fn opendir(&mut self, id: u32, path: String) -> Result<Handle, Self::Error> {
-        let real = self.real(&path);
-        if !real.is_dir() {
-            return Err(StatusCode::NoSuchFile);
-        }
-        let handle = self.add(OpenHandle::Dir { path: real, done: false });
-        Ok(Handle { id, handle })
-    }
-
-    async fn readdir(&mut self, id: u32, handle: String) -> Result<Name, Self::Error> {
-        let Some(OpenHandle::Dir { path, done }) = self.handles.get_mut(&handle) else {
-            return Err(StatusCode::Failure);
-        };
-        if *done {
-            return Err(StatusCode::Eof);
-        }
-        *done = true;
-        let mut files = vec![];
-        for e in std::fs::read_dir(path).map_err(io_err)?.flatten() {
-            if let Ok(md) = e.metadata() {
-                files.push(File::new(e.file_name().to_string_lossy(), FileAttributes::from(&md)));
-            }
-        }
-        Ok(Name { id, files })
-    }
-
-    async fn open(&mut self, id: u32, filename: String, pflags: OpenFlags, _a: FileAttributes) -> Result<Handle, Self::Error> {
-        let real = self.real(&filename);
-        let f = std::fs::OpenOptions::new()
-            .read(pflags.contains(OpenFlags::READ))
-            .write(pflags.contains(OpenFlags::WRITE) || pflags.contains(OpenFlags::APPEND))
-            .append(pflags.contains(OpenFlags::APPEND))
-            .create(pflags.contains(OpenFlags::CREATE))
-            .truncate(pflags.contains(OpenFlags::TRUNCATE))
-            .open(real)
-            .map_err(io_err)?;
-        let handle = self.add(OpenHandle::File(f));
-        Ok(Handle { id, handle })
-    }
-
-    async fn read(&mut self, id: u32, handle: String, offset: u64, len: u32) -> Result<Data, Self::Error> {
-        let Some(OpenHandle::File(f)) = self.handles.get_mut(&handle) else {
-            return Err(StatusCode::Failure);
-        };
-        f.seek(SeekFrom::Start(offset)).map_err(io_err)?;
-        // Like real servers, cap the reply so the packet stays under the 256 KiB SFTP limit.
-        let mut buf = vec![0u8; len.min(32 * 1024) as usize];
-        let n = f.read(&mut buf).map_err(io_err)?;
-        if n == 0 {
-            return Err(StatusCode::Eof);
-        }
-        buf.truncate(n);
-        Ok(Data { id, data: buf })
-    }
-
-    async fn write(&mut self, id: u32, handle: String, offset: u64, data: Vec<u8>) -> Result<Status, Self::Error> {
-        let Some(OpenHandle::File(f)) = self.handles.get_mut(&handle) else {
-            return Err(StatusCode::Failure);
-        };
-        f.seek(SeekFrom::Start(offset)).map_err(io_err)?;
-        f.write_all(&data).map_err(io_err)?;
-        Ok(ok(id))
-    }
-
-    async fn close(&mut self, id: u32, handle: String) -> Result<Status, Self::Error> {
-        self.handles.remove(&handle);
-        Ok(ok(id))
-    }
-
-    async fn mkdir(&mut self, id: u32, path: String, _a: FileAttributes) -> Result<Status, Self::Error> {
-        std::fs::create_dir(self.real(&path)).map_err(io_err)?;
-        Ok(ok(id))
-    }
-
-    async fn rmdir(&mut self, id: u32, path: String) -> Result<Status, Self::Error> {
-        std::fs::remove_dir(self.real(&path)).map_err(io_err)?;
-        Ok(ok(id))
-    }
-
-    async fn remove(&mut self, id: u32, filename: String) -> Result<Status, Self::Error> {
-        std::fs::remove_file(self.real(&filename)).map_err(io_err)?;
-        Ok(ok(id))
-    }
-
-    async fn rename(&mut self, id: u32, oldpath: String, newpath: String) -> Result<Status, Self::Error> {
-        std::fs::rename(self.real(&oldpath), self.real(&newpath)).map_err(io_err)?;
-        Ok(ok(id))
-    }
-
-    async fn setstat(&mut self, id: u32, _path: String, _a: FileAttributes) -> Result<Status, Self::Error> {
-        Ok(ok(id))
-    }
-
-    async fn fsetstat(&mut self, id: u32, _h: String, _a: FileAttributes) -> Result<Status, Self::Error> {
-        Ok(ok(id))
     }
 }
 

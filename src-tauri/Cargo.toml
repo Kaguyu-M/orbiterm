@@ -1,6 +1,6 @@
 [package]
 name = "orbiterm"
-version = "0.5.1"
+version = "0.6.0"
 description = "Orbiterm - SSH terminal & SFTP browser"
 authors = ["Raphael"]
 edition = "2024"
@@ -52,20 +52,21 @@ ironrdp-pdu = "0.11"
 ironrdp-dvc = "0.10"
 ironrdp-displaycontrol = "0.10"
 ironrdp-core = "0.3"
+# built-in servers
+libunftp = "0.24"
+unftp-sbe-fs = "0.4"
+unftp-core = "0.1"
+async-trait = "0.1"
+rand = "0.10"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"
 
 [dev-dependencies]
 tempfile = "3"
-rand = "0.10"
 env_logger = "0.11"
 des = "0.8"
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect"] }
-libunftp = "0.24"
-unftp-sbe-fs = "0.4"
-unftp-core = "0.1"
-async-trait = "0.1"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

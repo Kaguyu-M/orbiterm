@@ -298,7 +298,68 @@ export const api = {
     invoke<string>("sftp_download", { connId, remote, localDir, transferId }),
   sftpUpload: (connId: string, local: string, remoteDir: string, transferId: string) =>
     invoke<string>("sftp_upload", { connId, local, remoteDir, transferId }),
+
+  serversStatus: () => invoke<ServerStatus[]>("servers_status"),
+  serverSave: (config: ServerConfig, password?: string) => invoke<void>("server_save", { config, password }),
+  serverStart: (kind: ServerKind) => invoke<number>("server_start", { kind }),
+  serverStop: (kind: ServerKind) => invoke<void>("server_stop", { kind }),
+  serverClearLog: (kind: ServerKind) => invoke<void>("server_clear_log", { kind }),
+  scanStart: (id: string, targets: string, ports: string, timeoutMs: number, concurrency: number) =>
+    invoke<number>("scan_start", { id, targets, ports, timeoutMs, concurrency }),
+  scanState: (id: string) => invoke<ScanState | null>("scan_state", { id }),
+  scanCancel: (id: string) => invoke<void>("scan_cancel", { id }),
+  wolSend: (mac: string, broadcast: string, port: number) => invoke<void>("wol_send", { mac, broadcast, port }),
+  openPorts: () => invoke<SocketInfo[]>("open_ports"),
 };
+
+export type ServerKind = "http" | "tftp" | "ftp" | "ssh";
+export interface ServerConfig {
+  kind: ServerKind;
+  port: number;
+  root: string;
+  local_only: boolean;
+  writable: boolean;
+  anonymous: boolean;
+  user: string;
+  listing: boolean;
+  shell: string;
+  autostart: boolean;
+}
+export interface ServerStatus {
+  config: ServerConfig;
+  running: boolean;
+  port: number;
+  started: number;
+  clients: number;
+  total: number;
+  has_password: boolean;
+  addresses: string[];
+  root: string;
+  log: { t: number; msg: string }[];
+}
+export interface ScanHit {
+  host: string;
+  ip: string;
+  port: number;
+  service: string;
+}
+export interface ScanState {
+  total: number;
+  done: number;
+  hits: ScanHit[];
+  finished: boolean;
+  cancelled: boolean;
+  hosts: number;
+}
+export interface SocketInfo {
+  proto: string;
+  local: string;
+  local_port: number;
+  remote: string;
+  state: string;
+  pid: number;
+  process: string;
+}
 
 export function remoteJoin(dir: string, name: string): string {
   return dir.endsWith("/") ? dir + name : `${dir}/${name}`;
