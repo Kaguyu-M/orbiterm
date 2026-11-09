@@ -251,7 +251,8 @@
   .sftp {
     display: flex;
     flex-direction: column;
-    height: 100%;
+    flex: 1;
+    min-height: 0;
     font-size: 12.5px;
     border: 2px solid transparent;
   }
@@ -277,13 +278,15 @@
   }
   .path {
     width: calc(100% - 12px);
+    box-sizing: border-box;
     margin: 0 6px 6px;
     font-family: var(--mono);
     font-size: 12px;
   }
   .list {
     flex: 1;
-    overflow: auto;
+    min-height: 0;
+    overflow-y: auto;
   }
   .list.loading {
     opacity: 0.5;

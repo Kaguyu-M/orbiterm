@@ -33,6 +33,11 @@
   let tabs: Tab[] = $state([]);
   let activeKey: string | null = $state(null);
   const active = $derived(tabs.find((t) => t.key === activeKey) ?? null);
+  /** The SFTP side tab exists only while the active terminal has a live connection. */
+  const hasSftp = $derived(!!active && active.state === "open" && !!active.connId && active.session.sftp_enabled);
+  $effect(() => {
+    if (!hasSftp && sideTab === "sftp") sideTab = "sessions";
+  });
 
   let editing: Session | null = $state(null);
 
@@ -248,7 +253,9 @@
   <aside>
     <nav class="sidetabs">
       <button class:on={sideTab === "sessions"} onclick={() => (sideTab = "sessions")}>Sessions</button>
-      <button class:on={sideTab === "sftp"} onclick={() => (sideTab = "sftp")}>SFTP</button>
+      {#if hasSftp}
+        <button class:on={sideTab === "sftp"} onclick={() => (sideTab = "sftp")}>SFTP</button>
+      {/if}
     </nav>
 
     <div class="sidebody" class:hide={sideTab !== "sessions"}>
@@ -275,7 +282,7 @@
 
     <div class="sidebody" class:hide={sideTab !== "sftp"}>
       {#each tabs as t (t.key)}
-        {#if t.connId && t.session.sftp_enabled}
+        {#if t.connId && t.state === "open" && t.session.sftp_enabled}
           <div class="fill" class:hide={t.key !== activeKey}>
             <SftpPanel
               connId={t.connId}
@@ -286,9 +293,6 @@
           </div>
         {/if}
       {/each}
-      {#if !active?.connId || !active.session.sftp_enabled}
-        <p class="muted pad">Ouvre une session SSH pour parcourir ses fichiers.</p>
-      {/if}
     </div>
   </aside>
 
@@ -483,6 +487,8 @@
   aside {
     display: flex;
     flex-direction: column;
+    min-height: 0;
+    overflow: hidden;
     background: var(--panel);
     min-width: 0;
   }
@@ -511,6 +517,8 @@
   .fill {
     flex: 1;
     min-height: 0;
+    display: flex;
+    flex-direction: column;
   }
   .sessbar {
     display: flex;
