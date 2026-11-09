@@ -3,6 +3,7 @@
 pub mod commands;
 pub mod config;
 pub mod error;
+pub mod forward;
 pub mod known_hosts;
 pub mod pty;
 pub mod secrets;
@@ -11,6 +12,7 @@ pub mod sftp;
 pub mod ssh;
 pub mod telnet;
 pub mod terminal;
+pub mod x11;
 
 use tauri::Manager;
 
@@ -39,6 +41,15 @@ pub fn run() {
             commands::term_close,
             commands::local_shells,
             commands::serial_ports,
+            commands::term_forwards,
+            commands::tunnels_list,
+            commands::tunnel_save,
+            commands::tunnel_delete,
+            commands::tunnel_start,
+            commands::tunnel_stop,
+            commands::xserver_status,
+            commands::xserver_start,
+            commands::xserver_stop,
             commands::sftp_home,
             commands::sftp_list,
             commands::sftp_mkdir,

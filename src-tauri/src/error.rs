@@ -13,6 +13,10 @@ pub enum AppError {
     NeedPassphrase,
     #[error("Authentification refusée par le serveur")]
     AuthFailed,
+    #[error("Mot de passe du rebond SSH requis")]
+    NeedJumpPassword,
+    #[error("Authentification refusée par le rebond SSH")]
+    JumpAuthFailed,
     #[error("Clé d'hôte refusée")]
     HostKeyRejected,
     #[error("Délai de connexion dépassé")]
@@ -43,6 +47,8 @@ impl AppError {
             AppError::NeedPassword => "need_password",
             AppError::NeedPassphrase => "need_passphrase",
             AppError::AuthFailed => "auth_failed",
+            AppError::NeedJumpPassword => "need_jump_password",
+            AppError::JumpAuthFailed => "jump_auth_failed",
             AppError::HostKeyRejected => "hostkey_rejected",
             AppError::Timeout => "timeout",
             AppError::NotFound(_) => "not_found",

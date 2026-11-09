@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import { listen } from "@tauri-apps/api/event";
   import { getCurrentWindow } from "@tauri-apps/api/window";
-  import { describe, protocol, type HostKeyPrompt } from "$lib/api";
+  import { api, describe, forwardLabel, protocol, type HostKeyPrompt } from "$lib/api";
   import { app, HOME, type Tab } from "$lib/app.svelte";
   import { startBus, onConnectionClosed } from "$lib/bus";
   import ContextMenu from "$lib/ContextMenu.svelte";
@@ -15,8 +15,10 @@
   import Sidebar from "$lib/Sidebar.svelte";
   import Terminal, { terminals } from "$lib/Terminal.svelte";
   import Toolbar, { type ToolButton } from "$lib/Toolbar.svelte";
+  import TunnelManager from "$lib/TunnelManager.svelte";
 
-  const VERSION = "0.2.0";
+  import pkg from "../../package.json";
+  const VERSION = pkg.version;
   let about = $state(false);
   let shortcuts = $state(false);
 
@@ -93,8 +95,10 @@
     {
       label: "Serveur X",
       items: () => [
-        { label: "Démarrer le serveur X" + SOON, icon: "xserver", disabled: true },
-        { label: "Arrêter le serveur X" + SOON, icon: "xserver_off", disabled: true },
+        { label: "Démarrer le serveur X", icon: "xserver", disabled: !!app.xserver?.running, action: () => app.toggleX() },
+        { label: "Arrêter le serveur X", icon: "xserver_off", disabled: !(app.xserver?.running && app.xserver.owned), action: () => app.toggleX() },
+        { sep: true },
+        { label: xInfo(), disabled: true },
       ],
     },
     {
@@ -109,7 +113,7 @@
         { label: "Scanner de ports" + SOON, icon: "scan", disabled: true },
         { label: "Ports ouverts / connexions" + SOON, icon: "ports", disabled: true },
         { label: "Wake-on-LAN" + SOON, icon: "wol", disabled: true },
-        { label: "Tunnels SSH" + SOON, icon: "tunnel", disabled: true },
+        { label: "Gestionnaire de tunnels SSH", icon: "tunnel", action: openTunnels },
         { sep: true },
         { label: "Serveurs intégrés (HTTP, TFTP, FTP, SSH)" + SOON, icon: "servers", disabled: true },
       ],
@@ -169,15 +173,40 @@
     { id: "view", label: "Affichage", icon: "view", action: (e: MouseEvent) => dropMenu(e, viewItems()) },
     { id: "split", label: "Split", icon: "split", title: "Écran partagé" + SOON, disabled: true, action: () => {} },
     { id: "multiexec", label: "MultiExec", icon: "multiexec", title: "Saisie simultanée dans tous les terminaux" + SOON, disabled: true, action: () => {} },
-    { id: "tunnel", label: "Tunnels", icon: "tunnel", title: "Tunnels SSH" + SOON, disabled: true, action: () => {} },
+    { id: "tunnel", label: "Tunnels", icon: "tunnel", title: "Gestionnaire de tunnels SSH", action: openTunnels },
     { id: "packages", label: "Paquets", icon: "packages", title: "Gestion de paquets" + SOON, disabled: true, action: () => {} },
     { id: "settings", label: "Paramètres", icon: "settings", title: "Configuration" + SOON, disabled: true, action: () => {} },
     { id: "help", label: "Aide", icon: "help", action: () => (about = true) },
   ]);
-  const toolsRight: ToolButton[] = [
-    { id: "xserver", label: "Serveur X", icon: "xserver_off", title: "Serveur X" + SOON, disabled: true, action: () => {} },
+  const toolsRight: ToolButton[] = $derived([
+    {
+      id: "xserver",
+      label: "Serveur X",
+      icon: app.xserver?.running ? "xserver" : "xserver_off",
+      title: xInfo() + (app.xserver?.running ? "" : " — cliquer pour démarrer"),
+      active: !!app.xserver?.running,
+      action: () => app.toggleX(),
+    },
     { id: "exit", label: "Quitter", icon: "exit", action: () => quit() },
-  ];
+  ]);
+
+  function xInfo() {
+    const x = app.xserver;
+    if (!x || !x.kind) return x?.running ? "Serveur X actif (127.0.0.1:0)" : "Aucun serveur X installé (VcXsrv recommandé)";
+    if (x.kind === "native") return `Serveur X du système (${x.display})`;
+    return `${x.kind === "vcxsrv" ? "VcXsrv" : "Xming"} : ${x.running ? "actif sur " + x.display : "arrêté"}`;
+  }
+
+  function openTunnels() {
+    app.refreshTunnels();
+    app.showTunnels = true;
+  }
+
+  async function showForwards(t: Tab) {
+    if (!t.connId) return;
+    const list = await api.termForwards(t.connId).catch(() => []);
+    app.info(list.length ? list.map((f) => forwardLabel(f.forward, f.port)).join("\n") : "Aucune redirection de port sur cette session.");
+  }
 
   async function quit() {
     const open = app.tabs.filter((t) => t.state === "open").length;
@@ -202,6 +231,12 @@
         { label: "Renommer l'onglet", icon: "edit", action: () => app.renameTab(t) },
         { label: "Dupliquer l'onglet", icon: "copy", action: () => app.duplicateTab(t) },
         { label: "Reconnecter", icon: "refresh", action: () => app.reconnect(t) },
+        {
+          label: "Redirections de ports actives…",
+          icon: "tunnel",
+          disabled: t.session.kind !== "ssh" || t.state !== "open",
+          action: () => showForwards(t),
+        },
         { sep: true },
         { label: "Fermer l'onglet", icon: "close", action: () => app.closeTab(t) },
         {
@@ -270,6 +305,12 @@
     app.init();
     listen<HostKeyPrompt>("hostkey-prompt", (e) => app.hostKeys.push(e.payload)).then((u) => unsubs.push(u));
     unsubs.push(onConnectionClosed((connId) => app.onConnectionClosed(connId)));
+    // X server and standalone tunnels can change outside the app
+    const poll = setInterval(() => {
+      app.refreshX();
+      if (app.tunnels.some((t) => t.running) || app.showTunnels) app.refreshTunnels();
+    }, 5000);
+    unsubs.push(() => clearInterval(poll));
     return () => unsubs.forEach((u) => u());
   });
 </script>
@@ -361,7 +402,14 @@
         {/if}
       </span>
       <span class="cell">{app.tabs.length} onglet(s) · {app.store.sessions.length} session(s) enregistrée(s)</span>
-      <span class="cell" title="Serveur X (prochaine étape)"><Icon name="xserver_off" size={13} /> X arrêté</span>
+      {#if app.tunnels.some((t) => t.running)}
+        <button class="cell link" title="Gestionnaire de tunnels" onclick={openTunnels}>
+          <Icon name="tunnel" size={13} /> {app.tunnels.filter((t) => t.running).length} tunnel(s) actif(s)
+        </button>
+      {/if}
+      <button class="cell link" title={xInfo()} onclick={() => app.toggleX()}>
+        <Icon name={app.xserver?.running ? "xserver" : "xserver_off"} size={13} /> X {app.xserver?.running ? "actif" : "arrêté"}
+      </button>
     </footer>
   {/if}
 </div>
@@ -370,6 +418,10 @@
 
 {#if app.editing}
   <SessionDialog session={app.editing} />
+{/if}
+
+{#if app.showTunnels}
+  <TunnelManager />
 {/if}
 
 {#if app.hostKeys.length}
@@ -729,6 +781,17 @@
   .cell.grow {
     flex: 1;
     overflow: hidden;
+  }
+  button.cell {
+    border: none;
+    border-right: 1px solid var(--chrome-border);
+    border-radius: 0;
+    background: none;
+    font-size: 11.5px;
+    padding: 0 10px;
+  }
+  .msg p {
+    white-space: pre-line;
   }
   .msg {
     display: flex;

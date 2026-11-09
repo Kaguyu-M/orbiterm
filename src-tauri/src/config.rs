@@ -71,9 +71,46 @@ pub struct Session {
     pub sftp_enabled: bool,
     #[serde(default)]
     pub terminal: TerminalSettings,
-    /// Protocol-specific options (shell command, serial settings, tunnels, X11…).
+    /// Protocol-specific options (shell command, serial settings, jump host, X11…).
     #[serde(default)]
     pub extra: std::collections::BTreeMap<String, String>,
+    /// SSH port forwardings active while the session is open.
+    #[serde(default)]
+    pub forwards: Vec<Forward>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ForwardKind {
+    /// -L: local port -> remote destination (through the server)
+    #[default]
+    Local,
+    /// -R: port on the server -> local destination
+    Remote,
+    /// -D: local SOCKS proxy
+    Dynamic,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(default)]
+pub struct Forward {
+    pub kind: ForwardKind,
+    /// Listening address ("" = 127.0.0.1 for local/dynamic, server default for remote).
+    pub bind_host: String,
+    pub bind_port: u16,
+    pub dest_host: String,
+    pub dest_port: u16,
+}
+
+/// A standalone tunnel (tunnel manager): uses a saved SSH session as its server.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(default)]
+pub struct Tunnel {
+    pub id: String,
+    pub name: String,
+    pub session_id: String,
+    pub forward: Forward,
+    pub autostart: bool,
 }
 
 impl Session {
@@ -102,11 +139,13 @@ pub struct Store {
     pub folders: Vec<Folder>,
     #[serde(default)]
     pub sessions: Vec<Session>,
+    #[serde(default)]
+    pub tunnels: Vec<Tunnel>,
 }
 
 impl Default for Store {
     fn default() -> Self {
-        Self { version: STORE_VERSION, folders: vec![], sessions: vec![] }
+        Self { version: STORE_VERSION, folders: vec![], sessions: vec![], tunnels: vec![] }
     }
 }
 
@@ -208,6 +247,21 @@ impl Store {
         removed
     }
 
+    pub fn upsert_tunnel(&mut self, mut t: Tunnel) -> Tunnel {
+        if t.id.is_empty() {
+            t.id = new_id("t");
+        }
+        match self.tunnels.iter_mut().find(|x| x.id == t.id) {
+            Some(existing) => *existing = t.clone(),
+            None => self.tunnels.push(t.clone()),
+        }
+        t
+    }
+
+    pub fn delete_tunnel(&mut self, id: &str) {
+        self.tunnels.retain(|t| t.id != id);
+    }
+
     pub fn session(&self, id: &str) -> AppResult<&Session> {
         self.sessions.iter().find(|s| s.id == id).ok_or_else(|| AppError::NotFound(id.into()))
     }
@@ -232,6 +286,13 @@ mod tests {
             sftp_enabled: true,
             terminal: TerminalSettings::default(),
             extra: Default::default(),
+            forwards: vec![Forward {
+                kind: ForwardKind::Dynamic,
+                bind_host: String::new(),
+                bind_port: 1080,
+                dest_host: String::new(),
+                dest_port: 0,
+            }],
         }
     }
 

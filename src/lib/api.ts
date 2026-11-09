@@ -25,6 +25,54 @@ export interface Session {
   terminal: TerminalSettings;
   /** Protocol-specific options (string values). */
   extra: Record<string, string>;
+  /** SSH port forwardings started with the session. */
+  forwards: Forward[];
+}
+
+export type ForwardKind = "local" | "remote" | "dynamic";
+
+export interface Forward {
+  kind: ForwardKind;
+  bind_host: string;
+  bind_port: number;
+  dest_host: string;
+  dest_port: number;
+}
+
+export interface Tunnel {
+  id: string;
+  name: string;
+  session_id: string;
+  forward: Forward;
+  autostart: boolean;
+}
+
+export interface TunnelStatus extends Tunnel {
+  running: boolean;
+  port: number;
+}
+
+export interface ActiveForward {
+  forward: Forward;
+  port: number;
+}
+
+export interface XServerStatus {
+  kind: string;
+  path: string;
+  running: boolean;
+  display: string;
+  owned: boolean;
+}
+
+export function newForward(kind: ForwardKind = "local"): Forward {
+  return { kind, bind_host: "", bind_port: kind === "dynamic" ? 1080 : 8080, dest_host: kind === "remote" ? "127.0.0.1" : "", dest_port: 80 };
+}
+
+export function forwardLabel(f: Forward, port = f.bind_port): string {
+  const bind = f.bind_host || (f.kind === "remote" ? "serveur" : "127.0.0.1");
+  if (f.kind === "dynamic") return `SOCKS ${bind}:${port}`;
+  return `${f.kind === "local" ? "Local" : "Distant"} ${bind}:${port} → ${f.dest_host}:${f.dest_port}`;
 }
 
 export interface Folder {
@@ -37,6 +85,7 @@ export interface Store {
   version: number;
   folders: Folder[];
   sessions: Session[];
+  tunnels: Tunnel[];
 }
 
 export interface Entry {
@@ -88,6 +137,7 @@ export function newSession(folder = "", kind = "ssh"): Session {
       theme: "dark",
     },
     extra: {},
+    forwards: [],
   };
 }
 
@@ -152,6 +202,7 @@ export const api = {
     rows: number;
     password?: string;
     passphrase?: string;
+    jump_password?: string;
     remember?: boolean;
   }) => invoke<string>("term_open", { args }),
   hostkeyAnswer: (requestId: string, accept: boolean) =>
@@ -162,6 +213,18 @@ export const api = {
   termClose: (connId: string) => invoke<void>("term_close", { connId }),
   localShells: () => invoke<LocalShell[]>("local_shells"),
   serialPorts: () => invoke<string[]>("serial_ports"),
+  termForwards: (connId: string) => invoke<ActiveForward[]>("term_forwards", { connId }),
+
+  tunnelsList: () => invoke<TunnelStatus[]>("tunnels_list"),
+  tunnelSave: (tunnel: Tunnel) => invoke<Tunnel>("tunnel_save", { tunnel }),
+  tunnelDelete: (id: string) => invoke<void>("tunnel_delete", { id }),
+  tunnelStart: (args: { id: string; password?: string; passphrase?: string; jump_password?: string; remember?: boolean }) =>
+    invoke<number>("tunnel_start", { args }),
+  tunnelStop: (id: string) => invoke<void>("tunnel_stop", { id }),
+
+  xserverStatus: () => invoke<XServerStatus>("xserver_status"),
+  xserverStart: () => invoke<XServerStatus>("xserver_start"),
+  xserverStop: () => invoke<XServerStatus>("xserver_stop"),
 
   sftpHome: (connId: string) => invoke<string>("sftp_home", { connId }),
   sftpList: (connId: string, path: string) => invoke<Entry[]>("sftp_list", { connId, path }),

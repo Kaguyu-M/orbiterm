@@ -52,7 +52,19 @@
         { label: "Scanner de ports", icon: "scan" },
         { label: "Ports ouverts / connexions", icon: "ports" },
         { label: "Wake-on-LAN", icon: "wol" },
-        { label: "Tunnels SSH", icon: "tunnel" },
+        {
+          label: "Gestionnaire de tunnels SSH",
+          icon: "tunnel",
+          action: () => {
+            app.refreshTunnels();
+            app.showTunnels = true;
+          },
+        },
+        {
+          label: app.xserver?.running ? "Arrêter le serveur X" : "Démarrer le serveur X",
+          icon: app.xserver?.running ? "xserver" : "xserver_off",
+          action: () => app.toggleX(),
+        },
       ],
     },
     {

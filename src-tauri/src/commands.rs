@@ -10,13 +10,18 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::{Mutex, oneshot};
 
-use crate::config::{AuthMethod, Folder, Session, Store};
+use crate::config::{AuthMethod, Folder, Forward, ForwardKind, Session, Store, Tunnel};
 use crate::error::{AppError, AppResult};
 use crate::secrets;
 use crate::sftp::{self, Entry};
 use crate::pty::{self, LocalShell, PtyConnection, PtySpawn};
 use crate::serial::SerialConnection;
-use crate::ssh::{CloseSink, ConnectParams, Credentials, DataSink, HostKeyPrompter, HostKeyQuestion, SshConnection};
+use crate::forward;
+use crate::ssh::{
+    ActiveForward, CloseSink, ConnectParams, Credentials, DataSink, HostKeyPrompter, HostKeyQuestion, JumpParams, ShellMode,
+    SshConnection,
+};
+use crate::x11;
 use crate::telnet::{Mode, TcpTermConnection};
 use crate::terminal::Conn;
 
@@ -25,6 +30,8 @@ pub struct AppState {
     pub store: Mutex<Store>,
     pub conns: Mutex<HashMap<String, Conn>>,
     pub hostkey_waiters: Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>,
+    /// running standalone tunnels (tunnel manager), by tunnel id
+    pub tunnels: Mutex<HashMap<String, Arc<SshConnection>>>,
 }
 
 impl AppState {
@@ -35,6 +42,7 @@ impl AppState {
             store: Mutex::new(store),
             conns: Mutex::new(HashMap::new()),
             hostkey_waiters: Arc::new(Mutex::new(HashMap::new())),
+            tunnels: Mutex::new(HashMap::new()),
         })
     }
 
@@ -71,6 +79,7 @@ pub async fn session_delete(state: State<'_, AppState>, id: String) -> AppResult
     store.delete_session(&id);
     store.save(&state.config_dir)?;
     let _ = secrets::delete_password(&id);
+    let _ = secrets::delete_password(&jump_account(&id));
     Ok(())
 }
 
@@ -131,6 +140,7 @@ pub struct OpenArgs {
     /// Store `password` in the keyring after a successful login.
     #[serde(default)]
     pub remember: bool,
+    pub jump_password: Option<String>,
 }
 
 fn make_prompter(app: AppHandle, waiters: Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>) -> HostKeyPrompter {
@@ -227,6 +237,136 @@ fn pty_spec(session: &Session, cols: u32, rows: u32) -> AppResult<PtySpawn> {
     })
 }
 
+/// Secrets typed by the user for an SSH connection.
+pub struct SshSecrets {
+    pub password: Option<String>,
+    pub passphrase: Option<String>,
+    pub jump_password: Option<String>,
+    pub remember: bool,
+}
+
+fn jump_account(session_id: &str) -> String {
+    format!("{session_id}#jump")
+}
+
+pub fn forward_label(f: &Forward, port: u16) -> String {
+    let bind = forward::bind_addr(&f.bind_host);
+    match f.kind {
+        ForwardKind::Local => format!("local {bind}:{port} → {}:{}", f.dest_host, f.dest_port),
+        ForwardKind::Remote => format!(
+            "distant {}:{port} → {}:{}",
+            if f.bind_host.is_empty() { "serveur" } else { &f.bind_host },
+            f.dest_host,
+            f.dest_port
+        ),
+        ForwardKind::Dynamic => format!("SOCKS {bind}:{port}"),
+    }
+}
+
+/// Opens an SSH connection for `session` (credentials from the keyring or typed),
+/// through its jump host and with X11 when configured.
+#[allow(clippy::too_many_arguments)]
+async fn open_ssh(
+    app: &AppHandle,
+    state: &AppState,
+    session: &Session,
+    secrets_in: &SshSecrets,
+    mode: ShellMode,
+    cols: u32,
+    rows: u32,
+    on_data: DataSink,
+    on_close: CloseSink,
+) -> AppResult<Arc<SshConnection>> {
+    let saved = !session.id.is_empty();
+    let credentials = match session.auth {
+        AuthMethod::Password => {
+            let pw = match secrets_in.password.clone() {
+                Some(p) => p,
+                None if saved && session.remember_password => {
+                    secrets::get_password(&session.id)?.ok_or(AppError::NeedPassword)?
+                }
+                None => return Err(AppError::NeedPassword),
+            };
+            Credentials::Password(pw)
+        }
+        AuthMethod::Key => {
+            if session.key_path.trim().is_empty() {
+                return Err(AppError::Config("aucune clé privée sélectionnée".into()));
+            }
+            Credentials::Key { path: PathBuf::from(&session.key_path), passphrase: secrets_in.passphrase.clone() }
+        }
+    };
+
+    // jump host (gateway): key file, or password (typed / keyring)
+    let jump_host = session.opt("jump_host").trim().to_string();
+    let jump = if jump_host.is_empty() {
+        None
+    } else {
+        let key = session.opt("jump_key").trim();
+        let credentials = if !key.is_empty() {
+            Credentials::Key { path: PathBuf::from(key), passphrase: None }
+        } else {
+            let pw = match secrets_in.jump_password.clone() {
+                Some(p) => p,
+                None if saved && session.remember_password => {
+                    secrets::get_password(&jump_account(&session.id))?.ok_or(AppError::NeedJumpPassword)?
+                }
+                None => return Err(AppError::NeedJumpPassword),
+            };
+            Credentials::Password(pw)
+        };
+        let user = session.opt("jump_user").trim();
+        Some(JumpParams {
+            host: jump_host,
+            port: session.opt("jump_port").trim().parse().unwrap_or(22),
+            username: if user.is_empty() { session.username.clone() } else { user.to_string() },
+            credentials,
+        })
+    };
+
+    let x11_display = if session.opt_bool("x11") { Some(x11::local_display(session.opt("x11_display"))) } else { None };
+    let params = ConnectParams {
+        host: session.host.clone(),
+        port: session.port,
+        username: session.username.clone(),
+        credentials,
+        cols,
+        rows,
+        known_hosts: state.config_dir.join("known_hosts"),
+        jump,
+        mode,
+        x11_display,
+        compression: session.opt_bool("compression"),
+    };
+    let prompter = make_prompter(app.clone(), state.hostkey_waiters.clone());
+    match SshConnection::connect(params, prompter, on_data, on_close).await {
+        Ok(c) => {
+            let store = saved && session.remember_password && secrets_in.remember;
+            if store {
+                if let Some(pw) = &secrets_in.password
+                    && let Err(e) = secrets::set_password(&session.id, pw)
+                {
+                    log::warn!("keyring: {e}");
+                }
+                if let Some(pw) = &secrets_in.jump_password
+                    && let Err(e) = secrets::set_password(&jump_account(&session.id), pw)
+                {
+                    log::warn!("keyring: {e}");
+                }
+            }
+            Ok(c)
+        }
+        // a stored password that no longer works must be asked again
+        Err(AppError::AuthFailed) if secrets_in.password.is_none() && session.auth == AuthMethod::Password => {
+            Err(AppError::NeedPassword)
+        }
+        Err(AppError::JumpAuthFailed) if secrets_in.jump_password.is_none() && session.opt("jump_key").is_empty() => {
+            Err(AppError::NeedJumpPassword)
+        }
+        Err(e) => Err(e),
+    }
+}
+
 /// Opens a terminal tab for any session kind. Returns the connection id.
 #[tauri::command]
 pub async fn term_open(app: AppHandle, state: State<'_, AppState>, args: OpenArgs) -> AppResult<String> {
@@ -236,56 +376,30 @@ pub async fn term_open(app: AppHandle, state: State<'_, AppState>, args: OpenArg
     } else {
         state.store.lock().await.session(&args.session.id).cloned().unwrap_or(args.session.clone())
     };
-    let saved = !session.id.is_empty();
     let conn_id = crate::config::new_id("c");
     let (on_data, on_close) = sinks(&app, &conn_id);
 
     let conn = match session.kind.as_str() {
         "ssh" => {
-            let typed_password = args.password.clone();
-            let credentials = match session.auth {
-                AuthMethod::Password => {
-                    let pw = match typed_password.clone() {
-                        Some(p) => p,
-                        None if saved && session.remember_password => {
-                            secrets::get_password(&session.id)?.ok_or(AppError::NeedPassword)?
-                        }
-                        None => return Err(AppError::NeedPassword),
-                    };
-                    Credentials::Password(pw)
-                }
-                AuthMethod::Key => {
-                    if session.key_path.trim().is_empty() {
-                        return Err(AppError::Config("aucune clé privée sélectionnée".into()));
-                    }
-                    Credentials::Key { path: PathBuf::from(&session.key_path), passphrase: args.passphrase.clone() }
-                }
+            let mode = match session.opt("command").trim() {
+                "" => ShellMode::Shell,
+                cmd => ShellMode::Command(cmd.to_string()),
             };
-            let params = ConnectParams {
-                host: session.host.clone(),
-                port: session.port,
-                username: session.username.clone(),
-                credentials,
-                cols: args.cols,
-                rows: args.rows,
-                known_hosts: state.config_dir.join("known_hosts"),
+            let creds = SshSecrets {
+                password: args.password.clone(),
+                passphrase: args.passphrase.clone(),
+                jump_password: args.jump_password.clone(),
+                remember: args.remember,
             };
-            let prompter = make_prompter(app.clone(), state.hostkey_waiters.clone());
-            match SshConnection::connect(params, prompter, on_data, on_close).await {
-                Ok(c) => {
-                    if let (Some(pw), true) = (typed_password, saved && session.remember_password && args.remember)
-                        && let Err(e) = secrets::set_password(&session.id, &pw)
-                    {
-                        log::warn!("keyring: {e}");
-                    }
-                    Conn::Ssh(c)
+            let c = open_ssh(&app, &state, &session, &creds, mode, args.cols, args.rows, on_data.clone(), on_close).await?;
+            // session tunnels: a failing one is reported in the terminal, not fatal
+            for f in &session.forwards {
+                match c.start_forward(f).await {
+                    Ok(port) => on_data(format!("\x1b[90m[tunnel {}]\x1b[0m\r\n", forward_label(f, port)).into_bytes()),
+                    Err(e) => on_data(format!("\x1b[33m[tunnel {} : {e}]\x1b[0m\r\n", forward_label(f, f.bind_port)).into_bytes()),
                 }
-                // a stored password that no longer works must be asked again
-                Err(AppError::AuthFailed) if args.password.is_none() && session.auth == AuthMethod::Password => {
-                    return Err(AppError::NeedPassword);
-                }
-                Err(e) => return Err(e),
             }
+            Conn::Ssh(c)
         }
         "telnet" | "rlogin" => {
             let mode = if session.kind == "telnet" { Mode::Telnet } else { Mode::Rlogin };
@@ -447,4 +561,125 @@ pub async fn sftp_upload(
     let progress = progress_emitter(app, transfer_id);
     sftp::upload(&s, &local_path, &remote, &progress).await?;
     Ok(remote)
+}
+
+// ---------------------------------------------------------------- tunnels
+
+/// Port forwardings currently active on a terminal connection.
+#[tauri::command]
+pub async fn term_forwards(state: State<'_, AppState>, conn_id: String) -> AppResult<Vec<ActiveForward>> {
+    Ok(state.ssh(&conn_id).await?.active_forwards())
+}
+
+#[derive(Serialize)]
+pub struct TunnelStatus {
+    #[serde(flatten)]
+    pub tunnel: Tunnel,
+    pub running: bool,
+    pub port: u16,
+}
+
+#[tauri::command]
+pub async fn tunnels_list(state: State<'_, AppState>) -> AppResult<Vec<TunnelStatus>> {
+    let tunnels = state.store.lock().await.tunnels.clone();
+    let mut running = state.tunnels.lock().await;
+    // forget tunnels whose SSH connection dropped
+    running.retain(|_, c| !c.is_closed());
+    Ok(tunnels
+        .into_iter()
+        .map(|t| {
+            let conn = running.get(&t.id);
+            let port = conn.and_then(|c| c.active_forwards().first().map(|f| f.port)).unwrap_or(0);
+            TunnelStatus { running: conn.is_some(), port, tunnel: t }
+        })
+        .collect())
+}
+
+#[tauri::command]
+pub async fn tunnel_save(state: State<'_, AppState>, tunnel: Tunnel) -> AppResult<Tunnel> {
+    let mut store = state.store.lock().await;
+    let saved = store.upsert_tunnel(tunnel);
+    store.save(&state.config_dir)?;
+    Ok(saved)
+}
+
+#[tauri::command]
+pub async fn tunnel_delete(state: State<'_, AppState>, id: String) -> AppResult<()> {
+    tunnel_stop(state.clone(), id.clone()).await?;
+    let mut store = state.store.lock().await;
+    store.delete_tunnel(&id);
+    store.save(&state.config_dir)
+}
+
+#[derive(Deserialize)]
+pub struct TunnelStartArgs {
+    pub id: String,
+    pub password: Option<String>,
+    pub passphrase: Option<String>,
+    pub jump_password: Option<String>,
+    #[serde(default)]
+    pub remember: bool,
+}
+
+#[tauri::command]
+pub async fn tunnel_start(app: AppHandle, state: State<'_, AppState>, args: TunnelStartArgs) -> AppResult<u16> {
+    if let Some(c) = state.tunnels.lock().await.get(&args.id)
+        && !c.is_closed()
+    {
+        return Ok(c.active_forwards().first().map(|f| f.port).unwrap_or(0));
+    }
+    let (tunnel, session) = {
+        let store = state.store.lock().await;
+        let t = store.tunnels.iter().find(|t| t.id == args.id).cloned().ok_or_else(|| AppError::NotFound(args.id.clone()))?;
+        let s = store.session(&t.session_id)?.clone();
+        (t, s)
+    };
+    if session.kind != "ssh" {
+        return Err(AppError::Config(format!("la session « {} » n'est pas une session SSH", session.name)));
+    }
+    let creds = SshSecrets {
+        password: args.password,
+        passphrase: args.passphrase,
+        jump_password: args.jump_password,
+        remember: args.remember,
+    };
+    let quiet_data: DataSink = Arc::new(|_| {});
+    let quiet_close: CloseSink = Arc::new(|_| {});
+    let conn = open_ssh(&app, &state, &session, &creds, ShellMode::None, 80, 24, quiet_data, quiet_close).await?;
+    match conn.start_forward(&tunnel.forward).await {
+        Ok(port) => {
+            state.tunnels.lock().await.insert(tunnel.id.clone(), conn);
+            Ok(port)
+        }
+        Err(e) => {
+            conn.disconnect().await;
+            Err(e)
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn tunnel_stop(state: State<'_, AppState>, id: String) -> AppResult<()> {
+    let conn = state.tunnels.lock().await.remove(&id);
+    if let Some(c) = conn {
+        c.disconnect().await;
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------- X server
+
+#[tauri::command]
+pub async fn xserver_status() -> AppResult<x11::XServerStatus> {
+    tokio::task::spawn_blocking(x11::status).await.map_err(|e| AppError::Conn(e.to_string()))
+}
+
+#[tauri::command]
+pub async fn xserver_start() -> AppResult<x11::XServerStatus> {
+    tokio::task::spawn_blocking(x11::start).await.map_err(|e| AppError::Conn(e.to_string()))?
+}
+
+#[tauri::command]
+pub async fn xserver_stop() -> AppResult<x11::XServerStatus> {
+    tokio::task::spawn_blocking(x11::stop).await.map_err(|e| AppError::Conn(e.to_string()))
 }

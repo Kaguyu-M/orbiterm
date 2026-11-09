@@ -4,13 +4,15 @@
   import Modal from "./Modal.svelte";
   import Icon from "./Icon.svelte";
   import { app } from "./app.svelte";
-  import { api, PROTOCOLS, protocol, type Session } from "./api";
+  import { api, newForward, PROTOCOLS, protocol, type Session } from "./api";
 
   let { session }: { session: Session } = $props();
 
   // edit a copy, so "Annuler" really cancels
   // svelte-ignore state_referenced_locally
-  let s: Session = $state(structuredClone($state.snapshot(session)) as Session);
+  const initial = structuredClone($state.snapshot(session)) as Session;
+  initial.forwards ??= [];
+  let s: Session = $state(initial);
   // svelte-ignore state_referenced_locally
   const isNew = !session.id;
   let error = $state("");
@@ -61,6 +63,10 @@
   async function pickKey() {
     const f = await open({ multiple: false, directory: false, title: "Clé privée SSH" });
     if (typeof f === "string") s.key_path = f;
+  }
+  async function pickJumpKey() {
+    const f = await open({ multiple: false, directory: false, title: "Clé privée du rebond SSH" });
+    if (typeof f === "string") setX("jump_key", f);
   }
   async function pickDir() {
     const d = await open({ directory: true, title: "Répertoire de démarrage" });
@@ -195,7 +201,14 @@
             <span class="lbl">Navigateur SFTP</span>
             <label class="chk"><input type="checkbox" bind:checked={s.sftp_enabled} /> Afficher le navigateur SFTP avec la session</label>
             <span class="lbl">Redirection X11</span>
-            <label class="chk soon-l"><input type="checkbox" disabled /> Activer (prochaine étape)</label>
+            <div class="row">
+              <label class="chk"><input type="checkbox" checked={x("x11") === "1"} onchange={(e) => setX("x11", e.currentTarget.checked ? "1" : "")} /> Activer</label>
+              <input class="disp" value={x("x11_display")} oninput={(e) => setX("x11_display", e.currentTarget.value)} placeholder="affichage local (auto : 127.0.0.1:0)" disabled={x("x11") !== "1"} spellcheck="false" aria-label="Affichage X local" />
+            </div>
+            <span class="lbl">Compression</span>
+            <label class="chk"><input type="checkbox" checked={x("compression") === "1"} onchange={(e) => setX("compression", e.currentTarget.checked ? "1" : "")} /> Compresser le trafic SSH (zlib)</label>
+            <label class="lbl" for="rcmd">Commande à exécuter</label>
+            <input id="rcmd" value={x("command")} oninput={(e) => setX("command", e.currentTarget.value)} placeholder="(shell interactif)" spellcheck="false" />
           </div>
         {:else if s.kind === "serial"}
           <div class="grid">
@@ -248,7 +261,58 @@
           <input id="sbk" class="port" type="number" min="100" max="200000" step="1000" bind:value={s.terminal.scrollback} />
         </div>
       {:else if bottom === "network"}
-        <p class="muted">Rebond SSH (jump host), proxy et tunnels arrivent dans une prochaine étape.</p>
+        {#if s.kind === "ssh"}
+          <div class="net">
+            <div class="sub"><Icon name="servers" size={14} /> Passerelle SSH (rebond / jump host)</div>
+            <div class="line">
+              <label for="jh">Hôte</label>
+              <input id="jh" class="host" value={x("jump_host")} oninput={(e) => setX("jump_host", e.currentTarget.value)} placeholder="(aucune : connexion directe)" spellcheck="false" />
+              <label for="ju">Utilisateur</label>
+              <input id="ju" class="user" value={x("jump_user")} oninput={(e) => setX("jump_user", e.currentTarget.value)} placeholder={s.username || "(idem)"} spellcheck="false" />
+              <label for="jp">Port</label>
+              <input id="jp" class="port" type="number" min="1" max="65535" value={x("jump_port", "22")} oninput={(e) => setX("jump_port", e.currentTarget.value)} />
+            </div>
+            <div class="line">
+              <label for="jk">Clé privée</label>
+              <input id="jk" class="host" value={x("jump_key")} oninput={(e) => setX("jump_key", e.currentTarget.value)} placeholder="(sinon : mot de passe demandé)" spellcheck="false" />
+              <button type="button" onclick={pickJumpKey}>…</button>
+            </div>
+
+            <div class="sub"><Icon name="tunnel" size={14} /> Redirections de ports ouvertes avec la session</div>
+            <table class="fw">
+              <thead><tr><th>Type</th><th>Écoute (hôte : port)</th><th>Destination (hôte : port)</th><th></th></tr></thead>
+              <tbody>
+                {#each s.forwards as f, i (i)}
+                  <tr>
+                    <td>
+                      <select bind:value={f.kind} aria-label="Type">
+                        <option value="local">Local (-L)</option>
+                        <option value="remote">Distant (-R)</option>
+                        <option value="dynamic">SOCKS (-D)</option>
+                      </select>
+                    </td>
+                    <td><div class="pair">
+                      <input bind:value={f.bind_host} placeholder={f.kind === "remote" ? "serveur" : "127.0.0.1"} aria-label="Hôte d'écoute" />
+                      <input class="port" type="number" min="0" max="65535" bind:value={f.bind_port} aria-label="Port d'écoute" />
+                    </div></td>
+                    <td><div class="pair">
+                      {#if f.kind === "dynamic"}
+                        <span class="muted">(selon le client SOCKS)</span>
+                      {:else}
+                        <input bind:value={f.dest_host} placeholder={f.kind === "remote" ? "127.0.0.1" : "hôte vu du serveur"} aria-label="Hôte de destination" />
+                        <input class="port" type="number" min="1" max="65535" bind:value={f.dest_port} aria-label="Port de destination" />
+                      {/if}
+                    </div></td>
+                    <td><button type="button" title="Supprimer" aria-label="Supprimer la redirection" onclick={() => s.forwards.splice(i, 1)}><Icon name="trash" size={14} /></button></td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+            <button type="button" onclick={() => s.forwards.push(newForward())}><Icon name="plus" size={12} /> Ajouter une redirection</button>
+          </div>
+        {:else}
+          <p class="muted">Aucun paramètre réseau pour ce type de session.</p>
+        {/if}
       {:else}
         <div class="grid">
           <label class="lbl" for="nm">Nom de la session</label>
@@ -392,9 +456,6 @@
     align-items: center;
     white-space: nowrap;
   }
-  .soon-l {
-    color: var(--text-disabled);
-  }
   .lbl {
     color: var(--muted);
   }
@@ -404,5 +465,49 @@
   }
   .dlg {
     min-width: 90px;
+  }
+  .disp {
+    flex: 1;
+  }
+  .net {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    align-items: flex-start;
+  }
+  .net .line {
+    width: 100%;
+  }
+  .sub {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-weight: 600;
+    margin-top: 2px;
+  }
+  .fw {
+    border-collapse: collapse;
+    width: 100%;
+  }
+  .fw th {
+    text-align: left;
+    font-weight: normal;
+    color: var(--muted);
+    padding: 2px 4px;
+    border-bottom: 1px solid var(--chrome-border);
+  }
+  .fw td {
+    padding: 2px 4px;
+  }
+  .pair {
+    display: flex;
+    gap: 4px;
+  }
+  .pair input:not(.port) {
+    flex: 1;
+    min-width: 80px;
+  }
+  .fw button {
+    padding: 2px 4px;
   }
 </style>

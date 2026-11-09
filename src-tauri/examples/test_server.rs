@@ -61,11 +61,13 @@ struct SshHandler {
     line: Vec<u8>,
     size: (u32, u32),
     shell: Option<ChannelId>,
+    /// X11 cookie received with x11-req (hex)
+    x11: Option<String>,
 }
 
 impl SshHandler {
     fn new(root: PathBuf) -> Self {
-        Self { root, channels: Default::default(), line: vec![], size: (80, 24), shell: None }
+        Self { root, channels: Default::default(), line: vec![], size: (80, 24), shell: None, x11: None }
     }
 
     fn run_command(&mut self, cmd: &str) -> (String, bool) {
@@ -74,7 +76,7 @@ impl SshHandler {
         let arg = parts.next().unwrap_or("");
         let out = match name {
             "" => String::new(),
-            "help" => "commandes : help pwd whoami size echo colors exit\r\n".into(),
+            "help" => "commandes : help pwd whoami size echo colors xtest exit\r\n".into(),
             "pwd" => "/\r\n".into(),
             "whoami" => format!("{USER}\r\n"),
             "size" => format!("{}x{}\r\n", self.size.0, self.size.1),
@@ -170,6 +172,15 @@ impl russh::server::Handler for SshHandler {
                 b'\r' | b'\n' => {
                     let cmd = String::from_utf8_lossy(&self.line).to_string();
                     self.line.clear();
+                    if cmd.trim() == "xtest" {
+                        let handle = session.handle();
+                        let cookie = self.x11.clone();
+                        tokio::spawn(async move {
+                            let msg = x11_test(&handle, cookie).await;
+                            let _ = handle.data(channel, format!("\r\n{msg}\r\n$ ").into_bytes()).await;
+                        });
+                        continue;
+                    }
                     let (out, quit) = self.run_command(&cmd);
                     session.data(channel, format!("\r\n{out}").into_bytes())?;
                     if quit {
@@ -198,6 +209,69 @@ impl russh::server::Handler for SshHandler {
         Ok(())
     }
 
+    async fn x11_request(
+        &mut self,
+        channel: ChannelId,
+        _single_connection: bool,
+        _x11_auth_protocol: &str,
+        x11_auth_cookie: &str,
+        _x11_screen_number: u32,
+        session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        self.x11 = Some(x11_auth_cookie.to_string());
+        session.channel_success(channel)?;
+        Ok(())
+    }
+
+    async fn channel_open_direct_tcpip(
+        &mut self,
+        channel: Channel<Msg>,
+        host_to_connect: &str,
+        port_to_connect: u32,
+        _originator_address: &str,
+        _originator_port: u32,
+        reply: russh::server::ChannelOpenHandle,
+        _session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        match tokio::net::TcpStream::connect((host_to_connect, port_to_connect as u16)).await {
+            Ok(mut tcp) => {
+                reply.accept().await;
+                tokio::spawn(async move {
+                    let mut s = channel.into_stream();
+                    let _ = tokio::io::copy_bidirectional(&mut tcp, &mut s).await;
+                });
+            }
+            Err(_) => reply.reject(russh::ChannelOpenFailure::ConnectFailed).await,
+        }
+        Ok(())
+    }
+
+    async fn tcpip_forward(&mut self, address: &str, port: &mut u32, session: &mut Session) -> Result<bool, Self::Error> {
+        let Ok(listener) = TcpListener::bind(("127.0.0.1", *port as u16)).await else { return Ok(false) };
+        let actual = listener.local_addr()?.port() as u32;
+        if *port == 0 {
+            *port = actual;
+        }
+        let handle = session.handle();
+        let addr = address.to_string();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut tcp, peer)) = listener.accept().await else { break };
+                let Ok(ch) = handle
+                    .channel_open_forwarded_tcpip(addr.clone(), actual, peer.ip().to_string(), peer.port() as u32)
+                    .await
+                else {
+                    continue;
+                };
+                tokio::spawn(async move {
+                    let mut s = ch.into_stream();
+                    let _ = tokio::io::copy_bidirectional(&mut tcp, &mut s).await;
+                });
+            }
+        });
+        Ok(true)
+    }
+
     async fn channel_eof(&mut self, channel: ChannelId, session: &mut Session) -> Result<(), Self::Error> {
         session.close(channel)?;
         Ok(())
@@ -219,6 +293,35 @@ impl russh::server::Handler for SshHandler {
             _ => session.channel_failure(channel_id)?,
         }
         Ok(())
+    }
+}
+
+/// Opens an X11 channel to the client, sends an X connection setup carrying the
+/// cookie, then "PING", and reports what the client's X server answered.
+async fn x11_test(handle: &russh::server::Handle, cookie: Option<String>) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let Some(cookie) = cookie else { return "xtest: pas de redirection X11".into() };
+    let data: Vec<u8> =
+        (0..cookie.len()).step_by(2).filter_map(|i| u8::from_str_radix(&cookie[i..i + 2], 16).ok()).collect();
+    let Ok(ch) = handle.channel_open_x11("127.0.0.1", 0).await else { return "xtest: canal X11 refusé".into() };
+    let name = b"MIT-MAGIC-COOKIE-1";
+    let mut setup = vec![b'l', 0, 11, 0, 0, 0];
+    setup.extend((name.len() as u16).to_le_bytes());
+    setup.extend((data.len() as u16).to_le_bytes());
+    setup.extend([0, 0]);
+    setup.extend(name);
+    setup.resize(12 + ((name.len() + 3) & !3), 0);
+    setup.extend(&data);
+    setup.resize(setup.len() + ((4 - data.len() % 4) % 4), 0);
+    setup.extend(b"PING");
+    let mut s = ch.into_stream();
+    if s.write_all(&setup).await.is_err() {
+        return "xtest: écriture impossible".into();
+    }
+    let mut buf = vec![0u8; 256];
+    match tokio::time::timeout(std::time::Duration::from_secs(3), s.read(&mut buf)).await {
+        Ok(Ok(n)) if n > 0 => format!("X11:{}", String::from_utf8_lossy(&buf[..n])),
+        _ => "xtest: pas de réponse".into(),
     }
 }
 

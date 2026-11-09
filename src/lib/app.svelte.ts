@@ -10,7 +10,12 @@ import {
   type LocalShell,
   type Session,
   type Store,
+  type Tunnel,
+  type TunnelStatus,
+  type XServerStatus,
 } from "./api";
+
+type Secrets = { password?: string; passphrase?: string; jump_password?: string; remember?: boolean };
 import type { MenuItem } from "./MenuBar.svelte";
 
 export type TabState = "connecting" | "open" | "closed" | "error";
@@ -64,7 +69,7 @@ export interface Recent {
 }
 
 class App {
-  store: Store = $state({ version: 1, folders: [], sessions: [] });
+  store: Store = $state({ version: 1, folders: [], sessions: [], tunnels: [] });
   tabs: Tab[] = $state([]);
   activeKey: string = $state(HOME);
   sideTab: SideTab = $state("sessions");
@@ -80,6 +85,9 @@ class App {
   alertText = $state("");
   infoText = $state("");
   hostKeys: HostKeyPrompt[] = $state([]);
+  tunnels: TunnelStatus[] = $state([]);
+  showTunnels = $state(false);
+  xserver: XServerStatus | null = $state(null);
   /** Open context menu (right click), if any. */
   ctx: { x: number; y: number; items: MenuItem[] } | null = $state(null);
 
@@ -149,6 +157,114 @@ class App {
   async init() {
     await this.reload().catch((e) => this.alert(asApiError(e).message));
     this.shells = await api.localShells().catch(() => []);
+    await this.refreshX();
+    await this.refreshTunnels();
+    // tunnels marked "start automatically"
+    for (const t of this.tunnels.filter((x) => x.autostart && !x.running)) {
+      await this.startTunnel(t, true);
+    }
+  }
+
+  // ------------------------------------------------------------ X server
+  async refreshX() {
+    this.xserver = await api.xserverStatus().catch(() => null);
+  }
+
+  async toggleX() {
+    try {
+      this.xserver = this.xserver?.running && this.xserver.owned ? await api.xserverStop() : await api.xserverStart();
+      if (this.xserver?.running && !this.xserver.owned && this.xserver.kind !== "native")
+        this.info("Un serveur X tourne déjà sur ce poste (127.0.0.1:0) : il sera utilisé pour la redirection X11.");
+    } catch (e) {
+      this.alert(asApiError(e).message);
+    }
+  }
+
+  // ------------------------------------------------------------ tunnels (manager)
+  async refreshTunnels() {
+    this.tunnels = await api.tunnelsList().catch(() => []);
+  }
+
+  async saveTunnel(t: Tunnel) {
+    try {
+      await api.tunnelSave(t);
+      await this.refreshTunnels();
+    } catch (e) {
+      this.alert(asApiError(e).message);
+    }
+  }
+
+  async deleteTunnel(t: Tunnel) {
+    if (!(await this.confirm(`Supprimer le tunnel « ${t.name} » ?`))) return;
+    await api.tunnelDelete(t.id).catch((e) => this.alert(asApiError(e).message));
+    await this.refreshTunnels();
+  }
+
+  async startTunnel(t: Tunnel, quiet = false) {
+    const s = this.store.sessions.find((x) => x.id === t.session_id);
+    if (!s) {
+      if (!quiet) this.alert(`Le tunnel « ${t.name} » utilise une session SSH qui n'existe plus.`);
+      return;
+    }
+    try {
+      await this.withSecrets(s, (sec) => api.tunnelStart({ id: t.id, ...sec }));
+    } catch (e) {
+      const err = asApiError(e);
+      if (err.kind !== "cancelled") this.alert(`Tunnel « ${t.name} » : ${err.message}`);
+    }
+    await this.refreshTunnels();
+  }
+
+  async stopTunnel(t: Tunnel) {
+    await api.tunnelStop(t.id).catch(() => {});
+    await this.refreshTunnels();
+  }
+
+  /**
+   * Runs `run` and, when the backend needs a secret (password, key passphrase,
+   * jump host password), asks for it and tries again.
+   */
+  async withSecrets<T>(s: Session, run: (sec: Secrets) => Promise<T>, sec: Secrets = {}, note = ""): Promise<T> {
+    try {
+      return await run(sec);
+    } catch (e) {
+      const err = asApiError(e);
+      const who = `${s.username ? s.username + "@" : ""}${s.host}`;
+      const canStore = !!s.id && s.remember_password;
+      const cancelled = { kind: "cancelled", message: "Connexion annulée." };
+      const check = canStore ? "Mémoriser dans le trousseau du système" : undefined;
+      switch (err.kind) {
+        case "need_password": {
+          const r = await this.ask(`${note}Mot de passe pour ${who}`, "", true, check, canStore);
+          if (!r) throw cancelled;
+          return this.withSecrets(s, run, { ...sec, password: r.value, remember: r.checked });
+        }
+        case "need_jump_password": {
+          const ju = s.extra?.jump_user || s.username;
+          const r = await this.ask(`${note}Mot de passe du rebond SSH ${ju ? ju + "@" : ""}${s.extra?.jump_host}`, "", true, check, canStore);
+          if (!r) throw cancelled;
+          return this.withSecrets(s, run, { ...sec, jump_password: r.value, remember: r.checked });
+        }
+        case "need_passphrase": {
+          const r = await this.ask(`${note}Passphrase de la clé ${s.key_path}`, "", true);
+          if (!r) throw cancelled;
+          return this.withSecrets(s, run, { ...sec, passphrase: r.value });
+        }
+        case "auth_failed":
+          if (sec.password !== undefined) return this.withSecrets(s, run, { ...sec, password: undefined }, "⚠ Mot de passe refusé — ");
+          if (sec.passphrase !== undefined) return this.withSecrets(s, run, { ...sec, passphrase: undefined }, "⚠ Clé refusée — ");
+          break;
+        case "jump_auth_failed":
+          if (sec.jump_password !== undefined)
+            return this.withSecrets(s, run, { ...sec, jump_password: undefined }, "⚠ Mot de passe du rebond refusé — ");
+          break;
+        case "ssh":
+          if (sec.passphrase !== undefined && /decrypt|passphrase|crypto/i.test(err.message))
+            return this.withSecrets(s, run, { ...sec, passphrase: undefined }, "⚠ Passphrase incorrecte — ");
+          break;
+      }
+      throw err;
+    }
   }
 
   newSession(folder = "", kind = "ssh") {
@@ -298,55 +414,23 @@ class App {
     this.openSession(s);
   }
 
-  async connect(
-    tab: Tab,
-    extra: { password?: string; passphrase?: string; remember?: boolean } = {},
-    note = "",
-  ): Promise<void> {
+  async connect(tab: Tab): Promise<void> {
     const s = tab.session;
     tab.state = "connecting";
     tab.status = protocol(s.kind).remote ? `Connexion à ${describe(s)}…` : `Démarrage : ${describe(s)}…`;
     try {
       // size is corrected by the terminal right after attaching
-      const connId = await api.termOpen({ session: $state.snapshot(s) as Session, cols: 120, rows: 32, ...extra });
+      const connId = await this.withSecrets(s, (sec) =>
+        api.termOpen({ session: $state.snapshot(s) as Session, cols: 120, rows: 32, ...sec }),
+      );
       tab.connId = connId;
       tab.state = "open";
       tab.status = "";
       if (s.kind === "ssh" && s.sftp_enabled && tab.key === this.activeKey && this.prefs.sidebar) this.sideTab = "sftp";
     } catch (e) {
       const err = asApiError(e);
-      const who = `${s.username ? s.username + "@" : ""}${s.host}`;
-      if (err.kind === "need_password") {
-        const canStore = !!s.id && s.remember_password;
-        const r = await this.ask(
-          `${note}Mot de passe pour ${who}`,
-          "",
-          true,
-          canStore ? "Mémoriser dans le trousseau du système" : undefined,
-          canStore,
-        );
-        if (r) return this.connect(tab, { password: r.value, remember: r.checked });
-        tab.state = "error";
-        tab.status = "Connexion annulée.";
-      } else if (err.kind === "need_passphrase") {
-        const r = await this.ask(`${note}Passphrase de la clé ${s.key_path}`, "", true);
-        if (r) return this.connect(tab, { passphrase: r.value });
-        tab.state = "error";
-        tab.status = "Connexion annulée.";
-      } else if (err.kind === "auth_failed" && extra.password !== undefined) {
-        return this.connect(tab, {}, "⚠ Mot de passe refusé — ");
-      } else if (err.kind === "auth_failed" && extra.passphrase !== undefined) {
-        return this.connect(tab, {}, "⚠ Clé refusée — ");
-      } else if (
-        err.kind === "ssh" &&
-        extra.passphrase !== undefined &&
-        /decrypt|passphrase|crypto/i.test(err.message)
-      ) {
-        return this.connect(tab, {}, "⚠ Passphrase incorrecte — ");
-      } else {
-        tab.state = "error";
-        tab.status = `Échec : ${err.message}`;
-      }
+      tab.state = "error";
+      tab.status = err.kind === "cancelled" ? err.message : `Échec : ${err.message}`;
     }
   }
 

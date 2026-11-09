@@ -27,15 +27,13 @@ async fn fixture() -> Fixture {
 }
 
 fn params(f: &Fixture, password: &str) -> ConnectParams {
-    ConnectParams {
-        host: "127.0.0.1".into(),
-        port: f.port,
-        username: server::USER.into(),
-        credentials: Credentials::Password(password.into()),
-        cols: 80,
-        rows: 24,
-        known_hosts: f.cfg.path().join("known_hosts"),
-    }
+    ConnectParams::simple(
+        "127.0.0.1",
+        f.port,
+        server::USER,
+        Credentials::Password(password.into()),
+        f.cfg.path().join("known_hosts"),
+    )
 }
 
 fn prompter(answer: bool, counter: Arc<AtomicUsize>) -> HostKeyPrompter {
@@ -177,5 +175,194 @@ async fn sftp_full_cycle() {
 
     // the terminal keeps working on the same connection
     conn.write(b"whoami\r").await.unwrap();
+    conn.disconnect().await;
+}
+
+// ---------------------------------------------------------------- tunnels / jump / X11
+
+use orbiterm_lib::config::{Forward, ForwardKind};
+use orbiterm_lib::ssh::{JumpParams, ShellMode};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+/// TCP echo server on a random port.
+async fn echo_server() -> u16 {
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = l.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut s, _)) = l.accept().await else { break };
+            tokio::spawn(async move {
+                let mut buf = [0u8; 1024];
+                loop {
+                    match s.read(&mut buf).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            if s.write_all(&buf[..n]).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                }
+            });
+        }
+    });
+    port
+}
+
+async fn roundtrip(mut s: tokio::net::TcpStream, msg: &[u8]) -> Vec<u8> {
+    s.write_all(msg).await.unwrap();
+    let mut buf = vec![0u8; msg.len()];
+    tokio::time::timeout(Duration::from_secs(5), s.read_exact(&mut buf)).await.expect("timeout").unwrap();
+    buf
+}
+
+#[tokio::test]
+async fn local_forward() {
+    let f = fixture().await;
+    let echo = echo_server().await;
+    let (conn, _) = connect(&f, server::PASSWORD, true, Arc::new(AtomicUsize::new(0))).await.unwrap();
+    let fw = Forward { kind: ForwardKind::Local, bind_host: String::new(), bind_port: 0, dest_host: "127.0.0.1".into(), dest_port: echo };
+    let port = conn.start_forward(&fw).await.unwrap();
+    assert_ne!(port, 0);
+    let s = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    assert_eq!(roundtrip(s, b"via -L").await, b"via -L");
+    assert_eq!(conn.active_forwards().len(), 1);
+    conn.disconnect().await;
+}
+
+#[tokio::test]
+async fn dynamic_socks_forward() {
+    let f = fixture().await;
+    let echo = echo_server().await;
+    let (conn, _) = connect(&f, server::PASSWORD, true, Arc::new(AtomicUsize::new(0))).await.unwrap();
+    let fw = Forward { kind: ForwardKind::Dynamic, bind_port: 0, ..Default::default() };
+    let port = conn.start_forward(&fw).await.unwrap();
+    let mut s = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    // SOCKS5, no auth, CONNECT localhost:echo (domain name form)
+    s.write_all(&[5, 1, 0]).await.unwrap();
+    let mut r = [0u8; 2];
+    s.read_exact(&mut r).await.unwrap();
+    assert_eq!(r, [5, 0]);
+    let mut req = vec![5, 1, 0, 3, 9];
+    req.extend(b"127.0.0.1");
+    req.extend(echo.to_be_bytes());
+    s.write_all(&req).await.unwrap();
+    let mut rep = [0u8; 10];
+    s.read_exact(&mut rep).await.unwrap();
+    assert_eq!(rep[1], 0, "socks connect must succeed");
+    assert_eq!(roundtrip(s, b"via socks").await, b"via socks");
+    conn.disconnect().await;
+}
+
+#[tokio::test]
+async fn remote_forward() {
+    let f = fixture().await;
+    let echo = echo_server().await;
+    let (conn, _) = connect(&f, server::PASSWORD, true, Arc::new(AtomicUsize::new(0))).await.unwrap();
+    let fw = Forward { kind: ForwardKind::Remote, bind_host: String::new(), bind_port: 0, dest_host: "127.0.0.1".into(), dest_port: echo };
+    let port = conn.start_forward(&fw).await.unwrap();
+    assert_ne!(port, 0, "server must report the allocated port");
+    // the (test) server listens on 127.0.0.1:port and sends connections back to us
+    let s = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    assert_eq!(roundtrip(s, b"via -R").await, b"via -R");
+    conn.disconnect().await;
+}
+
+#[tokio::test]
+async fn jump_host_then_target() {
+    let f = fixture().await;
+    let asked = Arc::new(AtomicUsize::new(0));
+    let mut p = params(&f, server::PASSWORD);
+    // the same test server is used as gateway and as target (reached through the gateway)
+    p.jump = Some(JumpParams {
+        host: "127.0.0.1".into(),
+        port: f.port,
+        username: server::USER.into(),
+        credentials: Credentials::Password(server::PASSWORD.into()),
+    });
+    let out: Output = Default::default();
+    let o = out.clone();
+    let conn = SshConnection::connect(p, prompter(true, asked.clone()), Arc::new(move |b| o.lock().unwrap().extend(b)), Arc::new(|_| {}))
+        .await
+        .unwrap();
+    wait_for(&out, "Bienvenue").await;
+    conn.write(b"whoami\r").await.unwrap();
+    wait_for(&out, "test\r\n$").await;
+    // gateway and target share host:port here, so the key is asked once then known
+    assert!(asked.load(Ordering::SeqCst) >= 1);
+    conn.disconnect().await;
+
+    // wrong gateway password -> JumpAuthFailed
+    let mut p = params(&f, server::PASSWORD);
+    p.jump = Some(JumpParams {
+        host: "127.0.0.1".into(),
+        port: f.port,
+        username: server::USER.into(),
+        credentials: Credentials::Password("mauvais".into()),
+    });
+    let r = SshConnection::connect(p, prompter(true, asked), Arc::new(|_| {}), Arc::new(|_| {})).await;
+    assert!(matches!(r, Err(AppError::JumpAuthFailed)), "got {:?}", r.err());
+}
+
+#[tokio::test]
+async fn tunnel_only_connection() {
+    let f = fixture().await;
+    let echo = echo_server().await;
+    let mut p = params(&f, server::PASSWORD);
+    p.mode = ShellMode::None;
+    let conn = SshConnection::connect(p, prompter(true, Arc::new(AtomicUsize::new(0))), Arc::new(|_| {}), Arc::new(|_| {}))
+        .await
+        .unwrap();
+    let fw = Forward { kind: ForwardKind::Local, bind_port: 0, dest_host: "127.0.0.1".into(), dest_port: echo, ..Default::default() };
+    let port = conn.start_forward(&fw).await.unwrap();
+    let s = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    assert_eq!(roundtrip(s, b"tunnel").await, b"tunnel");
+    assert!(!conn.is_closed());
+    conn.disconnect().await;
+}
+
+#[tokio::test]
+async fn x11_forwarding_reaches_local_display() {
+    let f = fixture().await;
+    // fake local X server on 127.0.0.1:(6000+N)
+    let mut found = None;
+    for n in 60..120u16 {
+        if let Ok(l) = tokio::net::TcpListener::bind(("127.0.0.1", 6000 + n)).await {
+            found = Some((n, l));
+            break;
+        }
+    }
+    let (n, listener) = found.expect("no free X display port");
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let s2 = seen.clone();
+    tokio::spawn(async move {
+        let (mut s, _) = listener.accept().await.unwrap();
+        let mut buf = vec![0u8; 512];
+        let mut got = vec![];
+        while !got.ends_with(b"PING") {
+            let n = s.read(&mut buf).await.unwrap();
+            if n == 0 {
+                break;
+            }
+            got.extend_from_slice(&buf[..n]);
+        }
+        *s2.lock().unwrap() = got;
+        s.write_all(b"PONG").await.unwrap();
+    });
+    let mut p = params(&f, server::PASSWORD);
+    p.x11_display = Some(format!("127.0.0.1:{n}"));
+    let out: Output = Default::default();
+    let o = out.clone();
+    let conn = SshConnection::connect(p, prompter(true, Arc::new(AtomicUsize::new(0))), Arc::new(move |b| o.lock().unwrap().extend(b)), Arc::new(|_| {}))
+        .await
+        .unwrap();
+    wait_for(&out, "Bienvenue").await;
+    conn.write(b"xtest\r").await.unwrap();
+    wait_for(&out, "X11:PONG").await;
+    // the fake cookie was replaced: no xauth here, so the authentication is removed
+    let got = seen.lock().unwrap().clone();
+    assert_eq!(&got[..2], &[b'l', 0]);
+    assert_eq!(&got[6..10], &[0, 0, 0, 0], "auth name/data lengths must be zero");
+    assert!(got.ends_with(b"PING"));
     conn.disconnect().await;
 }
