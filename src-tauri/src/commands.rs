@@ -25,6 +25,7 @@ use crate::ssh::{
 use crate::x11;
 use crate::ftp::{FtpConnection, FtpParams, FtpTls};
 use crate::rdp::{self, ExternalProcess, RdpOptions};
+use crate::rdp_client::{self, RdpParams};
 use crate::telnet::{Mode, TcpTermConnection};
 use crate::terminal::Conn;
 use crate::vnc::VncBridge;
@@ -579,7 +580,47 @@ pub async fn term_open(app: AppHandle, state: State<'_, AppState>, args: OpenArg
             let creds = SshSecrets { password: None, passphrase: None, jump_password: args.jump_password.clone(), remember: args.remember };
             let (host, port, gateway) = via_gateway(&app, &state, &session, &creds).await?;
             let opts = RdpOptions::from_session(&session);
-            let conn = if cfg!(windows) {
+            let external = session.opt("rdp_client") == "mstsc";
+            let conn = if !external {
+                // embedded client (default): drawn in the tab, password via the keyring / prompt
+                let password = session_password(&session, &args.password)?;
+                let (mut user, mut domain) = (session.username.trim().to_string(), opts.domain.clone());
+                // "DOMAIN\user" (user@domain.tld is passed as is: CredSSP accepts UPNs)
+                if let Some((d, u)) = user.clone().split_once('\\') {
+                    (domain, user) = (d.to_string(), u.to_string());
+                }
+                let params = RdpParams {
+                    host: host.clone(),
+                    port,
+                    cert_host: session.host.clone(),
+                    cert_port: session.port,
+                    username: user,
+                    password: password.clone(),
+                    domain: if domain.is_empty() { None } else { Some(domain) },
+                    width: opts.width.min(8192) as u16,
+                    height: opts.height.min(8192) as u16,
+                    known_hosts: state.config_dir.join("rdp_known_hosts"),
+                };
+                let prompter = make_prompter(app.clone(), state.hostkey_waiters.clone());
+                match rdp_client::connect(params, prompter, on_close).await {
+                    Ok(s) => {
+                        if args.remember && session.remember_password && !session.id.is_empty() && args.password.is_some() {
+                            let _ = secrets::set_password(&session.id, &password);
+                        }
+                        Conn::Rdp(Arc::new(s))
+                    }
+                    Err(e) => {
+                        if let Some(g) = gateway {
+                            g.disconnect().await;
+                        }
+                        // a stored password that no longer works must be asked again
+                        return Err(match e {
+                            AppError::AuthFailed if args.password.is_none() => AppError::NeedPassword,
+                            e => e,
+                        });
+                    }
+                }
+            } else if cfg!(windows) {
                 let content = rdp::rdp_file(&host, port, &session.username, &opts);
                 let name = format!("orbiterm-{conn_id}");
                 match ExternalProcess::launch_mstsc(&state.config_dir.join("rdp"), &name, &content, on_close) {
@@ -690,6 +731,22 @@ pub async fn term_close(state: State<'_, AppState>, conn_id: String) -> AppResul
         g.disconnect().await;
     }
     Ok(())
+}
+
+#[derive(Serialize)]
+pub struct RdpView {
+    url: String,
+    width: u16,
+    height: u16,
+}
+
+/// WebSocket URL (and desktop size) of an embedded RDP session.
+#[tauri::command]
+pub async fn rdp_url(state: State<'_, AppState>, conn_id: String) -> AppResult<RdpView> {
+    match state.conn(&conn_id).await? {
+        Conn::Rdp(s) => Ok(RdpView { url: s.url(), width: s.desktop.0, height: s.desktop.1 }),
+        _ => Err(AppError::NotFound(conn_id)),
+    }
 }
 
 /// WebSocket URL the VNC viewer connects to.

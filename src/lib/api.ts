@@ -203,13 +203,18 @@ export const PROTOCOLS: Protocol[] = [
 ];
 
 /** How a tab of this kind is displayed. */
-export type TabView = "terminal" | "files" | "vnc" | "external" | "browser";
+export type TabView = "terminal" | "files" | "vnc" | "rdp" | "external" | "browser";
 export const IS_WINDOWS = typeof navigator !== "undefined" && /windows/i.test(navigator.userAgent);
-export function viewOf(kind: string): TabView {
+export function viewOf(s: Pick<Session, "kind" | "extra">): TabView {
+  const kind = s.kind;
   if (kind === "sftp" || kind === "ftp") return "files";
   if (kind === "vnc") return "vnc";
   if (kind === "browser") return "browser";
-  if (kind === "rdp") return IS_WINDOWS ? "external" : "terminal"; // mstsc window / FreeRDP in a PTY
+  if (kind === "rdp") {
+    // embedded client by default; optional external client: mstsc window (Windows) / FreeRDP (elsewhere)
+    if (s.extra?.rdp_client !== "mstsc") return "rdp";
+    return IS_WINDOWS ? "external" : "terminal";
+  }
   return "terminal";
 }
 
@@ -271,6 +276,7 @@ export const api = {
   xserverStop: () => invoke<XServerStatus>("xserver_stop"),
 
   vncUrl: (connId: string) => invoke<string>("vnc_url", { connId }),
+  rdpUrl: (connId: string) => invoke<{ url: string; width: number; height: number }>("rdp_url", { connId }),
   vncPasswordGet: (sessionId: string) => invoke<string | null>("vnc_password_get", { sessionId }),
   vncPasswordSet: (sessionId: string, password: string | null) => invoke<void>("vnc_password_set", { sessionId, password }),
   externalRunning: (connId: string) => invoke<boolean>("external_running", { connId }),

@@ -7,6 +7,7 @@ pub mod error;
 pub mod forward;
 pub mod ftp;
 pub mod rdp;
+pub mod rdp_client;
 pub mod vnc;
 pub mod importer;
 pub mod known_hosts;
@@ -45,6 +46,7 @@ pub fn run() {
             commands::macro_delete,
             commands::config_path,
             commands::vnc_url,
+            commands::rdp_url,
             commands::vnc_password_get,
             commands::vnc_password_set,
             commands::external_running,

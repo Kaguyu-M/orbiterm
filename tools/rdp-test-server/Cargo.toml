@@ -1,0 +1,16 @@
+﻿[package]
+name = "rdp-test-server"
+version = "0.1.0"
+edition = "2024"
+description = "Minimal RDP server (IronRDP) used to test Orbiterm's embedded RDP client"
+publish = false
+
+# standalone: not part of the app's dependency graph
+[workspace]
+
+[dependencies]
+ironrdp-server = { version = "0.13", default-features = false, features = ["helper"] }
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
+async-trait = "0.1"
+rcgen = "0.14"

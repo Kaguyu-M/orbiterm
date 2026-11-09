@@ -7,6 +7,7 @@
   import ExternalView from "$lib/ExternalView.svelte";
   import SftpPanel from "$lib/SftpPanel.svelte";
   import VncView from "$lib/VncView.svelte";
+  import RdpView from "$lib/RdpView.svelte";
   import { app, HOME, SPLIT_LABELS, type SplitMode, type Tab } from "$lib/app.svelte";
   import ImportDialog from "$lib/ImportDialog.svelte";
   import SettingsDialog from "$lib/SettingsDialog.svelte";
@@ -457,7 +458,7 @@
         {/if}
         {#each app.tabs as t (t.key)}
           {@const pi = splitOn ? app.panes.indexOf(t.key) : -1}
-          {@const view = viewOf(t.session.kind)}
+          {@const view = viewOf(t.session)}
           {@const shown = app.activeKey !== HOME && (splitOn ? pi >= 0 : t.key === app.activeKey)}
           <div
             class="termwrap"
@@ -500,6 +501,12 @@
                 {/if}
               {:else if view === "vnc"}
                 <VncView tab={t} active={t.key === app.activeKey} />
+              {:else if view === "rdp"}
+                {#if t.connId}
+                  <RdpView tab={t} active={t.key === app.activeKey} />
+                {:else}
+                  <div class="viewmsg">{t.status || "Connexion au bureau à distance…"}</div>
+                {/if}
               {:else if view === "external"}
                 <ExternalView tab={t} />
               {:else if view === "browser"}

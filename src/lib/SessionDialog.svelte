@@ -4,7 +4,7 @@
   import Modal from "./Modal.svelte";
   import Icon from "./Icon.svelte";
   import { app } from "./app.svelte";
-  import { api, newForward, PROTOCOLS, protocol, type Session } from "./api";
+  import { api, IS_WINDOWS, newForward, PROTOCOLS, protocol, type Session } from "./api";
 
   let { session }: { session: Session } = $props();
 
@@ -225,31 +225,46 @@
             {/if}
           </div>
         {:else if s.kind === "rdp"}
+          {@const ext = x("rdp_client") === "mstsc"}
           <div class="grid">
+            <label class="lbl" for="rcl">Client</label>
+            <select id="rcl" value={x("rdp_client", "embedded")} onchange={(e) => setX("rdp_client", e.currentTarget.value === "mstsc" ? "mstsc" : "")}>
+              <option value="embedded">Intégré à l'onglet (Orbiterm)</option>
+              <option value="mstsc">{IS_WINDOWS ? "Fenêtre séparée : Bureau à distance de Windows (mstsc)" : "Fenêtre séparée : FreeRDP"}</option>
+            </select>
             <label class="lbl" for="rsz">Taille de l'écran distant</label>
             <select id="rsz" value={x("rdp_size", "fit")} onchange={(e) => setX("rdp_size", e.currentTarget.value)}>
-              <option value="fit">Adapter à la fenêtre d'Orbiterm</option>
-              <option value="fullscreen">Plein écran</option>
+              <option value="fit">Adapter à l'onglet (suit le redimensionnement)</option>
+              {#if ext}<option value="fullscreen">Plein écran</option>{/if}
               {#each RDP_SIZES as z (z)}<option value={z}>{z.replace("x", " × ")}</option>{/each}
             </select>
             <label class="lbl" for="rdom">Domaine</label>
-            <input id="rdom" value={x("rdp_domain")} oninput={(e) => setX("rdp_domain", e.currentTarget.value)} placeholder="(aucun)" spellcheck="false" />
-            <span class="lbl">Redirections</span>
-            <div class="row">
-              <label class="chk"><input type="checkbox" checked={x("rdp_clipboard", "1") === "1"} onchange={(e) => setX("rdp_clipboard", e.currentTarget.checked ? "1" : "0")} /> Presse-papiers</label>
-              <label class="chk"><input type="checkbox" checked={x("rdp_drives") === "1"} onchange={(e) => setX("rdp_drives", e.currentTarget.checked ? "1" : "0")} /> Disques locaux</label>
-              <label class="chk"><input type="checkbox" checked={x("rdp_printers") === "1"} onchange={(e) => setX("rdp_printers", e.currentTarget.checked ? "1" : "0")} /> Imprimantes</label>
-            </div>
-            <label class="lbl" for="rsnd">Son</label>
-            <select id="rsnd" value={x("rdp_sound", "local")} onchange={(e) => setX("rdp_sound", e.currentTarget.value)}>
-              <option value="local">Lire sur cet ordinateur</option>
-              <option value="remote">Lire sur l'ordinateur distant</option>
-              <option value="none">Ne pas lire</option>
-            </select>
-            <span class="lbl">Session</span>
-            <label class="chk"><input type="checkbox" checked={x("rdp_admin") === "1"} onchange={(e) => setX("rdp_admin", e.currentTarget.checked ? "1" : "0")} /> Session d'administration (console)</label>
+            <input id="rdom" value={x("rdp_domain")} oninput={(e) => setX("rdp_domain", e.currentTarget.value)} placeholder="(aucun — ou DOMAINE\utilisateur)" spellcheck="false" />
+            {#if !ext}
+              <span class="lbl">Mot de passe</span>
+              <label class="chk"><input type="checkbox" bind:checked={s.remember_password} /> Mémoriser le mot de passe (trousseau du système)</label>
+            {:else}
+              <span class="lbl">Redirections</span>
+              <div class="row">
+                <label class="chk"><input type="checkbox" checked={x("rdp_clipboard", "1") === "1"} onchange={(e) => setX("rdp_clipboard", e.currentTarget.checked ? "1" : "0")} /> Presse-papiers</label>
+                <label class="chk"><input type="checkbox" checked={x("rdp_drives") === "1"} onchange={(e) => setX("rdp_drives", e.currentTarget.checked ? "1" : "0")} /> Disques locaux</label>
+                <label class="chk"><input type="checkbox" checked={x("rdp_printers") === "1"} onchange={(e) => setX("rdp_printers", e.currentTarget.checked ? "1" : "0")} /> Imprimantes</label>
+              </div>
+              <label class="lbl" for="rsnd">Son</label>
+              <select id="rsnd" value={x("rdp_sound", "local")} onchange={(e) => setX("rdp_sound", e.currentTarget.value)}>
+                <option value="local">Lire sur cet ordinateur</option>
+                <option value="remote">Lire sur l'ordinateur distant</option>
+                <option value="none">Ne pas lire</option>
+              </select>
+              <span class="lbl">Session</span>
+              <label class="chk"><input type="checkbox" checked={x("rdp_admin") === "1"} onchange={(e) => setX("rdp_admin", e.currentTarget.checked ? "1" : "0")} /> Session d'administration (console)</label>
+            {/if}
           </div>
-          <p class="muted note">Le mot de passe est demandé par le client Bureau à distance de Windows (mstsc), qui peut le mémoriser ; sous Linux, FreeRDP est utilisé.</p>
+          {#if ext}
+            <p class="muted note">Le bureau s'ouvre dans la fenêtre du client {IS_WINDOWS ? "Bureau à distance de Windows (mstsc), qui demande et peut mémoriser le mot de passe" : "FreeRDP"}.</p>
+          {:else}
+            <p class="muted note">Le bureau distant s'affiche dans l'onglet (authentification NLA, certificat du serveur vérifié comme les clés SSH). Bouton « Plein écran » dans la barre de l'onglet.</p>
+          {/if}
         {:else if s.kind === "vnc"}
           <div class="grid">
             <span class="lbl">Mot de passe</span>

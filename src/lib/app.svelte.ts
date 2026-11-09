@@ -433,7 +433,7 @@ class App {
 
   /** Terminals that receive MultiExec input / macros. */
   targets(): Tab[] {
-    const live = this.tabs.filter((t) => t.state === "open" && t.connId && viewOf(t.session.kind) === "terminal");
+    const live = this.tabs.filter((t) => t.state === "open" && t.connId && viewOf(t.session) === "terminal");
     if (this.multiExec) return live.filter((t) => this.meIncluded(t.key));
     return live.filter((t) => t.key === this.activeKey);
   }
@@ -657,7 +657,9 @@ class App {
         // "adapt to the window": size of the tab area, in physical pixels
         const r = document.querySelector(".terms")?.getBoundingClientRect();
         const k = window.devicePixelRatio || 1;
-        if (r) snap.extra = { ...snap.extra, rdp_w: String(Math.round(r.width * k)), rdp_h: String(Math.round(r.height * k)) };
+        // (the embedded viewer keeps a 28 px toolbar above the desktop)
+        const bar = viewOf(snap) === "rdp" ? 28 : 0;
+        if (r) snap.extra = { ...snap.extra, rdp_w: String(Math.round(r.width * k)), rdp_h: String(Math.round((r.height - bar) * k)) };
       }
       if (snap.kind === "ssh") {
         snap.extra = { ...snap.extra, keepalive: String(this.prefs.keepalive) };

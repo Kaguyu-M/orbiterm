@@ -4,13 +4,13 @@ Terminal multi-protocoles multiplateforme (Windows + Linux) : onglets, sessions 
 X11, RDP, VNC, FTP, navigateur web, écran partagé, MultiExec et macros. Application originale dont l'ergonomie s'inspire de MobaXterm.
 Conception : [`docs/CONCEPTION.md`](docs/CONCEPTION.md).
 
-**Version 0.5.0**
+**Version 0.5.1**
 
 | Domaine | Fonctionnalités |
 |---|---|
 | Sessions | SSH, Telnet, Rlogin, port série, Mosh, shells locaux (PowerShell, cmd, Git Bash…), WSL ; dossiers, glisser-déposer, recherche, connexion rapide, sessions récentes |
 | SSH | mot de passe (trousseau du système) ou clé, vérification des clés d'hôte, navigateur SFTP, compression, commande distante, keepalive |
-| Bureaux distants | RDP (Windows : client mstsc dans sa fenêtre, taille / presse-papiers / lecteurs / imprimantes / son / admin ; Linux : FreeRDP), VNC intégré dans l'onglet (noVNC : mot de passe mémorisable, ajustement, lecture seule, Ctrl+Alt+Suppr, presse-papiers) |
+| Bureaux distants | RDP **intégré dans l'onglet** (client IronRDP : NLA, certificat vérifié comme les clés SSH, mot de passe dans le trousseau, bureau adapté à la taille de l'onglet, plein écran, Ctrl+Alt+Suppr, coller du texte ; option fenêtre séparée mstsc / FreeRDP), VNC intégré dans l'onglet (noVNC : mot de passe mémorisable, ajustement, lecture seule, Ctrl+Alt+Suppr, presse-papiers) |
 | Fichiers | onglets SFTP et FTP / FTPS autonomes (explorateur plein onglet avec colonnes, envoi / téléchargement / glisser-déposer) |
 | Navigateur | onglet web intégré (précédent / suivant / actualiser / barre d'adresse), sans aucun accès aux commandes d'Orbiterm |
 | Réseau | redirections -L / -R / -D (SOCKS) par session, gestionnaire de tunnels (démarrage auto), rebond SSH (jump host, aussi pour RDP / VNC), redirection X11 (VcXsrv / Xming / X natif) |
@@ -26,7 +26,7 @@ intégrés (HTTP, TFTP, FTP, SSH) ; version Linux.
 ## Tester l'application (recette)
 
 ### 1. Installer
-Lance `livrables\Orbiterm_0.5.0_x64-setup.exe`.
+Lance `livrables\Orbiterm_0.5.1_x64-setup.exe`.
 
 > L'installateur n'est pas signé : Windows SmartScreen peut afficher « Windows a protégé votre ordinateur ».
 > Clique sur **Informations complémentaires → Exécuter quand même**.
@@ -37,6 +37,7 @@ avec un mini-shell (`help`, `echo`, `whoami`, `size`, `colors`, `xtest`, `exit`)
 ports et X11. Sa clé change à chaque démarrage : l'alerte « La clé du serveur a CHANGÉ » est alors normale.
 
 - `livrables\serveur-ftp-de-test.exe` : FTP sur `127.0.0.1:2121` (`test` / `test` ou anonyme), dossier `%TEMP%\orbiterm-ftp-test`.
+- `livrables\serveur-rdp-de-test.exe` : RDP sur `127.0.0.1:3390` (`test` / `test`, NLA) ; mire de couleurs, la touche `A` (position physique) peint le bas en jaune, un clic dessine un carré blanc.
 - `livrables\serveur-vnc-de-test.exe` : VNC sur `127.0.0.1:5901` (mot de passe `test`) ; mire de couleurs, la touche `a` peint le bas en jaune, `b` en cyan, un carré blanc suit la souris.
 
 ### Liste de contrôle
@@ -53,7 +54,7 @@ ports et X11. Sa clé change à chaque démarrage : l'alerte « La clé du serve
 | 8 | **Paramètres** : curseur, copie à la sélection, keepalive SSH, démarrage auto du serveur X… |
 | 9 | **Session → FTP** 127.0.0.1:2121 (`test`) puis **SFTP** 127.0.0.1:2222 : explorateur en plein onglet |
 | 10 | **Session → VNC** 127.0.0.1:5901 → mot de passe `test` (cocher « Mémoriser ») → mire ; touche `a` = bas jaune |
-| 11 | **Session → RDP** vers une machine de ton réseau : mstsc s'ouvre ; fermer l'onglet ferme la fenêtre |
+| 11 | **Session → RDP** 127.0.0.1:3390 (`test` / `test`) puis une machine Windows de ton réseau : le bureau s'affiche **dans l'onglet** ; clavier, souris, molette, redimensionnement de la fenêtre, **Plein écran** (survoler le haut de l'écran pour le quitter) |
 | 12 | **Session → Navigateur** : une URL (ex. `https://example.com`) ; ouvrir un menu masque la page le temps du menu |
 | 13 | Fermer / rouvrir : sessions, tunnels, macros et réglages conservés |
 
@@ -76,6 +77,7 @@ npm run tauri build          # installateurs (.msi/.exe sous Windows, .deb/.AppI
 cargo run --example test_server -- 2222   # serveur SSH/SFTP de test (user test / test)
 cargo run --example ftp_test_server        # FTP de test sur 2121
 cargo run --example vnc_test_server        # VNC de test sur 5901 (mot de passe test)
+cd tools/rdp-test-server && cargo run       # RDP de test sur 3390 (test / test) — utilisé par tests/rdp.rs
 ```
 
 ### Structure
@@ -91,7 +93,8 @@ src/                         interface (Svelte 5 + xterm.js)
   lib/SettingsDialog.svelte  configuration générale
   lib/ImportDialog.svelte    import MobaXterm / PuTTY / OpenSSH
   lib/VncView.svelte         visionneuse VNC (noVNC)
-  lib/ExternalView.svelte    onglet d'une session RDP ouverte dans sa fenêtre
+  lib/RdpView.svelte         bureau RDP dans l'onglet (canvas, clavier par scancodes)
+  lib/ExternalView.svelte    onglet d'une session RDP ouverte dans une fenêtre séparée (mstsc)
   lib/BrowserView.svelte     onglet navigateur (webview native enfant)
 src-tauri/src/               backend Rust
   ssh.rs, forward.rs, x11.rs SSH (russh), redirections, X11
@@ -99,9 +102,11 @@ src-tauri/src/               backend Rust
   sftp.rs, known_hosts.rs    SFTP, clés d'hôte
   config.rs, secrets.rs      sessions.toml (écriture atomique), trousseau du système
   importer.rs                import de sessions
-  ftp.rs, rdp.rs, vnc.rs     FTP/FTPS (suppaftp), RDP (mstsc / FreeRDP), pont WebSocket ↔ VNC
+  rdp_client.rs              client RDP intégré (IronRDP) + pont WebSocket vers l'onglet
+  ftp.rs, rdp.rs, vnc.rs     FTP/FTPS (suppaftp), RDP externe (mstsc / FreeRDP), pont WebSocket ↔ VNC
   browser.rs                 webviews enfants du navigateur
   commands.rs                API exposée à l'interface
 src-tauri/examples/                 serveurs de test SSH/SFTP, FTP, VNC
+tools/rdp-test-server/              serveur RDP de test (projet Cargo séparé)
 src-tauri/tests/                    tests de bout en bout
 ```

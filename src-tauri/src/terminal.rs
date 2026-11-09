@@ -6,6 +6,7 @@ use crate::error::{AppError, AppResult};
 use crate::ftp::FtpConnection;
 use crate::pty::PtyConnection;
 use crate::rdp::ExternalProcess;
+use crate::rdp_client::RdpSession;
 use crate::serial::SerialConnection;
 use crate::ssh::SshConnection;
 use crate::telnet::TcpTermConnection;
@@ -23,6 +24,8 @@ pub enum Conn {
     External(Arc<ExternalProcess>),
     /// VNC WebSocket bridge; the SSH gateway (if any) lives inside it
     Vnc(Arc<VncBridge>),
+    /// embedded RDP client (drawn in the tab)
+    Rdp(Arc<RdpSession>),
 }
 
 impl Conn {
@@ -37,7 +40,7 @@ impl Conn {
             Conn::Tcp(c) => c.write(data).await,
             Conn::Serial(c) => c.write(data),
             // no keyboard stream for these (MultiExec / macros skip them silently)
-            Conn::Ftp(_) | Conn::External(_) | Conn::Vnc(_) => Ok(()),
+            Conn::Ftp(_) | Conn::External(_) | Conn::Vnc(_) | Conn::Rdp(_) => Ok(()),
         }
     }
 
@@ -59,6 +62,7 @@ impl Conn {
             Conn::Ftp(c) => c.close().await,
             Conn::External(c) => c.kill(),
             Conn::Vnc(c) => c.stop(),
+            Conn::Rdp(c) => c.close(),
         }
     }
 
