@@ -22,6 +22,7 @@
   import "@xterm/xterm/css/xterm.css";
   import { api, type TerminalSettings } from "./api";
   import { attach } from "./bus";
+  import type { Prefs } from "./app.svelte";
 
   let {
     tabKey,
@@ -29,6 +30,7 @@
     settings,
     active,
     status,
+    prefs,
     oninput,
   }: {
     tabKey: string;
@@ -36,9 +38,12 @@
     settings: TerminalSettings;
     active: boolean;
     status: string;
-    /** Extra listener for typed data (MultiExec). */
+    /** global terminal behaviour (cursor, copy/paste, bell) */
+    prefs: Prefs;
+    /** Extra listener for typed data (MultiExec, macros). */
     oninput?: (data: string) => void;
   } = $props();
+  let flash = $state(false);
 
   const THEMES: Record<string, Record<string, string>> = {
     dark: { background: "#000000", foreground: "#e6e6e6", cursor: "#e6e6e6", selectionBackground: "#4a5a78" },
@@ -82,7 +87,8 @@
       fontFamily: settings.font_family,
       fontSize: settings.font_size,
       scrollback: settings.scrollback,
-      cursorBlink: true,
+      cursorBlink: prefs.cursorBlink,
+      cursorStyle: prefs.cursorStyle,
       allowProposedApi: true,
       theme: THEMES[settings.theme] ?? THEMES.dark,
     });
@@ -123,11 +129,17 @@
     // right click = paste, like most Unix terminals (selection is copied automatically)
     host.addEventListener("contextmenu", (e) => {
       e.preventDefault();
-      paste();
+      if (prefs.rightClickPaste) paste();
     });
     term.onSelectionChange(() => {
+      if (!prefs.copyOnSelect) return;
       const sel = term!.getSelection();
       if (sel) navigator.clipboard.writeText(sel).catch(() => {});
+    });
+    term.onBell(() => {
+      if (!prefs.visualBell) return;
+      flash = true;
+      setTimeout(() => (flash = false), 150);
     });
 
     terminals.set(tabKey, {
@@ -170,6 +182,16 @@
     sendSize();
   });
 
+  // Global settings changed in the configuration dialog.
+  $effect(() => {
+    const style = prefs.cursorStyle;
+    const blink = prefs.cursorBlink;
+    if (term) {
+      term.options.cursorStyle = style;
+      term.options.cursorBlink = blink;
+    }
+  });
+
   // Becoming visible: re-fit and focus.
   $effect(() => {
     if (active && term) {
@@ -190,7 +212,7 @@
   });
 </script>
 
-<div class="term" bind:this={host} style:background={bg} style:--term-bg={bg}></div>
+<div class="term" class:flash bind:this={host} style:background={bg} style:--term-bg={bg}></div>
 
 <style>
   .term {
@@ -198,8 +220,21 @@
     inset: 0;
     padding: 3px 0 0 5px;
   }
+  .term.flash {
+    outline: 3px solid #e5a50a;
+    outline-offset: -3px;
+  }
   .term :global(.xterm) {
     height: 100%;
+  }
+  .term :global(.xterm-viewport::-webkit-scrollbar-track),
+  .term :global(.xterm-viewport::-webkit-scrollbar-corner),
+  .term :global(.xterm-scrollable-element::-webkit-scrollbar-corner) {
+    background: transparent;
+  }
+  .term :global(.xterm-viewport::-webkit-scrollbar-thumb) {
+    background: #555;
+    border-color: transparent;
   }
   .term :global(.xterm-viewport) {
     background-color: var(--term-bg) !important;

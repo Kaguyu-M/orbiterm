@@ -4,6 +4,7 @@ pub mod commands;
 pub mod config;
 pub mod error;
 pub mod forward;
+pub mod importer;
 pub mod known_hosts;
 pub mod pty;
 pub mod secrets;
@@ -34,6 +35,11 @@ pub fn run() {
             commands::folder_save,
             commands::folder_delete,
             commands::password_forget,
+            commands::import_sources,
+            commands::import_run,
+            commands::macro_save,
+            commands::macro_delete,
+            commands::config_path,
             commands::term_open,
             commands::hostkey_answer,
             commands::term_write,

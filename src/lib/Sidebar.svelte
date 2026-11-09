@@ -76,6 +76,13 @@
         { label: "Serveur SSH", icon: "ssh" },
       ],
     },
+    {
+      group: "Orbiterm",
+      items: [
+        { label: "Importer des sessions…", icon: "download", action: () => (app.showImport = true) },
+        { label: "Configuration…", icon: "settings", action: () => (app.showSettings = true) },
+      ],
+    },
   ]);
 </script>
 
@@ -133,8 +140,34 @@
       </div>
 
       <div class="body" class:hide={app.sideTab !== "macros"}>
+        <div class="minibar">
+          {#if app.recording}
+            <button class="rec on" title="Arrêter l'enregistrement" data-macro-stop onclick={() => app.stopRecording()}>
+              <Icon name="stop" size={16} /> <span>Arrêter</span>
+            </button>
+            <span class="recinfo">● {app.recording.steps.length} frappe(s)</span>
+          {:else}
+            <button class="rec" title="Enregistrer les frappes du terminal actif" data-macro-record onclick={() => app.startRecording()}>
+              <Icon name="record" size={16} /> <span>Enregistrer</span>
+            </button>
+          {/if}
+        </div>
         <div class="scroll">
-          <p class="muted pad">L'enregistrement et la lecture de macros arrivent à l'étape « Split / MultiExec / macros ».</p>
+          {#each app.store.macros as m (m.id)}
+            <div class="macro" data-macro={m.name}>
+              <button class="play" title="Rejouer {app.multiExec ? 'dans les terminaux MultiExec' : 'dans le terminal actif'}" aria-label="Rejouer" disabled={app.playing} onclick={() => app.playMacro(m)}>
+                <Icon name="play" size={14} />
+              </button>
+              <span class="mname" title="{m.steps.length} étape(s)">{m.name}</span>
+              <button class="mini" title="Renommer" aria-label="Renommer" onclick={() => app.renameMacro(m)}><Icon name="edit" size={13} /></button>
+              <button class="mini" title="Supprimer" aria-label="Supprimer" onclick={() => app.deleteMacro(m)}><Icon name="trash" size={13} /></button>
+            </div>
+          {:else}
+            <p class="muted pad">
+              Aucune macro. Clique sur « Enregistrer », tape tes commandes dans le terminal actif, puis « Arrêter ». La macro
+              pourra être rejouée dans le terminal actif, ou dans tous les terminaux en mode MultiExec.
+            </p>
+          {/each}
         </div>
       </div>
 
@@ -294,5 +327,42 @@
   }
   .pad {
     padding: 12px;
+  }
+  .minibar .rec {
+    gap: 4px;
+    padding: 2px 6px;
+    margin-top: 4px;
+  }
+  .rec.on {
+    color: var(--danger);
+  }
+  .recinfo {
+    color: var(--danger);
+    font-size: 12px;
+    margin-left: 6px;
+    margin-top: 4px;
+  }
+  .macro {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 6px;
+  }
+  .macro:hover {
+    background: var(--hover);
+  }
+  .mname {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .macro button {
+    padding: 2px 4px;
+    border-color: transparent;
+    background: none;
+  }
+  .macro .play {
+    color: var(--ok);
   }
 </style>

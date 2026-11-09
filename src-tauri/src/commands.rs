@@ -10,7 +10,8 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::{Mutex, oneshot};
 
-use crate::config::{AuthMethod, Folder, Forward, ForwardKind, Session, Store, Tunnel};
+use crate::config::{AuthMethod, Folder, Forward, ForwardKind, Macro, Session, Store, Tunnel};
+use crate::importer;
 use crate::error::{AppError, AppResult};
 use crate::secrets;
 use crate::sftp::{self, Entry};
@@ -104,6 +105,50 @@ pub async fn folder_delete(state: State<'_, AppState>, id: String) -> AppResult<
 #[tauri::command]
 pub async fn password_forget(id: String) -> AppResult<()> {
     secrets::delete_password(&id)
+}
+
+// ---------------------------------------------------------------- import / macros
+
+#[tauri::command]
+pub async fn import_sources() -> AppResult<Vec<importer::ImportSource>> {
+    tokio::task::spawn_blocking(importer::detect).await.map_err(|e| AppError::Conn(e.to_string()))
+}
+
+#[tauri::command]
+pub async fn import_run(
+    state: State<'_, AppState>,
+    source: String,
+    path: Option<String>,
+) -> AppResult<importer::ImportReport> {
+    let (root, batch) =
+        tokio::task::spawn_blocking(move || importer::load(&source, path.as_deref()))
+            .await
+            .map_err(|e| AppError::Conn(e.to_string()))??;
+    let mut store = state.store.lock().await;
+    let report = importer::apply(&mut store, &format!("Import {root}"), batch);
+    store.save(&state.config_dir)?;
+    Ok(report)
+}
+
+#[tauri::command]
+pub async fn macro_save(state: State<'_, AppState>, m: Macro) -> AppResult<Macro> {
+    let mut store = state.store.lock().await;
+    let saved = store.upsert_macro(m);
+    store.save(&state.config_dir)?;
+    Ok(saved)
+}
+
+#[tauri::command]
+pub async fn macro_delete(state: State<'_, AppState>, id: String) -> AppResult<()> {
+    let mut store = state.store.lock().await;
+    store.delete_macro(&id);
+    store.save(&state.config_dir)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn config_path(state: State<'_, AppState>) -> AppResult<String> {
+    Ok(state.config_dir.to_string_lossy().into_owned())
 }
 
 // ---------------------------------------------------------------- ssh
@@ -337,6 +382,8 @@ async fn open_ssh(
         mode,
         x11_display,
         compression: session.opt_bool("compression"),
+        // global setting injected by the UI ("0" disables it)
+        keepalive: session.opt("keepalive").trim().parse().unwrap_or(30),
     };
     let prompter = make_prompter(app.clone(), state.hostkey_waiters.clone());
     match SshConnection::connect(params, prompter, on_data, on_close).await {
@@ -371,11 +418,15 @@ async fn open_ssh(
 #[tauri::command]
 pub async fn term_open(app: AppHandle, state: State<'_, AppState>, args: OpenArgs) -> AppResult<String> {
     // a saved session is authoritative (the UI may hold a stale copy)
-    let session = if args.session.id.is_empty() {
+    let mut session = if args.session.id.is_empty() {
         args.session.clone()
     } else {
         state.store.lock().await.session(&args.session.id).cloned().unwrap_or(args.session.clone())
     };
+    // global settings injected by the UI
+    if let Some(k) = args.session.extra.get("keepalive") {
+        session.extra.insert("keepalive".into(), k.clone());
+    }
     let conn_id = crate::config::new_id("c");
     let (on_data, on_close) = sinks(&app, &conn_id);
 

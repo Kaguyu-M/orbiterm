@@ -8,6 +8,8 @@ import {
   type Folder,
   type HostKeyPrompt,
   type LocalShell,
+  type Macro,
+  type MacroStep,
   type Session,
   type Store,
   type Tunnel,
@@ -15,7 +17,9 @@ import {
   type XServerStatus,
 } from "./api";
 
-type Secrets = { password?: string; passphrase?: string; jump_password?: string; remember?: boolean };
+import { terminals } from "./Terminal.svelte";
+
+type Secrets ={ password?: string; passphrase?: string; jump_password?: string; remember?: boolean };
 import type { MenuItem } from "./MenuBar.svelte";
 
 export type TabState = "connecting" | "open" | "closed" | "error";
@@ -51,7 +55,64 @@ export interface Prefs {
   menubar: boolean;
   statusbar: boolean;
   sidebarWidth: number;
+  // général
+  confirmQuit: boolean;
+  defaultShell: string;
+  // terminal (defaults for new sessions + behaviour of every terminal)
+  termFont: string;
+  termFontSize: number;
+  termTheme: string;
+  termScrollback: number;
+  cursorStyle: "block" | "underline" | "bar";
+  cursorBlink: boolean;
+  copyOnSelect: boolean;
+  rightClickPaste: boolean;
+  visualBell: boolean;
+  // SSH
+  keepalive: number;
+  sshX11: boolean;
+  sshCompression: boolean;
+  sshSftp: boolean;
+  // X11
+  xAutoStart: boolean;
 }
+
+export const DEFAULT_PREFS: Prefs = {
+  sidebar: true,
+  toolbar: true,
+  menubar: true,
+  statusbar: true,
+  sidebarWidth: 280,
+  confirmQuit: true,
+  defaultShell: "",
+  termFont: "Cascadia Mono, Consolas, 'DejaVu Sans Mono', monospace",
+  termFontSize: 14,
+  termTheme: "dark",
+  termScrollback: 10000,
+  cursorStyle: "block",
+  cursorBlink: true,
+  copyOnSelect: true,
+  rightClickPaste: true,
+  visualBell: false,
+  keepalive: 30,
+  sshX11: false,
+  sshCompression: false,
+  sshSftp: true,
+  xAutoStart: true,
+};
+
+/** Screen layouts of the terminal area (Split button). */
+export type SplitMode = "single" | "v2" | "h2" | "grid4" | "all";
+export const SPLIT_LABELS: Record<SplitMode, string> = {
+  single: "Un seul terminal",
+  v2: "Deux terminaux côte à côte",
+  h2: "Deux terminaux l'un sur l'autre",
+  grid4: "Quatre terminaux (grille 2×2)",
+  all: "Tous les terminaux en mosaïque",
+};
+const SPLIT_SLOTS: Record<SplitMode, number> = { single: 1, v2: 2, h2: 2, grid4: 4, all: 0 };
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function loadJson<T>(key: string, fallback: T): T {
   try {
@@ -69,16 +130,29 @@ export interface Recent {
 }
 
 class App {
-  store: Store = $state({ version: 1, folders: [], sessions: [], tunnels: [] });
+  store: Store = $state({ version: 1, folders: [], sessions: [], tunnels: [], macros: [] });
   tabs: Tab[] = $state([]);
   activeKey: string = $state(HOME);
   sideTab: SideTab = $state("sessions");
   editing: Session | null = $state(null);
   shells: LocalShell[] = $state([]);
   recent: Recent[] = $state([]);
-  prefs: Prefs = $state(
-    loadJson(PREFS_KEY, { sidebar: true, toolbar: true, menubar: true, statusbar: true, sidebarWidth: 280 }),
-  );
+  prefs: Prefs = $state(loadJson(PREFS_KEY, DEFAULT_PREFS));
+  showSettings = $state(false);
+  showImport = $state(false);
+
+  // split screen
+  split: SplitMode = $state("single");
+  /** tab keys shown in the split panes, in pane order */
+  panes: string[] = $state([]);
+  private lastPane = 0;
+  // MultiExec: typing in one terminal is sent to every included terminal
+  multiExec = $state(false);
+  meExcluded: string[] = $state([]);
+  private splitBeforeMe: SplitMode = "single";
+  // macro recording
+  recording: { tabKey: string; steps: MacroStep[]; last: number } | null = $state(null);
+  playing = $state(false);
 
   textAsk: TextAsk | null = $state(null);
   confirmAsk: ConfirmAsk | null = $state(null);
@@ -267,8 +341,154 @@ class App {
     }
   }
 
+  /** A new session pre-filled with the global settings. */
+  blank(folder = "", kind = "ssh"): Session {
+    const s = newSession(folder, kind);
+    const p = this.prefs;
+    s.terminal = { font_family: p.termFont, font_size: p.termFontSize, theme: p.termTheme, scrollback: p.termScrollback };
+    if (kind === "ssh") {
+      s.sftp_enabled = p.sshSftp;
+      if (p.sshX11) s.extra.x11 = "1";
+      if (p.sshCompression) s.extra.compression = "1";
+    }
+    return s;
+  }
+
   newSession(folder = "", kind = "ssh") {
-    this.editing = newSession(folder, kind);
+    this.editing = this.blank(folder, kind);
+  }
+
+  // ------------------------------------------------------------ import
+  async importFrom(source: string, path?: string) {
+    const rep = await api.importRun(source, path);
+    await this.reload();
+    return rep;
+  }
+
+  // ------------------------------------------------------------ split screen / MultiExec
+  setSplit(mode: SplitMode) {
+    if (this.multiExec && mode !== "all") this.multiExec = false;
+    this.split = mode;
+    this.syncPanes();
+  }
+
+  /** Keeps `panes` consistent with the open tabs and the active tab. */
+  syncPanes() {
+    const keys = this.tabs.map((t) => t.key);
+    let p = this.panes.filter((k) => keys.includes(k));
+    if (this.split === "all") p = keys;
+    else {
+      const n = SPLIT_SLOTS[this.split];
+      const a = this.activeKey;
+      if (a !== HOME && keys.includes(a)) {
+        const i = p.indexOf(a);
+        if (i >= 0) this.lastPane = i;
+        else if (p.length < n) {
+          p.push(a);
+          this.lastPane = p.length - 1;
+        } else p[Math.min(this.lastPane, n - 1)] = a;
+      }
+      for (const k of keys) {
+        if (p.length >= n) break;
+        if (!p.includes(k)) p.push(k);
+      }
+      p = p.slice(0, n);
+    }
+    if (p.join() !== this.panes.join()) this.panes = p;
+  }
+
+  /** Number of pane slots of the current layout (0 = single). */
+  get slots() {
+    return this.split === "single" ? 0 : this.split === "all" ? this.panes.length : SPLIT_SLOTS[this.split];
+  }
+
+  toggleMultiExec() {
+    if (this.multiExec) {
+      this.multiExec = false;
+      this.setSplit(this.splitBeforeMe);
+    } else {
+      this.splitBeforeMe = this.split;
+      this.meExcluded = [];
+      this.split = "all";
+      this.multiExec = true;
+      this.syncPanes();
+      if (this.activeKey === HOME && this.tabs.length) this.activeKey = this.tabs[0].key;
+    }
+  }
+
+  meIncluded(key: string) {
+    return !this.meExcluded.includes(key);
+  }
+
+  meToggle(key: string) {
+    this.meExcluded = this.meIncluded(key) ? [...this.meExcluded, key] : this.meExcluded.filter((k) => k !== key);
+  }
+
+  /** Terminals that receive MultiExec input / macros. */
+  targets(): Tab[] {
+    const live = this.tabs.filter((t) => t.state === "open" && t.connId);
+    if (this.multiExec) return live.filter((t) => this.meIncluded(t.key));
+    return live.filter((t) => t.key === this.activeKey);
+  }
+
+  /** Called with every chunk typed in a terminal (the terminal already sent it to its own connection). */
+  onInput(tabKey: string, data: string) {
+    const r = this.recording;
+    if (r && r.tabKey === tabKey) {
+      const now = Date.now();
+      r.steps.push({ data, delay_ms: r.steps.length ? now - r.last : 0 });
+      r.last = now;
+    }
+    if (this.multiExec && this.meIncluded(tabKey)) {
+      for (const t of this.targets()) if (t.key !== tabKey) api.termWrite(t.connId!, data).catch(() => {});
+    }
+  }
+
+  // ------------------------------------------------------------ macros
+  startRecording() {
+    if (!this.active || this.active.state !== "open") return this.alert("Ouvre et sélectionne d'abord un terminal connecté.");
+    this.recording = { tabKey: this.active.key, steps: [], last: Date.now() };
+  }
+
+  async stopRecording() {
+    const r = this.recording;
+    this.recording = null;
+    if (!r) return;
+    if (!r.steps.length) return this.info("Aucune frappe n'a été enregistrée.");
+    const name = await this.askText("Nom de la macro", `Macro ${this.store.macros.length + 1}`);
+    if (!name) return;
+    await api.macroSave({ id: "", name, steps: $state.snapshot(r.steps) as MacroStep[] });
+    await this.reload();
+    this.sideTab = "macros";
+    this.prefs.sidebar = true;
+  }
+
+  async playMacro(m: Macro) {
+    const targets = this.targets();
+    if (!targets.length) return this.alert("Aucun terminal connecté pour rejouer la macro.");
+    this.playing = true;
+    try {
+      for (const st of m.steps) {
+        if (st.delay_ms) await sleep(Math.min(st.delay_ms, 1500));
+        for (const t of targets) await api.termWrite(t.connId!, st.data).catch(() => {});
+      }
+    } finally {
+      this.playing = false;
+    }
+    terminals.get(this.activeKey)?.focus();
+  }
+
+  async renameMacro(m: Macro) {
+    const name = await this.askText("Renommer la macro", m.name);
+    if (!name) return;
+    await api.macroSave({ ...($state.snapshot(m) as Macro), name });
+    await this.reload();
+  }
+
+  async deleteMacro(m: Macro) {
+    if (!(await this.confirm(`Supprimer la macro « ${m.name} » ?`))) return;
+    await api.macroDelete(m.id);
+    await this.reload();
   }
 
   async saveSession(s: Session, openAfter = false) {
@@ -358,8 +578,8 @@ class App {
 
   /** Opens a local terminal with the given shell id (default shell when empty). */
   startLocalTerminal(shellId = "") {
-    const sh = this.shells.find((x) => x.id === shellId) ?? this.shells[0];
-    const s = newSession("", "shell");
+    const sh = this.shells.find((x) => x.id === (shellId || this.prefs.defaultShell)) ?? this.shells[0];
+    const s = this.blank("", "shell");
     if (sh?.id.startsWith("wsl:")) {
       s.kind = "wsl";
       s.extra = { distro: sh.id.slice(4) };
@@ -385,7 +605,7 @@ class App {
       const sh = this.shells.find((x) => x.id === parts[0].toLowerCase());
       if (sh && parts.length === 1) return this.startLocalTerminal(sh.id);
     }
-    const s = newSession("", kind);
+    const s = this.blank("", kind);
     if (kind === "serial") {
       s.extra = { serial_port: parts[0] ?? "", baud: parts[1] ?? "115200" };
     } else if (kind === "wsl") {
@@ -419,10 +639,16 @@ class App {
     tab.state = "connecting";
     tab.status = protocol(s.kind).remote ? `Connexion à ${describe(s)}…` : `Démarrage : ${describe(s)}…`;
     try {
+      const snap = $state.snapshot(s) as Session;
+      if (snap.kind === "ssh") {
+        snap.extra = { ...snap.extra, keepalive: String(this.prefs.keepalive) };
+        // like the original: the X server is started on demand for X11 sessions
+        const x = this.xserver;
+        if (snap.extra.x11 === "1" && this.prefs.xAutoStart && x && !x.running && x.kind && x.kind !== "native")
+          this.xserver = await api.xserverStart().catch(() => x);
+      }
       // size is corrected by the terminal right after attaching
-      const connId = await this.withSecrets(s, (sec) =>
-        api.termOpen({ session: $state.snapshot(s) as Session, cols: 120, rows: 32, ...sec }),
-      );
+      const connId = await this.withSecrets(s, (sec) => api.termOpen({ session: snap, cols: 120, rows: 32, ...sec }));
       tab.connId = connId;
       tab.state = "open";
       tab.status = "";

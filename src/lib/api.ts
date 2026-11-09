@@ -86,6 +86,33 @@ export interface Store {
   folders: Folder[];
   sessions: Session[];
   tunnels: Tunnel[];
+  macros: Macro[];
+}
+
+export interface MacroStep {
+  data: string;
+  delay_ms: number;
+}
+
+export interface Macro {
+  id: string;
+  name: string;
+  steps: MacroStep[];
+}
+
+export interface ImportSource {
+  id: string;
+  label: string;
+  path: string;
+  count: number;
+}
+
+export interface ImportReport {
+  source: string;
+  added: number;
+  duplicates: number;
+  folders: number;
+  skipped: string[];
 }
 
 export interface Entry {
@@ -195,6 +222,11 @@ export const api = {
   folderSave: (folder: Folder) => invoke<Folder>("folder_save", { folder }),
   folderDelete: (id: string) => invoke<void>("folder_delete", { id }),
   passwordForget: (id: string) => invoke<void>("password_forget", { id }),
+  importSources: () => invoke<ImportSource[]>("import_sources"),
+  importRun: (source: string, path?: string) => invoke<ImportReport>("import_run", { source, path }),
+  macroSave: (m: Macro) => invoke<Macro>("macro_save", { m }),
+  macroDelete: (id: string) => invoke<void>("macro_delete", { id }),
+  configPath: () => invoke<string>("config_path"),
 
   termOpen: (args: {
     session: Session;

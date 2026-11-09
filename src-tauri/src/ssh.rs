@@ -86,6 +86,8 @@ pub struct ConnectParams {
     /// local DISPLAY to forward X11 to (None = no X11 forwarding)
     pub x11_display: Option<String>,
     pub compression: bool,
+    /// keepalive interval in seconds (0 = disabled)
+    pub keepalive: u32,
 }
 
 impl ConnectParams {
@@ -103,6 +105,7 @@ impl ConnectParams {
             mode: ShellMode::Shell,
             x11_display: None,
             compression: false,
+            keepalive: 30,
         }
     }
 }
@@ -269,9 +272,9 @@ async fn x11_pump(channel: Channel<Msg>, f: X11Fwd) {
     let _ = remote.shutdown().await;
 }
 
-fn client_config(compression: bool) -> Arc<client::Config> {
+fn client_config(compression: bool, keepalive: u32) -> Arc<client::Config> {
     let mut cfg = client::Config {
-        keepalive_interval: Some(Duration::from_secs(30)),
+        keepalive_interval: (keepalive > 0).then(|| Duration::from_secs(keepalive as u64)),
         keepalive_max: 3,
         ..Default::default()
     };
@@ -354,7 +357,7 @@ impl SshConnection {
         on_data: DataSink,
         on_close: CloseSink,
     ) -> AppResult<Arc<SshConnection>> {
-        let config = client_config(p.compression);
+        let config = client_config(p.compression, p.keepalive);
         let shared = Arc::new(Shared::default());
 
         // optional jump host (ProxyJump), authenticated with its own credentials

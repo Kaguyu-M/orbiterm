@@ -1,9 +1,11 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import { listen } from "@tauri-apps/api/event";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { api, describe, forwardLabel, protocol, type HostKeyPrompt } from "$lib/api";
-  import { app, HOME, type Tab } from "$lib/app.svelte";
+  import { app, HOME, SPLIT_LABELS, type SplitMode, type Tab } from "$lib/app.svelte";
+  import ImportDialog from "$lib/ImportDialog.svelte";
+  import SettingsDialog from "$lib/SettingsDialog.svelte";
   import { startBus, onConnectionClosed } from "$lib/bus";
   import ContextMenu from "$lib/ContextMenu.svelte";
   import HomeTab from "$lib/HomeTab.svelte";
@@ -40,8 +42,40 @@
     return list.slice(0, 40).map((s) => ({ label: s.name, icon: protocol(s.kind).icon, action: () => app.openSession(s) }));
   }
 
+  function splitItems(): MenuItem[] {
+    return (Object.keys(SPLIT_LABELS) as SplitMode[]).map((m) => ({
+      label: SPLIT_LABELS[m],
+      icon: m === "single" ? "terminal" : "split",
+      checked: app.split === m,
+      action: () => app.setSplit(m),
+    }));
+  }
+
+  function macroItems(): MenuItem[] {
+    const list: MenuItem[] = app.store.macros.map((m) => ({
+      label: `Rejouer : ${m.name}`,
+      icon: "play",
+      disabled: app.playing,
+      action: () => app.playMacro(m),
+    }));
+    return [
+      app.recording
+        ? { label: "Arrêter l'enregistrement", icon: "stop", action: () => app.stopRecording() }
+        : { label: "Enregistrer une macro", icon: "record", disabled: !app.active, action: () => app.startRecording() },
+      { label: "Gérer les macros", icon: "macro", action: () => openSide("macros") },
+      ...(list.length ? [{ sep: true } as MenuItem, ...list] : []),
+    ];
+  }
+
+  function openSide(t: "sessions" | "tools" | "macros") {
+    app.sideTab = t;
+    app.prefs.sidebar = true;
+  }
+
   function viewItems(): MenuItem[] {
     return [
+      ...splitItems(),
+      { sep: true },
       { label: "Barre latérale", checked: app.prefs.sidebar, shortcut: "Ctrl+Maj+B", action: () => togglePref("sidebar") },
       { label: "Barre d'outils", checked: app.prefs.toolbar, action: () => togglePref("toolbar") },
       { label: "Barre de menus", checked: app.prefs.menubar, action: () => togglePref("menubar") },
@@ -71,6 +105,8 @@
         { label: "Tout sélectionner", disabled: !app.active, action: () => term()?.selectAll() },
         { label: "Effacer l'historique", disabled: !app.active, action: () => term()?.clear() },
         { sep: true },
+        { label: "MultiExec (saisie dans tous les terminaux)", icon: "multiexec", checked: app.multiExec, disabled: !app.tabs.length, action: () => app.toggleMultiExec() },
+        { sep: true },
         { label: "Renommer l'onglet", icon: "edit", disabled: !app.active, action: () => app.active && app.renameTab(app.active) },
         { label: "Dupliquer l'onglet", icon: "copy", disabled: !app.active, action: () => app.active && app.duplicateTab(app.active) },
         { label: "Reconnecter", icon: "refresh", disabled: !app.active, action: () => app.active && app.reconnect(app.active) },
@@ -86,7 +122,7 @@
         { label: "Nouveau dossier", icon: "newfolder", action: () => app.newFolder("") },
         { label: "Connexion rapide…", icon: "search", action: focusQuick },
         { sep: true },
-        { label: "Importer depuis MobaXterm / PuTTY" + SOON, disabled: true },
+        { label: "Importer des sessions (MobaXterm, PuTTY, OpenSSH)…", icon: "download", action: () => (app.showImport = true) },
         { sep: true },
         ...sessionItems(),
       ],
@@ -121,18 +157,13 @@
     {
       label: "Paramètres",
       items: () => [
-        { label: "Configuration générale" + SOON, icon: "settings", disabled: true },
+        { label: "Configuration…", icon: "settings", action: () => (app.showSettings = true) },
+        { label: "Importer des sessions…", icon: "download", action: () => (app.showImport = true) },
         { sep: true },
         { label: "Afficher la barre latérale", checked: app.prefs.sidebar, action: () => togglePref("sidebar") },
       ],
     },
-    {
-      label: "Macros",
-      items: () => [
-        { label: "Enregistrer une macro" + SOON, icon: "record", disabled: true },
-        { label: "Gérer les macros" + SOON, icon: "macro", disabled: true },
-      ],
-    },
+    { label: "Macros", items: macroItems },
     {
       label: "Aide",
       items: () => [
@@ -171,11 +202,19 @@
     },
     { id: "sessions", label: "Sessions", icon: "sessions", title: "Sessions enregistrées", action: (e: MouseEvent) => dropMenu(e, sessionItems()) },
     { id: "view", label: "Affichage", icon: "view", action: (e: MouseEvent) => dropMenu(e, viewItems()) },
-    { id: "split", label: "Split", icon: "split", title: "Écran partagé" + SOON, disabled: true, action: () => {} },
-    { id: "multiexec", label: "MultiExec", icon: "multiexec", title: "Saisie simultanée dans tous les terminaux" + SOON, disabled: true, action: () => {} },
+    { id: "split", label: "Split", icon: "split", title: "Écran partagé", active: app.split !== "single", action: (e: MouseEvent) => dropMenu(e, splitItems()) },
+    {
+      id: "multiexec",
+      label: "MultiExec",
+      icon: "multiexec",
+      title: "Saisie simultanée dans tous les terminaux",
+      active: app.multiExec,
+      disabled: !app.tabs.length && !app.multiExec,
+      action: () => app.toggleMultiExec(),
+    },
     { id: "tunnel", label: "Tunnels", icon: "tunnel", title: "Gestionnaire de tunnels SSH", action: openTunnels },
     { id: "packages", label: "Paquets", icon: "packages", title: "Gestion de paquets" + SOON, disabled: true, action: () => {} },
-    { id: "settings", label: "Paramètres", icon: "settings", title: "Configuration" + SOON, disabled: true, action: () => {} },
+    { id: "settings", label: "Paramètres", icon: "settings", title: "Configuration", action: () => (app.showSettings = true) },
     { id: "help", label: "Aide", icon: "help", action: () => (about = true) },
   ]);
   const toolsRight: ToolButton[] = $derived([
@@ -210,7 +249,7 @@
 
   async function quit() {
     const open = app.tabs.filter((t) => t.state === "open").length;
-    if (open && !(await app.confirm(`${open} session(s) ouverte(s). Quitter quand même ?`))) return;
+    if (open && app.prefs.confirmQuit && !(await app.confirm(`${open} session(s) ouverte(s). Quitter quand même ?`))) return;
     await app.closeAllTabs();
     await getCurrentWindow().close();
   }
@@ -297,6 +336,26 @@
     }
   }
 
+  // ------------------------------------------------------------ split screen
+  const splitOn = $derived(app.split !== "single");
+
+  function paneRect(i: number) {
+    const n = Math.max(1, app.slots);
+    const cols = app.split === "v2" || app.split === "grid4" ? 2 : app.split === "h2" ? 1 : Math.ceil(Math.sqrt(n));
+    const rows = Math.max(1, Math.ceil(n / cols));
+    const c = i % cols;
+    const r = Math.floor(i / cols);
+    return `left:${(c * 100) / cols}%;top:${(r * 100) / rows}%;width:${100 / cols}%;height:${100 / rows}%`;
+  }
+
+  $effect(() => {
+    // re-run on tab list / active tab / layout changes
+    void app.tabs.map((t) => t.key).join();
+    void app.activeKey;
+    void app.split;
+    untrack(() => app.syncPanes());
+  });
+
   const stateLabel: Record<string, string> = { connecting: "connexion…", open: "connecté", closed: "terminé", error: "erreur" };
 
   onMount(() => {
@@ -373,17 +432,66 @@
         </button>
       </div>
 
-      <div class="terms">
+      {#if app.multiExec}
+        <div class="mebar" data-multiexec>
+          <Icon name="multiexec" size={16} />
+          <span>
+            <b>MultiExec</b> — ce que tu tapes est envoyé à {app.targets().length} terminal(aux). Décoche un terminal pour l'exclure.
+          </span>
+          <button onclick={() => app.toggleMultiExec()}>Quitter MultiExec</button>
+        </div>
+      {/if}
+
+      <div class="terms" class:split={splitOn}>
         <div class="termwrap" class:hide={app.activeKey !== HOME}><HomeTab /></div>
+        {#if splitOn && app.activeKey !== HOME}
+          {#each { length: Math.max(0, app.slots - app.panes.length) } as _, j (j)}
+            <div class="termwrap pane empty" style={paneRect(app.panes.length + j)}>
+              <span>Sélectionne un onglet pour l'afficher ici</span>
+            </div>
+          {/each}
+        {/if}
         {#each app.tabs as t (t.key)}
-          <div class="termwrap" class:hide={t.key !== app.activeKey} data-conn={t.connId ?? ""}>
-            <Terminal tabKey={t.key} connId={t.connId} settings={t.session.terminal} active={t.key === app.activeKey} status={t.status} />
-            {#if t.state === "closed" || t.state === "error"}
-              <div class="overlay">
-                <button class="primary" onclick={() => app.reconnect(t)}><Icon name="refresh" size={14} /> Redémarrer la session</button>
-                <button onclick={() => app.closeTab(t)}>Fermer l'onglet</button>
+          {@const pi = splitOn ? app.panes.indexOf(t.key) : -1}
+          <div
+            class="termwrap"
+            class:pane={splitOn}
+            class:focus={splitOn && t.key === app.activeKey}
+            class:hide={splitOn ? pi < 0 || app.activeKey === HOME : t.key !== app.activeKey}
+            style={pi >= 0 ? paneRect(pi) : ""}
+            data-conn={t.connId ?? ""}
+            data-pane={pi >= 0 ? pi : null}
+            onpointerdowncapture={() => splitOn && (app.activeKey = t.key)}
+          >
+            {#if splitOn}
+              <div class="phead">
+                <span class="dot {t.state}"></span>
+                <Icon name={protocol(t.session.kind).icon} size={13} />
+                <span class="ptitle">{t.title}</span>
+                {#if app.multiExec}
+                  <label class="mechk" title="Recevoir la saisie MultiExec">
+                    <input type="checkbox" checked={app.meIncluded(t.key)} onchange={() => app.meToggle(t.key)} /> saisie
+                  </label>
+                {/if}
               </div>
             {/if}
+            <div class="tbody" class:withhead={splitOn}>
+              <Terminal
+                tabKey={t.key}
+                connId={t.connId}
+                settings={t.session.terminal}
+                active={t.key === app.activeKey}
+                status={t.status}
+                prefs={app.prefs}
+                oninput={(d) => app.onInput(t.key, d)}
+              />
+              {#if t.state === "closed" || t.state === "error"}
+                <div class="overlay">
+                  <button class="primary" onclick={() => app.reconnect(t)}><Icon name="refresh" size={14} /> Redémarrer la session</button>
+                  <button onclick={() => app.closeTab(t)}>Fermer l'onglet</button>
+                </div>
+              {/if}
+            </div>
           </div>
         {/each}
       </div>
@@ -401,6 +509,12 @@
           Accueil
         {/if}
       </span>
+      {#if app.recording}
+        <button class="cell link rec" title="Arrêter l'enregistrement de la macro" onclick={() => app.stopRecording()}>
+          ● Enregistrement macro ({app.recording.steps.length})
+        </button>
+      {/if}
+      {#if app.multiExec}<span class="cell"><Icon name="multiexec" size={13} /> MultiExec</span>{/if}
       <span class="cell">{app.tabs.length} onglet(s) · {app.store.sessions.length} session(s) enregistrée(s)</span>
       {#if app.tunnels.some((t) => t.running)}
         <button class="cell link" title="Gestionnaire de tunnels" onclick={openTunnels}>
@@ -422,6 +536,14 @@
 
 {#if app.showTunnels}
   <TunnelManager />
+{/if}
+
+{#if app.showSettings}
+  <SettingsDialog />
+{/if}
+
+{#if app.showImport}
+  <ImportDialog />
 {/if}
 
 {#if app.hostKeys.length}
@@ -753,6 +875,73 @@
   .termwrap {
     position: absolute;
     inset: 0;
+  }
+  .tbody {
+    position: absolute;
+    inset: 0;
+  }
+  .tbody.withhead {
+    top: 20px;
+  }
+  .termwrap.pane {
+    inset: auto;
+    box-sizing: border-box;
+    border: 1px solid #3a3a3a;
+  }
+  .termwrap.pane.focus {
+    border-color: var(--accent);
+  }
+  .termwrap.empty {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #777;
+    background: #111;
+  }
+  .phead {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    height: 20px;
+    padding: 0 6px;
+    background: #d9d9d9;
+    color: #222;
+    font-size: 11.5px;
+    user-select: none;
+  }
+  .pane.focus .phead {
+    background: #cce4f7;
+  }
+  .ptitle {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .mechk {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+  }
+  .mechk input {
+    margin: 0;
+  }
+  .mebar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 3px 8px;
+    background: #fff4c2;
+    border-bottom: 1px solid #e0c96a;
+  }
+  .mebar span {
+    flex: 1;
+  }
+  .mebar button {
+    padding: 1px 8px;
+  }
+  button.cell.rec {
+    color: var(--danger);
   }
   .overlay {
     position: absolute;

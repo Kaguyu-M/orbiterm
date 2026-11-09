@@ -113,6 +113,23 @@ pub struct Tunnel {
     pub autostart: bool,
 }
 
+/// One recorded chunk of keyboard input, sent `delay_ms` after the previous one.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(default)]
+pub struct MacroStep {
+    pub data: String,
+    pub delay_ms: u32,
+}
+
+/// A keyboard macro (recorded in a terminal, replayed in one or several).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(default)]
+pub struct Macro {
+    pub id: String,
+    pub name: String,
+    pub steps: Vec<MacroStep>,
+}
+
 impl Session {
     pub fn opt(&self, key: &str) -> &str {
         self.extra.get(key).map(String::as_str).unwrap_or("")
@@ -141,11 +158,13 @@ pub struct Store {
     pub sessions: Vec<Session>,
     #[serde(default)]
     pub tunnels: Vec<Tunnel>,
+    #[serde(default)]
+    pub macros: Vec<Macro>,
 }
 
 impl Default for Store {
     fn default() -> Self {
-        Self { version: STORE_VERSION, folders: vec![], sessions: vec![], tunnels: vec![] }
+        Self { version: STORE_VERSION, folders: vec![], sessions: vec![], tunnels: vec![], macros: vec![] }
     }
 }
 
@@ -260,6 +279,32 @@ impl Store {
 
     pub fn delete_tunnel(&mut self, id: &str) {
         self.tunnels.retain(|t| t.id != id);
+    }
+
+    pub fn upsert_macro(&mut self, mut m: Macro) -> Macro {
+        if m.id.is_empty() {
+            m.id = new_id("m");
+        }
+        match self.macros.iter_mut().find(|x| x.id == m.id) {
+            Some(existing) => *existing = m.clone(),
+            None => self.macros.push(m.clone()),
+        }
+        m
+    }
+
+    pub fn delete_macro(&mut self, id: &str) {
+        self.macros.retain(|m| m.id != id);
+    }
+
+    /// Returns the id of the folder `name` under `parent`, creating it when missing.
+    pub fn ensure_folder(&mut self, parent: &str, name: &str) -> String {
+        if let Some(f) = self.folders.iter().find(|f| f.parent == parent && f.name == name) {
+            return f.id.clone();
+        }
+        let f = Folder { id: new_id("f"), name: name.to_string(), parent: parent.to_string() };
+        let id = f.id.clone();
+        self.folders.push(f);
+        id
     }
 
     pub fn session(&self, id: &str) -> AppResult<&Session> {
