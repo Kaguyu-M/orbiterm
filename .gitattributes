@@ -1,0 +1,5 @@
+# LF everywhere (the Nix package hashes package-lock.json; Windows checkouts must not turn it into CRLF)
+* text=auto eol=lf
+*.png binary
+*.ico binary
+*.icns binary
