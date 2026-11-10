@@ -243,6 +243,14 @@
             {#if !ext}
               <span class="lbl">Mot de passe</span>
               <label class="chk"><input type="checkbox" bind:checked={s.remember_password} /> Mémoriser le mot de passe (trousseau du système)</label>
+              <label class="lbl" for="ros">Système distant</label>
+              <select id="ros" value={x("rdp_os")} onchange={(e) => setX("rdp_os", e.currentTarget.value)}>
+                <option value="">Non précisé (choisi à la fermeture de session)</option>
+                <option value="windows">Windows</option>
+                <option value="linux">Linux (xrdp)</option>
+              </select>
+              <span class="lbl">Infos système</span>
+              <label class="chk" title="CPU, mémoire, disque, réseau : lus par SSH (port 22) avec le même compte, si le poste l'accepte"><input type="checkbox" checked={x("rdp_monitor") !== "0"} onchange={(e) => setX("rdp_monitor", e.currentTarget.checked ? "" : "0")} /> Afficher les informations du poste distant (via SSH, même compte)</label>
             {:else}
               <span class="lbl">Redirections</span>
               <div class="row">

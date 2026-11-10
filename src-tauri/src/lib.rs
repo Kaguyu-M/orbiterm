@@ -10,6 +10,7 @@ pub mod rdp;
 pub mod rdp_client;
 pub mod vnc;
 pub mod importer;
+pub mod monitor;
 pub mod known_hosts;
 pub mod nettools;
 pub mod pty;
@@ -50,6 +51,7 @@ pub fn run() {
             commands::folder_delete,
             commands::password_forget,
             commands::password_copy,
+            commands::monitor_sample,
             commands::import_sources,
             commands::import_run,
             commands::macro_save,

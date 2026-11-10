@@ -41,6 +41,16 @@ pub struct AppState {
     pub gateways: Mutex<HashMap<String, Arc<SshConnection>>>,
     /// built-in HTTP / TFTP / FTP / SSH servers
     pub servers: crate::servers::ServerManager,
+    /// system information of RDP tabs (SSH to the same host), by connection id
+    pub monitors: Mutex<HashMap<String, MonitorSlot>>,
+}
+
+/// SSH access used to read the system information of an RDP host.
+pub enum MonitorSlot {
+    /// not tried yet: host and credentials of the RDP session
+    Pending { host: String, username: String, password: String },
+    Ready(Arc<SshConnection>),
+    Unavailable(String),
 }
 
 /// Remote file access of a tab: SFTP (SSH sessions) or FTP.
@@ -60,6 +70,7 @@ impl AppState {
             hostkey_waiters: Arc::new(Mutex::new(HashMap::new())),
             tunnels: Mutex::new(HashMap::new()),
             gateways: Mutex::new(HashMap::new()),
+            monitors: Mutex::new(HashMap::new()),
         })
     }
 
@@ -633,6 +644,17 @@ pub async fn term_open(app: AppHandle, state: State<'_, AppState>, args: OpenArg
                         if args.remember && session.remember_password && !session.id.is_empty() && args.password.is_some() {
                             let _ = secrets::set_password(&session.id, &password);
                         }
+                        // system information: SSH to the same host with the same account (on demand)
+                        let slot = if session.opt("rdp_monitor") == "0" {
+                            MonitorSlot::Unavailable("informations système désactivées pour cette session".into())
+                        } else if gateway.is_some() {
+                            MonitorSlot::Unavailable("session via un rebond SSH : informations système indisponibles".into())
+                        } else {
+                            let u = session.username.trim();
+                            let u = u.rsplit_once('\\').map(|(_, u)| u).unwrap_or(u);
+                            MonitorSlot::Pending { host: session.host.clone(), username: u.to_string(), password: password.clone() }
+                        };
+                        state.monitors.lock().await.insert(conn_id.clone(), slot);
                         Conn::Rdp(Arc::new(s))
                     }
                     Err(e) => {
@@ -756,7 +778,71 @@ pub async fn term_close(state: State<'_, AppState>, conn_id: String) -> AppResul
     if let Some(g) = gateway {
         g.disconnect().await;
     }
+    let monitor = state.monitors.lock().await.remove(&conn_id);
+    if let Some(MonitorSlot::Ready(m)) = monitor {
+        m.disconnect().await;
+    }
     Ok(())
+}
+
+/// System information of the remote host of a tab (SSH session, or RDP session
+/// whose host also accepts SSH with the same account).
+#[tauri::command]
+pub async fn monitor_sample(app: AppHandle, state: State<'_, AppState>, conn_id: String) -> AppResult<crate::monitor::RemoteStats> {
+    let direct = match state.conns.lock().await.get(&conn_id) {
+        Some(Conn::Ssh(c)) => Some(c.clone()),
+        Some(Conn::Rdp(_)) => None,
+        Some(_) => return Err(AppError::Unsupported("pas d'informations système pour ce type de session".into())),
+        None => return Err(AppError::Conn("connexion fermée".into())),
+    };
+    let ssh = match direct {
+        Some(c) => c,
+        None => {
+            // RDP: one SSH connection per tab, opened on the first request
+            let mut monitors = state.monitors.lock().await;
+            let slot = monitors
+                .remove(&conn_id)
+                .unwrap_or_else(|| MonitorSlot::Unavailable("informations système désactivées pour cette session".into()));
+            let (slot, res) = match slot {
+                MonitorSlot::Ready(c) => (MonitorSlot::Ready(c.clone()), Ok(c)),
+                MonitorSlot::Unavailable(m) => (MonitorSlot::Unavailable(m.clone()), Err(m)),
+                MonitorSlot::Pending { host, username, password } => {
+                    match open_monitor(&app, &state, &host, &username, &password).await {
+                        Ok(c) => (MonitorSlot::Ready(c.clone()), Ok(c)),
+                        Err(m) => (MonitorSlot::Unavailable(m.clone()), Err(m)),
+                    }
+                }
+            };
+            monitors.insert(conn_id.clone(), slot);
+            res.map_err(AppError::Unsupported)?
+        }
+    };
+    let out = ssh.exec_capture(&crate::monitor::command(), std::time::Duration::from_secs(10)).await?;
+    Ok(crate::monitor::parse(&out))
+}
+
+async fn open_monitor(app: &AppHandle, state: &AppState, host: &str, username: &str, password: &str) -> Result<Arc<SshConnection>, String> {
+    // quick probe: most desktops do not run an SSH server
+    let probe = tokio::time::timeout(std::time::Duration::from_secs(3), tokio::net::TcpStream::connect((host, 22))).await;
+    if !matches!(probe, Ok(Ok(_))) {
+        return Err(format!("aucun accès SSH sur {host} (port 22 fermé) : CPU / mémoire indisponibles"));
+    }
+    let mut p = crate::ssh::ConnectParams::simple(
+        host,
+        22,
+        username,
+        Credentials::Password(password.to_string()),
+        state.config_dir.join("known_hosts"),
+    );
+    p.mode = ShellMode::None;
+    let prompter = make_prompter(app.clone(), state.hostkey_waiters.clone());
+    let on_data: DataSink = Arc::new(|_| {});
+    let on_close: CloseSink = Arc::new(|_| {});
+    SshConnection::connect(p, prompter, on_data, on_close).await.map_err(|e| match e {
+        AppError::AuthFailed | AppError::NeedPassword => "SSH : le compte RDP est refusé, informations système indisponibles".to_string(),
+        AppError::HostKeyRejected => "clé SSH refusée : informations système indisponibles".to_string(),
+        e => format!("SSH : {e}"),
+    })
 }
 
 #[derive(Serialize)]

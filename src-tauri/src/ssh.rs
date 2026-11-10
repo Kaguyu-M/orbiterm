@@ -472,6 +472,31 @@ impl SshConnection {
         Ok(s)
     }
 
+    /// Runs a command on a separate channel (no PTY) and returns its standard output.
+    pub async fn exec_capture(&self, cmd: &str, timeout: Duration) -> AppResult<String> {
+        let mut ch = self.handle.channel_open_session().await?;
+        ch.exec(true, cmd).await?;
+        let mut out = Vec::new();
+        let read = async {
+            while let Some(m) = ch.wait().await {
+                match m {
+                    ChannelMsg::Data { data } => {
+                        if out.len() < 1 << 20 {
+                            out.extend_from_slice(&data);
+                        }
+                    }
+                    ChannelMsg::Eof | ChannelMsg::Close => break,
+                    _ => {}
+                }
+            }
+        };
+        if tokio::time::timeout(timeout, read).await.is_err() {
+            let _ = ch.close().await;
+            return Err(AppError::Timeout);
+        }
+        Ok(String::from_utf8_lossy(&out).into_owned())
+    }
+
     /// Starts a port forwarding on this connection. Returns the listening port.
     pub async fn start_forward(&self, f: &Forward) -> AppResult<u16> {
         let port = match f.kind {

@@ -76,6 +76,8 @@ export interface Prefs {
   sshX11: boolean;
   sshCompression: boolean;
   sshSftp: boolean;
+  /** information bar (CPU, RAM…) under SSH terminals */
+  sshMonitor: boolean;
   // X11
   xAutoStart: boolean;
   // apparence de l'interface
@@ -103,6 +105,7 @@ export const DEFAULT_PREFS: Prefs = {
   sshX11: false,
   sshCompression: false,
   sshSftp: true,
+  sshMonitor: true,
   xAutoStart: true,
   uiTheme: "system",
 };
@@ -707,7 +710,7 @@ class App {
         const r = document.querySelector(".terms")?.getBoundingClientRect();
         const k = window.devicePixelRatio || 1;
         // (the embedded viewer keeps a 28 px toolbar above the desktop)
-        const bar = viewOf(snap) === "rdp" ? 28 : 0;
+        const bar = viewOf(snap) === "rdp" ? (snap.extra?.rdp_monitor === "0" ? 30 : 53) : 0;
         if (r) snap.extra = { ...snap.extra, rdp_w: String(Math.round(r.width * k)), rdp_h: String(Math.round((r.height - bar) * k)) };
       }
       if (snap.kind === "ssh") {

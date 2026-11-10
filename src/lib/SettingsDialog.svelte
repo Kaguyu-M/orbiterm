@@ -133,6 +133,7 @@
           <input id="ka" class="num" type="number" min="0" max="3600" bind:value={p.keepalive} />
           <span>secondes (0 = désactivé)</span>
         </div>
+        <label class="chk"><input type="checkbox" bind:checked={p.sshMonitor} /> Afficher les informations du serveur sous le terminal (CPU, mémoire, disque, réseau…)</label>
       </fieldset>
       <fieldset>
         <legend>Valeurs par défaut des nouvelles sessions SSH</legend>

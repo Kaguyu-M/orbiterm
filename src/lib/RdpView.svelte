@@ -25,8 +25,9 @@
   import { onMount } from "svelte";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import Icon from "./Icon.svelte";
-  import { api } from "./api";
+  import { api, type Session } from "./api";
   import { app, type Tab } from "./app.svelte";
+  import RemoteInfo from "./RemoteInfo.svelte";
 
   let { tab, active }: { tab: Tab; active: boolean } = $props();
 
@@ -114,6 +115,12 @@
       if (ws !== s) return;
       connected = false;
       // the backend reason (server logoff, error…) arrives with term-closed
+      if (closing) {
+        // logoff requested from the bar: the server ending the connection is the expected outcome
+        status = "Session distante fermée.";
+        setTimeout(() => app.closeTab(tab), 1500);
+        return;
+      }
       setTimeout(() => {
         if (ws === s) status = tab.status ? `Bureau à distance déconnecté : ${tab.status}` : "Bureau à distance déconnecté.";
       }, 150);
@@ -205,6 +212,59 @@
     canvas.focus();
   }
 
+  // ---------------------------------------------------------------- log off
+  // RDP has no "log off" message: the remote OS is asked to do it through its own
+  // run dialog (Windows: Win+R → logoff ; Linux desktops: Alt+F2 → session logout).
+  const LINUX_LOGOUT =
+    "sh -c 'xfce4-session-logout --logout --fast || gnome-session-quit --logout --no-prompt || " +
+    "qdbus org.kde.ksmserver /KSMServer logout 0 0 0 || loginctl terminate-session \"$XDG_SESSION_ID\"'";
+  type RemoteOs = "windows" | "linux";
+  let menuOpen = $state(false);
+  let closing = $state(false);
+  // svelte-ignore state_referenced_locally
+  let knownOs: RemoteOs | "" = $state((tab.session.extra?.rdp_os as RemoteOs) || "");
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const tap = (...sc: number[]) => {
+    for (const k of sc) send({ t: "k", sc: k, up: false });
+    for (const k of [...sc].reverse()) send({ t: "k", sc: k, up: true });
+  };
+
+  async function logoff(os: RemoteOs) {
+    menuOpen = false;
+    const label = os === "windows" ? "Windows" : "Linux";
+    if (!(await app.confirm(`Fermer la session ${label} de ${tab.session.username || "l'utilisateur"} sur ${tab.session.host} ? Les programmes ouverts dans cette session seront fermés.`)))
+      return;
+    releaseAll();
+    canvas.focus();
+    closing = true;
+    if (os === "windows") {
+      tap(0xe05b, 0x13); // Win+R
+      await sleep(900);
+      send({ t: "u", s: "logoff\n" });
+    } else {
+      tap(0x38, 0x3c); // Alt+F2
+      await sleep(1000);
+      send({ t: "u", s: LINUX_LOGOUT + "\n" });
+    }
+    // remembered for this saved session
+    if (knownOs !== os) {
+      knownOs = os;
+      const s = app.store.sessions.find((x) => x.id === tab.session.id);
+      if (s) {
+        const copy = structuredClone($state.snapshot(s)) as Session;
+        copy.extra = { ...copy.extra, rdp_os: os };
+        api.sessionSave(copy).then(() => app.reload()).catch(() => {});
+      }
+    }
+    // the server ends the connection once logged off
+    setTimeout(() => (closing = false), 15000);
+  }
+
+  function disconnectOnly() {
+    menuOpen = false;
+    app.closeTab(tab);
+  }
+
   async function toggleFull() {
     full = !full;
     await getCurrentWindow().setFullscreen(full).catch(() => {});
@@ -228,10 +288,39 @@
     <button title={full ? "Quitter le plein écran" : "Plein écran"} disabled={!connected} onclick={toggleFull}>
       {full ? "Quitter le plein écran" : "Plein écran"}
     </button>
-    <span class="state" class:ok={connected}>
-      {#if connected}● connecté{#if focused}&nbsp;— clavier capturé{/if}{:else}{status}{/if}
-    </span>
+    {#if !connected && status}<span class="state">{status}</span>{/if}
+    <div class="endwrap">
+      <button
+        class="end"
+        data-rdp-end
+        disabled={!connected || closing}
+        title="Fermer la session distante ou se déconnecter"
+        onclick={() => (menuOpen = !menuOpen)}
+      >
+        <Icon name="exit" size={14} /> {closing ? "Fermeture…" : "Fermer la session"} <span class="caret">▾</span>
+      </button>
+      {#if menuOpen}
+        <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
+        <div class="backdrop" onclick={() => (menuOpen = false)}></div>
+        <div class="menu" role="menu">
+          {#each (knownOs === "linux" ? ["linux", "windows"] : ["windows", "linux"]) as os (os)}
+            <button role="menuitem" data-logoff={os} onclick={() => logoff(os as RemoteOs)}>
+              <b>Fermer la session {os === "windows" ? "Windows" : "Linux"}</b>
+              <small>déconnecte l'utilisateur distant{knownOs === os ? " — système de cette session" : ""}</small>
+            </button>
+          {/each}
+          <hr />
+          <button role="menuitem" onclick={disconnectOnly}>
+            <b>Se déconnecter seulement</b>
+            <small>ferme l'onglet, la session reste ouverte sur le serveur</small>
+          </button>
+        </div>
+      {/if}
+    </div>
   </div>
+  {#if tab.connId && tab.session.extra?.rdp_monitor !== "0"}
+    <RemoteInfo connId={tab.connId} visible={active && connected} extra={connected ? `${focused ? "● clavier capturé" : "● connecté"}` : ""} />
+  {/if}
   <div class="screen" bind:this={box} data-rdp>
     <canvas
       bind:this={canvas}
@@ -296,6 +385,9 @@
     bottom: -10px;
     height: 10px;
   }
+  .full :global([data-remote-info]) {
+    display: none;
+  }
   .full .bar:hover {
     transform: translate(-50%, 0);
   }
@@ -313,11 +405,63 @@
     margin-right: 6px;
   }
   .state {
-    margin-left: auto;
     color: var(--muted);
   }
-  .state.ok {
-    color: var(--ok);
+  .endwrap {
+    margin-left: auto;
+    position: relative;
+  }
+  .bar .end {
+    background: var(--danger);
+    border-color: var(--danger);
+    color: #fff;
+  }
+  .bar .end:hover:not(:disabled) {
+    filter: brightness(1.1);
+  }
+  .caret {
+    font-size: 10px;
+    opacity: 0.85;
+  }
+  .backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 10;
+  }
+  .menu {
+    position: absolute;
+    right: 0;
+    top: calc(100% + 4px);
+    z-index: 11;
+    min-width: 300px;
+    padding: 4px;
+    background: var(--panel);
+    border: 1px solid var(--chrome-border);
+    border-radius: 6px;
+    box-shadow: 0 4px 14px var(--shadow);
+  }
+  .bar .menu button {
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 1px;
+    padding: 5px 10px;
+    border: none;
+    background: none;
+    color: var(--text);
+    text-align: left;
+  }
+  .bar .menu button:hover {
+    background: var(--hover);
+  }
+  .menu small {
+    color: var(--muted);
+  }
+  .menu hr {
+    border: none;
+    border-top: 1px solid var(--chrome-border);
+    margin: 4px 0;
   }
   .screen {
     flex: 1;

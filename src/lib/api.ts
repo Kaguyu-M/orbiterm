@@ -3,6 +3,27 @@ import { invoke } from "@tauri-apps/api/core";
 
 export type AuthMethod = "password" | "key";
 
+/** One sample of the remote system information (see src-tauri/src/monitor.rs). */
+export interface RemoteStats {
+  supported: boolean;
+  os: string;
+  host: string;
+  cpu_total: number;
+  cpu_idle: number;
+  cpus: number;
+  load: string;
+  mem_total: number;
+  mem_avail: number;
+  swap_total: number;
+  swap_free: number;
+  disk_total: number;
+  disk_used: number;
+  net_rx: number;
+  net_tx: number;
+  uptime: number;
+  users: number;
+}
+
 export interface TerminalSettings {
   font_family: string;
   font_size: number;
@@ -239,6 +260,8 @@ export const api = {
   folderSave: (folder: Folder) => invoke<Folder>("folder_save", { folder }),
   folderDelete: (id: string) => invoke<void>("folder_delete", { id }),
   passwordForget: (id: string) => invoke<void>("password_forget", { id }),
+  /** System information of the remote host of a tab (over SSH). */
+  monitorSample: (connId: string) => invoke<RemoteStats>("monitor_sample", { connId }),
   /** Copies the remembered passwords of a saved session to another one (keyring only). */
   passwordCopy: (from: string, to: string) => invoke<boolean>("password_copy", { from, to }),
   importSources: () => invoke<ImportSource[]>("import_sources"),

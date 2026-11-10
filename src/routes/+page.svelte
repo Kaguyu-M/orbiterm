@@ -9,6 +9,7 @@
   import SftpPanel from "$lib/SftpPanel.svelte";
   import VncView from "$lib/VncView.svelte";
   import RdpView from "$lib/RdpView.svelte";
+  import RemoteInfo from "$lib/RemoteInfo.svelte";
   import { app, HOME, SPLIT_LABELS, type SplitMode, type Tab } from "$lib/app.svelte";
   import ImportDialog from "$lib/ImportDialog.svelte";
   import SettingsDialog from "$lib/SettingsDialog.svelte";
@@ -534,15 +535,21 @@
             {/if}
             <div class="tbody" class:withhead={splitOn}>
               {#if view === "terminal"}
-                <Terminal
-                  tabKey={t.key}
-                  connId={t.connId}
-                  settings={t.session.terminal}
-                  active={t.key === app.activeKey}
-                  status={t.status}
-                  prefs={app.prefs}
-                  oninput={(d) => app.onInput(t.key, d)}
-                />
+                {@const mon = app.prefs.sshMonitor && t.session.kind === "ssh" && !!t.connId && t.state === "open"}
+                <div class="tmain" class:withinfo={mon}>
+                  <Terminal
+                    tabKey={t.key}
+                    connId={t.connId}
+                    settings={t.session.terminal}
+                    active={t.key === app.activeKey}
+                    status={t.status}
+                    prefs={app.prefs}
+                    oninput={(d) => app.onInput(t.key, d)}
+                  />
+                </div>
+                {#if mon && t.connId}
+                  <div class="tinfo"><RemoteInfo connId={t.connId} visible={shown} /></div>
+                {/if}
               {:else if view === "files"}
                 {#if t.connId && t.state === "open"}
                   <SftpPanel wide connId={t.connId} visible={shown} askText={app.askText} confirm={app.confirm} />
@@ -1066,6 +1073,19 @@
   }
   .tbody.withhead {
     top: 20px;
+  }
+  .tmain {
+    position: absolute;
+    inset: 0;
+  }
+  .tmain.withinfo {
+    bottom: 23px;
+  }
+  .tinfo {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
   }
   .viewmsg {
     position: absolute;
