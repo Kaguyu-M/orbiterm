@@ -56,7 +56,8 @@
     min-width: 220px;
     background: var(--panel);
     border: 1px solid var(--chrome-border-dark);
-    box-shadow: 2px 3px 8px rgba(0, 0, 0, 0.25);
+    box-shadow: 0 4px 14px var(--shadow);
+    border-radius: 6px;
     padding: 2px;
     user-select: none;
   }

@@ -202,11 +202,13 @@
   .bar {
     height: 8px;
     border: 1px solid var(--chrome-border-dark);
-    background: #fff;
+    background: var(--input-bg);
+    border-radius: 4px;
+    overflow: hidden;
   }
   .fill {
     height: 100%;
-    background: linear-gradient(#5fbf6f, #2f9a45);
+    background: var(--accent);
     transition: width 0.2s;
   }
   .results {
@@ -232,7 +234,7 @@
     padding: 2px 6px;
   }
   tr.first td {
-    border-top: 1px solid #e6e6e6;
+    border-top: 1px solid var(--row-border);
   }
   .mono {
     font-family: var(--mono);

@@ -132,7 +132,7 @@
     flex: 1;
     min-height: 0;
     position: relative;
-    background: #fff;
+    background: var(--panel);
   }
   .msg {
     padding: 20px;

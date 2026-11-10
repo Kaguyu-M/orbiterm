@@ -39,7 +39,7 @@
   .backdrop {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.3);
+    background: var(--backdrop);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -51,39 +51,42 @@
     display: flex;
     flex-direction: column;
     background: var(--panel);
-    border: 1px solid var(--chrome-border-dark);
-    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.35);
+    border: 1px solid var(--chrome-border);
+    border-radius: 10px;
+    overflow: hidden;
+    box-shadow: 0 12px 40px var(--shadow);
   }
   header {
     display: flex;
     align-items: center;
-    height: 30px;
-    padding-left: 10px;
-    background: var(--titlebar);
-    color: var(--titlebar-text);
+    height: 36px;
+    padding-left: 14px;
+    font-weight: 600;
+    background: var(--panel);
+    color: var(--text);
     border-bottom: 1px solid var(--chrome-border);
   }
   header span {
     flex: 1;
   }
   .close {
-    width: 40px;
-    height: 30px;
+    width: 44px;
+    height: 36px;
     border: none;
     border-radius: 0;
     background: none;
     color: inherit;
   }
   .close:hover {
-    background: #e81123;
+    background: var(--danger);
     color: #fff;
   }
   .body {
-    padding: 12px 14px;
+    padding: 14px 16px;
     overflow: auto;
   }
   footer {
-    padding: 10px 14px;
+    padding: 10px 16px;
     display: flex;
     gap: 8px;
     border-top: 1px solid var(--chrome-border);

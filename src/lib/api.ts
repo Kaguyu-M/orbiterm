@@ -239,6 +239,8 @@ export const api = {
   folderSave: (folder: Folder) => invoke<Folder>("folder_save", { folder }),
   folderDelete: (id: string) => invoke<void>("folder_delete", { id }),
   passwordForget: (id: string) => invoke<void>("password_forget", { id }),
+  /** Copies the remembered passwords of a saved session to another one (keyring only). */
+  passwordCopy: (from: string, to: string) => invoke<boolean>("password_copy", { from, to }),
   importSources: () => invoke<ImportSource[]>("import_sources"),
   importRun: (source: string, path?: string) => invoke<ImportReport>("import_run", { source, path }),
   macroSave: (m: Macro) => invoke<Macro>("macro_save", { m }),

@@ -13,6 +13,7 @@
     askText,
     confirm,
     wide = false,
+    onseparate,
   }: {
     connId: string;
     visible: boolean;
@@ -20,6 +21,8 @@
     wide?: boolean;
     askText: (title: string, initial: string) => Promise<string | null>;
     confirm: (message: string) => Promise<boolean>;
+    /** opens the same server in a separate, saved SFTP session */
+    onseparate?: () => void;
   } = $props();
 
   let path = $state("");
@@ -203,6 +206,9 @@
     <button title="Envoyer des fichiers dans ce dossier" aria-label="Envoyer des fichiers" onclick={pickUpload}><Icon name="upload" size={16} /></button>
     <button title="Télécharger le fichier sélectionné" aria-label="Télécharger" disabled={!selectedEntry || selectedEntry.kind === "dir"} onclick={() => selectedEntry && download(selectedEntry)}><Icon name="download" size={16} /></button>
     <button title="Supprimer la sélection" aria-label="Supprimer" disabled={!selectedEntry} onclick={() => selectedEntry && remove(selectedEntry)}><Icon name="trash" size={16} /></button>
+    {#if onseparate}
+      <button title="Ouvrir dans une session SFTP séparée (enregistrée, mot de passe mémorisé)" aria-label="Session SFTP séparée" data-sftp-separate onclick={onseparate}><Icon name="sftp" size={16} /></button>
+    {/if}
     <label class="hidden-toggle" title="Afficher les fichiers cachés">
       <input type="checkbox" bind:checked={showHidden} /> .*
     </label>
@@ -277,7 +283,7 @@
   }
   .sftp.drop {
     border-color: var(--accent);
-    background: rgba(97, 175, 239, 0.06);
+    background: color-mix(in srgb, var(--accent) 8%, transparent);
   }
   .toolbar {
     display: flex;

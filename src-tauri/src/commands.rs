@@ -132,6 +132,29 @@ pub async fn password_forget(id: String) -> AppResult<()> {
     secrets::delete_password(&id)
 }
 
+/// Copies the remembered passwords (session + jump host) of a saved session
+/// to another one, inside the keyring (the secrets never reach the UI).
+/// Returns true when a session password was copied.
+#[tauri::command]
+pub async fn password_copy(state: State<'_, AppState>, from: String, to: String) -> AppResult<bool> {
+    {
+        let store = state.store.lock().await;
+        let (src, dst) = (store.session(&from)?, store.session(&to)?);
+        if !src.remember_password || !dst.remember_password {
+            return Ok(false);
+        }
+    }
+    let mut copied = false;
+    if let Some(pw) = secrets::get_password(&from)? {
+        secrets::set_password(&to, &pw)?;
+        copied = true;
+    }
+    if let Some(pw) = secrets::get_password(&jump_account(&from))? {
+        secrets::set_password(&jump_account(&to), &pw)?;
+    }
+    Ok(copied)
+}
+
 // ---------------------------------------------------------------- import / macros
 
 #[tauri::command]

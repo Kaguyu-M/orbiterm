@@ -73,8 +73,8 @@
     display: flex;
     background: var(--chrome);
     border-bottom: 1px solid var(--chrome-border);
-    height: 22px;
-    padding-left: 2px;
+    height: 26px;
+    padding: 2px 4px;
     user-select: none;
   }
   .menu {
@@ -82,27 +82,27 @@
   }
   .top {
     height: 22px;
-    padding: 0 8px;
-    border: 1px solid transparent;
-    border-radius: 0;
+    padding: 0 9px;
+    border: none;
+    border-radius: 4px;
     background: none;
     color: var(--text);
   }
   .top:hover,
   .top.on {
     background: var(--hover);
-    border-color: var(--hover-border);
   }
   .drop {
     position: absolute;
     left: 0;
-    top: 22px;
+    top: 24px;
     z-index: 200;
     min-width: 250px;
     background: var(--panel);
-    border: 1px solid var(--chrome-border-dark);
-    box-shadow: 2px 3px 8px rgba(0, 0, 0, 0.25);
-    padding: 2px;
+    border: 1px solid var(--chrome-border);
+    box-shadow: 0 4px 14px var(--shadow);
+    border-radius: 6px;
+    padding: 4px;
   }
   .item {
     display: flex;

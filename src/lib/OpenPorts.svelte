@@ -147,7 +147,7 @@
   }
   td {
     padding: 2px 6px;
-    border-bottom: 1px solid #f0f0f0;
+    border-bottom: 1px solid var(--row-border);
     white-space: nowrap;
   }
   .mono {

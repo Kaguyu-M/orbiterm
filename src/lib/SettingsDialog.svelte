@@ -99,9 +99,11 @@
           <input id="ts" type="number" min="6" max="40" bind:value={p.termFontSize} />
           <label for="tt">Thème</label>
           <select id="tt" bind:value={p.termTheme}>
-            <option value="dark">Sombre (noir)</option>
+            <option value="dark">Noir</option>
             <option value="light">Clair</option>
             <option value="solarized">Solarized</option>
+            <option value="orbiterm">Orbiterm brun</option>
+            <option value="creme">Orbiterm crème</option>
           </select>
           <label for="tsb">Historique (lignes)</label>
           <input id="tsb" type="number" min="100" max="200000" step="1000" bind:value={p.termScrollback} />
@@ -155,6 +157,17 @@
         </p>
       </fieldset>
     {:else}
+      <fieldset>
+        <legend>Apparence</legend>
+        <div class="row">
+          <label for="uit">Thème de l'interface</label>
+          <select id="uit" bind:value={p.uiTheme} data-uitheme>
+            <option value="system">Suivre Windows / le système</option>
+            <option value="light">Clair (crème)</option>
+            <option value="dark">Sombre (brun)</option>
+          </select>
+        </div>
+      </fieldset>
       <fieldset>
         <legend>Éléments de la fenêtre</legend>
         <label class="chk"><input type="checkbox" bind:checked={p.menubar} /> Barre de menus</label>

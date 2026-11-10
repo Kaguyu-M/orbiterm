@@ -4,12 +4,12 @@ Terminal multi-protocoles multiplateforme (Windows + Linux) : onglets, sessions 
 X11, RDP, VNC, FTP, navigateur web, écran partagé, MultiExec et macros. Application originale dont l'ergonomie s'inspire de MobaXterm.
 Conception : [`docs/CONCEPTION.md`](docs/CONCEPTION.md).
 
-**Version 0.6.0**
+**Version 0.7.0**
 
 | Domaine | Fonctionnalités |
 |---|---|
 | Sessions | SSH, Telnet, Rlogin, port série, Mosh, shells locaux (PowerShell, cmd, Git Bash…), WSL ; dossiers, glisser-déposer, recherche, connexion rapide, sessions récentes |
-| SSH | mot de passe (trousseau du système) ou clé, vérification des clés d'hôte, navigateur SFTP, compression, commande distante, keepalive |
+| SSH | mot de passe (trousseau du système) ou clé, vérification des clés d'hôte, navigateur SFTP, compression, commande distante, keepalive ; depuis un onglet SSH : **session SFTP séparée** enregistrée (même serveur, même compte, mot de passe mémorisé dans le trousseau) |
 | Bureaux distants | RDP **intégré dans l'onglet** (client IronRDP : NLA, certificat vérifié comme les clés SSH, mot de passe dans le trousseau, bureau adapté à la taille de l'onglet, plein écran, Ctrl+Alt+Suppr, coller du texte ; option fenêtre séparée mstsc / FreeRDP), VNC intégré dans l'onglet (noVNC : mot de passe mémorisable, ajustement, lecture seule, Ctrl+Alt+Suppr, presse-papiers) |
 | Fichiers | onglets SFTP et FTP / FTPS autonomes (explorateur plein onglet avec colonnes, envoi / téléchargement / glisser-déposer) |
 | Navigateur | onglet web intégré (précédent / suivant / actualiser / barre d'adresse), sans aucun accès aux commandes d'Orbiterm |
@@ -18,6 +18,7 @@ Conception : [`docs/CONCEPTION.md`](docs/CONCEPTION.md).
 | Serveurs intégrés | HTTP (liste des dossiers, reprise de téléchargement), TFTP (blksize / tsize, PXE), FTP (compte ou anonyme), SSH/SFTP (shell du poste, commandes, SFTP limité au dossier partagé) ; lecture seule possible, écoute locale ou réseau, journal d'activité en direct, démarrage avec Orbiterm |
 | Terminal | écran partagé (2 côte à côte, 2 superposés, grille 2×2, mosaïque), MultiExec (saisie dans plusieurs terminaux), macros (enregistrer / rejouer), thèmes, zoom |
 | Import | MobaXterm (`MobaXterm.ini`, exports `.moba`), PuTTY, OpenSSH `~/.ssh/config` — sans jamais importer de mot de passe |
+| Apparence | interface épurée, **mode clair / sombre** (ou suivre le système, menu Affichage → Mode sombre), palette brun profond / noisette / olive / ambre / crème, thèmes de terminal « Orbiterm brun » et « Orbiterm crème » |
 | Configuration | fenêtre Paramètres : général, terminal, SSH, serveur X, affichage |
 
 Prochaine étape : version Linux.
@@ -27,7 +28,7 @@ Prochaine étape : version Linux.
 ## Tester l'application (recette)
 
 ### 1. Installer
-Lance `livrables\Orbiterm_0.6.0_x64-setup.exe`.
+Lance `livrables\Orbiterm_0.7.0_x64-setup.exe`.
 
 > L'installateur n'est pas signé : Windows SmartScreen peut afficher « Windows a protégé votre ordinateur ».
 > Clique sur **Informations complémentaires → Exécuter quand même**.

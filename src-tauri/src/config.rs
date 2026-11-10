@@ -43,7 +43,7 @@ impl Default for TerminalSettings {
             font_family: "Cascadia Mono, Consolas, 'DejaVu Sans Mono', monospace".into(),
             font_size: 14,
             scrollback: 10_000,
-            theme: "dark".into(),
+            theme: "orbiterm".into(),
         }
     }
 }

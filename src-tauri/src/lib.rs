@@ -49,6 +49,7 @@ pub fn run() {
             commands::folder_save,
             commands::folder_delete,
             commands::password_forget,
+            commands::password_copy,
             commands::import_sources,
             commands::import_run,
             commands::macro_save,

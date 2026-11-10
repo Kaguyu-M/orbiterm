@@ -294,12 +294,12 @@
     width: 9px;
     height: 9px;
     border-radius: 50%;
-    background: #c9c9c9;
-    border: 1px solid #999;
+    background: var(--switch-off);
+    border: 1px solid var(--chrome-border-dark);
   }
   .led.run {
-    background: #2fbf5a;
-    border-color: #1f7035;
+    background: var(--ok);
+    border-color: var(--ok);
   }
   /* on/off switch */
   .sw {
@@ -308,8 +308,8 @@
     height: 20px;
     padding: 0;
     border-radius: 10px;
-    border: 1px solid #9aa3ae;
-    background: #d5d9df;
+    border: 1px solid var(--chrome-border-dark);
+    background: var(--switch-off);
   }
   .sw .knob {
     position: absolute;
@@ -318,13 +318,13 @@
     width: 16px;
     height: 16px;
     border-radius: 50%;
-    background: #fff;
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+    background: #fbf8f1;
+    box-shadow: 0 1px 2px var(--shadow);
     transition: left 0.15s;
   }
   .sw.run {
-    background: #2fbf5a;
-    border-color: #1f7035;
+    background: var(--ok);
+    border-color: var(--ok);
   }
   .sw.run .knob {
     left: 21px;
@@ -358,12 +358,14 @@
     justify-content: center;
   }
   .go.stop {
-    background: #c0392b;
-    border-color: #922b21;
+    background: var(--danger);
+    border-color: var(--danger);
+    color: #fff;
   }
   .access {
-    background: #eefaf1;
-    border: 1px solid #9fd8b0;
+    background: var(--ok-bg);
+    border: 1px solid var(--ok-border);
+    border-radius: 6px;
     padding: 6px 8px;
     display: flex;
     flex-direction: column;
@@ -426,18 +428,19 @@
     min-height: 120px;
     max-height: 180px;
     overflow: auto;
-    background: #1d2027;
-    color: #d6dde6;
+    background: var(--log-bg);
+    color: var(--log-text);
+    border-radius: 6px;
     font-family: var(--mono);
     font-size: 12px;
     padding: 5px 7px;
     user-select: text;
   }
   .log .t {
-    color: #7fa8d6;
+    color: var(--log-time);
   }
   .log .muted {
-    color: #8a94a3;
+    color: var(--muted);
   }
   .dlg {
     min-width: 90px;

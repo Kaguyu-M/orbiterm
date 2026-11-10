@@ -14,7 +14,7 @@
     <div class="sep"></div>
   {:else}
     <button class="tb" class:active={b.active} data-tb={b.id} disabled={b.disabled} title={b.title ?? b.label} onclick={b.action}>
-      <Icon name={b.icon} size={30} />
+      <Icon name={b.icon} size={22} />
       <span>{b.label}</span>
     </button>
   {/if}
@@ -30,9 +30,9 @@
   .toolbar {
     display: flex;
     align-items: stretch;
-    gap: 1px;
-    padding: 2px 4px;
-    background: linear-gradient(var(--toolbar-top), var(--toolbar-bottom));
+    gap: 2px;
+    padding: 3px 6px;
+    background: var(--chrome);
     border-bottom: 1px solid var(--chrome-border);
     user-select: none;
     overflow: hidden;
@@ -42,20 +42,21 @@
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 2px;
-    min-width: 58px;
-    height: 54px;
+    gap: 1px;
+    min-width: 54px;
+    height: 44px;
     padding: 2px 6px;
-    border: 1px solid transparent;
-    border-radius: 3px;
+    border: none;
+    border-radius: 6px;
     background: none;
     color: var(--text);
-    font-size: 11.5px;
+    font-size: 11px;
   }
-  .tb:hover:not(:disabled),
-  .tb.active {
+  .tb:hover:not(:disabled) {
     background: var(--hover);
-    border-color: var(--hover-border);
+  }
+  .tb.active {
+    background: var(--selected);
   }
   .tb:disabled {
     opacity: 0.45;
@@ -66,7 +67,7 @@
   }
   .sep {
     width: 1px;
-    margin: 6px 3px;
+    margin: 10px 4px;
     background: var(--chrome-border);
   }
   .grow {

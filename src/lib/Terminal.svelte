@@ -50,6 +50,13 @@
     light: { background: "#ffffff", foreground: "#1d2027", cursor: "#1d2027", selectionBackground: "#b5d0f5",
       black: "#1d2027", brightBlack: "#5b6470", white: "#c9d1db", brightWhite: "#ffffff", yellow: "#a87b00", brightYellow: "#b88a00" },
     solarized: { background: "#002b36", foreground: "#93a1a1", cursor: "#93a1a1", selectionBackground: "#2a4a55" },
+    // palette Orbiterm : brun profond / crème / ambre / olive
+    orbiterm: { background: "#28251f", foreground: "#f3ede0", cursor: "#d9a35f", cursorAccent: "#28251f", selectionBackground: "#58402b",
+      black: "#28251f", red: "#c0583f", green: "#8f9a5c", yellow: "#d9a35f", blue: "#7f95a8", magenta: "#b0806a", cyan: "#8fae9c", white: "#d8cfbd",
+      brightBlack: "#62553b", brightRed: "#e07a5f", brightGreen: "#b5c07a", brightYellow: "#f0c27e", brightBlue: "#a3b8c9", brightMagenta: "#d4a38b", brightCyan: "#b3d1bf", brightWhite: "#f3ede0" },
+    creme: { background: "#f3ede0", foreground: "#28251f", cursor: "#9c6f3e", cursorAccent: "#f3ede0", selectionBackground: "#e0cfae",
+      black: "#28251f", red: "#a8432f", green: "#5a6b2e", yellow: "#9c6f3e", blue: "#3f5d78", magenta: "#7e4a5a", cyan: "#3f7466", white: "#cfc5b0",
+      brightBlack: "#62553b", brightRed: "#c0583f", brightGreen: "#696b4d", brightYellow: "#b9853f", brightBlue: "#557a9b", brightMagenta: "#9b6276", brightCyan: "#4f8f7e", brightWhite: "#ffffff" },
   };
 
   let host: HTMLDivElement;
@@ -221,7 +228,7 @@
     padding: 3px 0 0 5px;
   }
   .term.flash {
-    outline: 3px solid #e5a50a;
+    outline: 3px solid var(--warn);
     outline-offset: -3px;
   }
   .term :global(.xterm) {
@@ -233,7 +240,7 @@
     background: transparent;
   }
   .term :global(.xterm-viewport::-webkit-scrollbar-thumb) {
-    background: #555;
+    background: #6f675a;
     border-color: transparent;
   }
   .term :global(.xterm-viewport) {

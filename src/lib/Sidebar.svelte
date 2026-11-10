@@ -187,6 +187,7 @@
                 visible={app.sideTab === "sftp" && t.key === app.activeKey}
                 askText={app.askText}
                 confirm={app.confirm}
+                onseparate={() => app.openSeparateSftp(t)}
               />
             </div>
           {/if}

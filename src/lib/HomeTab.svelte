@@ -110,7 +110,7 @@
     height: fit-content;
     background: var(--panel);
     border: 1px solid var(--chrome-border);
-    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.08);
+    box-shadow: 0 2px 10px var(--shadow);
     padding: 22px 26px 26px;
   }
   .brand {

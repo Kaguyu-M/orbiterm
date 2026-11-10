@@ -139,8 +139,8 @@
     gap: 8px;
     margin-top: 10px;
     padding: 8px;
-    background: #eefaf1;
-    border: 1px solid #b7e2c3;
+    background: var(--ok-bg);
+    border: 1px solid var(--ok-border);
   }
   .report ul {
     margin: 4px 0 0;

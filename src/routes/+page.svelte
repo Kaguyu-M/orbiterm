@@ -2,6 +2,7 @@
   import { onMount, untrack } from "svelte";
   import { listen } from "@tauri-apps/api/event";
   import { getCurrentWindow } from "@tauri-apps/api/window";
+  import { theme } from "$lib/theme.svelte";
   import { api, describe, forwardLabel, protocol, viewOf, type HostKeyPrompt, type ServerKind } from "$lib/api";
   import BrowserView from "$lib/BrowserView.svelte";
   import ExternalView from "$lib/ExternalView.svelte";
@@ -34,11 +35,14 @@
   let shortcuts = $state(false);
 
   const term = () => (app.active ? terminals.get(app.active.key) : undefined);
-  const SOON = " (prochaine étape)";
 
   async function toggleFullscreen() {
     const w = getCurrentWindow();
     await w.setFullscreen(!(await w.isFullscreen()));
+  }
+  function toggleDark() {
+    app.prefs.uiTheme = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+    app.savePrefs();
   }
   function togglePref(k: "sidebar" | "toolbar" | "menubar" | "statusbar") {
     app.prefs[k] = !app.prefs[k];
@@ -90,6 +94,7 @@
       { label: "Barre de menus", checked: app.prefs.menubar, action: () => togglePref("menubar") },
       { label: "Barre d'état", checked: app.prefs.statusbar, action: () => togglePref("statusbar") },
       { sep: true },
+      { label: "Mode sombre", checked: document.documentElement.dataset.theme === "dark", action: toggleDark },
       { label: "Plein écran", icon: "view", shortcut: "F11", action: toggleFullscreen },
       { sep: true },
       { label: "Agrandir le texte", shortcut: "Ctrl+Maj+=", disabled: !app.active, action: () => term()?.zoom(1) },
@@ -119,6 +124,7 @@
         { label: "Renommer l'onglet", icon: "edit", disabled: !app.active, action: () => app.active && app.renameTab(app.active) },
         { label: "Dupliquer l'onglet", icon: "copy", disabled: !app.active, action: () => app.active && app.duplicateTab(app.active) },
         { label: "Reconnecter", icon: "refresh", disabled: !app.active, action: () => app.active && app.reconnect(app.active) },
+        { label: "Ouvrir une session SFTP séparée", icon: "sftp", disabled: app.active?.session.kind !== "ssh", action: () => app.active && app.openSeparateSftp(app.active) },
         { label: "Fermer l'onglet", icon: "close", shortcut: "Ctrl+Maj+W", disabled: !app.active, action: () => app.active && app.closeTab(app.active) },
         { sep: true },
         { label: "Quitter", icon: "exit", action: quit },
@@ -240,7 +246,6 @@
       action: () => app.toggleMultiExec(),
     },
     { id: "tunnel", label: "Tunnels", icon: "tunnel", title: "Gestionnaire de tunnels SSH", action: openTunnels },
-    { id: "packages", label: "Paquets", icon: "packages", title: "Gestion de paquets" + SOON, disabled: true, action: () => {} },
     { id: "settings", label: "Paramètres", icon: "settings", title: "Configuration", action: () => (app.showSettings = true) },
     { id: "help", label: "Aide", icon: "help", action: () => (about = true) },
   ]);
@@ -302,6 +307,12 @@
           icon: "tunnel",
           disabled: t.session.kind !== "ssh" || t.state !== "open",
           action: () => showForwards(t),
+        },
+        {
+          label: "Ouvrir une session SFTP séparée",
+          icon: "sftp",
+          disabled: t.session.kind !== "ssh",
+          action: () => app.openSeparateSftp(t),
         },
         { sep: true },
         { label: "Fermer l'onglet", icon: "close", action: () => app.closeTab(t) },
@@ -381,6 +392,22 @@
     void app.activeKey;
     void app.split;
     untrack(() => app.syncPanes());
+  });
+
+  // thème de l'interface (clair / sombre / suivre le système)
+  let systemDark = $state(typeof matchMedia !== "undefined" && matchMedia("(prefers-color-scheme: dark)").matches);
+  $effect(() => {
+    const mq = matchMedia("(prefers-color-scheme: dark)");
+    const on = (e: MediaQueryListEvent) => (systemDark = e.matches);
+    mq.addEventListener("change", on);
+    return () => mq.removeEventListener("change", on);
+  });
+  $effect(() => {
+    const pref = app.prefs.uiTheme ?? "system";
+    const dark = pref === "dark" || (pref === "system" && systemDark);
+    document.documentElement.dataset.theme = dark ? "dark" : "light";
+    theme.dark = dark;
+    getCurrentWindow().setTheme(pref === "system" ? null : pref).catch(() => {});
   });
 
   const stateLabel: Record<string, string> = { connecting: "connexion…", open: "connecté", closed: "terminé", error: "erreur" };
@@ -729,27 +756,52 @@
 {/if}
 
 <style>
+  /* Palette: brun profond #28251F, noisette #58402B, olive brun #62553B, ambre #9C6F3E,
+     olive végétal #696B4D, crème #F3EDE0 — light ("crème") and dark ("brun") variants */
   :global(:root) {
-    --chrome: #f0f0f0;
-    --chrome-border: #cfcfcf;
-    --chrome-border-dark: #a0a0a0;
-    --panel: #ffffff;
-    --hover: #e5f1fb;
-    --hover-border: #a8cdef;
-    --selected: #cce4f7;
-    --text: #1b1b1b;
-    --text-disabled: #a0a0a0;
-    --muted: #6b6b6b;
-    --accent: #0a64c2;
-    --brand: #1b4f8f;
-    --danger: #c42b1c;
-    --ok: #2e9d4a;
-    --input-bg: #ffffff;
-    --toolbar-top: #fbfbfb;
-    --toolbar-bottom: #e8ebee;
-    --titlebar: #ffffff;
-    --titlebar-text: #1b1b1b;
-    --home-bg: #e4e8ec;
+    --chrome: #f3ede0;
+    --chrome-border: #ddd3bf;
+    --chrome-border-dark: #bfb29a;
+    --panel: #fbf8f1;
+    --hover: #ece2cf;
+    --hover-border: #cdb38e;
+    --selected: #e6d5b9;
+    --text: #28251f;
+    --text-disabled: #ada492;
+    --muted: #6e6656;
+    --accent: #9c6f3e;
+    --accent-text: #fbf8f1;
+    --accent-2: #696b4d;
+    --brand: #58402b;
+    --danger: #a8432f;
+    --ok: #6b7f3a;
+    --warn: #c48a2c;
+    --input-bg: #fffdf8;
+    --input-border: #c9bda6;
+    --btn-bg: #fbf8f1;
+    --btn-border: #cfc3ac;
+    --toolbar-top: #f3ede0;
+    --toolbar-bottom: #f3ede0;
+    --titlebar: #fbf8f1;
+    --titlebar-text: #28251f;
+    --home-bg: #ebe3d3;
+    --tab-bg: #e7dfcd;
+    --row-border: #ece4d4;
+    --ok-bg: #edefe0;
+    --ok-border: #b9bd98;
+    --warn-bg: #f6e9cf;
+    --warn-border: #d8b57a;
+    --log-bg: #28251f;
+    --log-text: #f3ede0;
+    --log-time: #d2a868;
+    --scroll-thumb: #cdbfa6;
+    --scroll-thumb-hover: #b5a78c;
+    --switch-off: #d8cfbe;
+    --shadow: rgba(40, 37, 31, 0.18);
+    --backdrop: rgba(40, 37, 31, 0.35);
+    --pane-head: #e7dfcd;
+    --pane-head-on: #e6d5b9;
+    --terms-bg: #28251f;
     --mono: "Cascadia Mono", Consolas, "DejaVu Sans Mono", monospace;
     /* aliases used by older components */
     --fg: var(--text);
@@ -757,20 +809,66 @@
     --border: var(--chrome-border);
     color-scheme: light;
   }
+  :global(:root[data-theme="dark"]) {
+    --chrome: #28251f;
+    --chrome-border: #3d372d;
+    --chrome-border-dark: #4f473a;
+    --panel: #302c25;
+    --hover: #3b352c;
+    --hover-border: #62553b;
+    --selected: #4a3a28;
+    --text: #f3ede0;
+    --text-disabled: #6f675a;
+    --muted: #b3a993;
+    --accent: #b98348;
+    --accent-text: #28251f;
+    --accent-2: #8e9064;
+    --brand: #c99a63;
+    --danger: #d06a55;
+    --ok: #9aa85e;
+    --warn: #d9a24a;
+    --input-bg: #1f1c17;
+    --input-border: #4f473a;
+    --btn-bg: #36312a;
+    --btn-border: #4f473a;
+    --toolbar-top: #28251f;
+    --toolbar-bottom: #28251f;
+    --titlebar: #302c25;
+    --titlebar-text: #f3ede0;
+    --home-bg: #24211c;
+    --tab-bg: #2e2a23;
+    --row-border: #38332b;
+    --ok-bg: #2f3226;
+    --ok-border: #696b4d;
+    --warn-bg: #3a2f1e;
+    --warn-border: #9c6f3e;
+    --log-bg: #1a1814;
+    --log-text: #f3ede0;
+    --log-time: #c99a63;
+    --scroll-thumb: #4f473a;
+    --scroll-thumb-hover: #62553b;
+    --switch-off: #4f473a;
+    --shadow: rgba(0, 0, 0, 0.5);
+    --backdrop: rgba(0, 0, 0, 0.5);
+    --pane-head: #36312a;
+    --pane-head-on: #4a3a28;
+    --terms-bg: #1a1814;
+    color-scheme: dark;
+  }
   :global(html, body) {
     margin: 0;
     height: 100%;
     background: var(--chrome);
     color: var(--text);
-    font: 12.5px/1.4 "Segoe UI", system-ui, "Noto Sans", sans-serif;
+    font: 13px/1.45 "Segoe UI", system-ui, "Noto Sans", sans-serif;
     overflow: hidden;
   }
   :global(button) {
     font: inherit;
     color: var(--text);
-    background: #fdfdfd;
-    border: 1px solid #adadad;
-    border-radius: 2px;
+    background: var(--btn-bg);
+    border: 1px solid var(--btn-border);
+    border-radius: 4px;
     padding: 3px 10px;
     cursor: default;
     display: inline-flex;
@@ -779,49 +877,67 @@
   }
   :global(button:hover:not(:disabled)) {
     background: var(--hover);
-    border-color: #0078d7;
+    border-color: var(--hover-border);
   }
   :global(button:disabled) {
     color: var(--text-disabled);
   }
   :global(button.primary) {
-    border-color: #0078d7;
-    box-shadow: inset 0 0 0 1px #0078d7;
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--accent-text);
+  }
+  :global(button.primary:hover:not(:disabled)) {
+    background: var(--brand);
+    border-color: var(--brand);
+    color: var(--accent-text);
+  }
+  :global(button.primary:disabled) {
+    opacity: 0.5;
+    color: var(--accent-text);
   }
   :global(button.danger-btn) {
     border-color: var(--danger);
     color: var(--danger);
   }
-  :global(input, select) {
+  :global(input, select, textarea) {
     font: inherit;
     color: var(--text);
     background: var(--input-bg);
-    border: 1px solid #a0a0a0;
-    border-radius: 0;
-    padding: 3px 5px;
+    border: 1px solid var(--input-border);
+    border-radius: 4px;
+    padding: 3px 6px;
     min-width: 0;
+  }
+  :global(input[type="checkbox"], input[type="radio"]) {
+    accent-color: var(--accent);
   }
   :global(input:disabled, select:disabled) {
     background: var(--chrome);
     color: var(--text-disabled);
   }
-  :global(input:focus, select:focus) {
+  :global(input:focus, select:focus, textarea:focus) {
     outline: none;
-    border-color: #0078d7;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 25%, transparent);
   }
   :global(::-webkit-scrollbar) {
-    width: 12px;
-    height: 12px;
+    width: 10px;
+    height: 10px;
   }
-  :global(::-webkit-scrollbar-track) {
-    background: #f0f0f0;
+  :global(::-webkit-scrollbar-track),
+  :global(::-webkit-scrollbar-corner) {
+    background: transparent;
   }
   :global(::-webkit-scrollbar-thumb) {
-    background: #c1c1c1;
-    border: 3px solid #f0f0f0;
+    background: var(--scroll-thumb);
+    border: 2px solid transparent;
+    background-clip: padding-box;
+    border-radius: 5px;
   }
   :global(::-webkit-scrollbar-thumb:hover) {
-    background: #a8a8a8;
+    background: var(--scroll-thumb-hover);
+    background-clip: padding-box;
   }
   :global(.hide) {
     display: none !important;
@@ -856,13 +972,13 @@
   .tabbar {
     display: flex;
     align-items: flex-end;
-    gap: 1px;
+    gap: 2px;
     background: var(--chrome);
-    border-bottom: 1px solid var(--chrome-border-dark);
+    border-bottom: 1px solid var(--chrome-border);
     overflow-x: auto;
     overflow-y: hidden;
-    height: 27px;
-    padding: 2px 2px 0;
+    height: 32px;
+    padding: 4px 4px 0;
     flex: 0 0 auto;
   }
   .tabbar::-webkit-scrollbar {
@@ -872,12 +988,12 @@
     display: flex;
     align-items: center;
     gap: 5px;
-    height: 24px;
-    padding: 0 4px 0 8px;
-    border: 1px solid var(--chrome-border);
+    height: 27px;
+    padding: 0 4px 0 10px;
+    border: 1px solid transparent;
     border-bottom: none;
-    border-radius: 3px 3px 0 0;
-    background: #e3e3e3;
+    border-radius: 6px 6px 0 0;
+    background: transparent;
     cursor: default;
     white-space: nowrap;
     color: var(--text);
@@ -888,10 +1004,10 @@
   }
   .tab.on {
     background: var(--panel);
-    border-color: var(--chrome-border-dark);
-    height: 25px;
+    border-color: var(--chrome-border);
     margin-bottom: -1px;
-    box-shadow: inset 0 2px 0 var(--accent);
+    height: 28px;
+    box-shadow: inset 0 -2px 0 var(--accent);
   }
   .tab.home,
   .tab.plus {
@@ -914,7 +1030,7 @@
     border-radius: 2px;
   }
   .x:hover:not(:disabled) {
-    background: #e81123;
+    background: var(--danger);
     color: #fff;
     border: none;
   }
@@ -925,20 +1041,20 @@
     background: var(--muted);
   }
   .dot.open {
-    background: #2fbf5a;
+    background: var(--ok);
   }
   .dot.connecting {
-    background: #e5a50a;
+    background: var(--warn);
   }
   .dot.error,
   .dot.closed {
-    background: #d9363e;
+    background: var(--danger);
   }
   .terms {
     position: relative;
     flex: 1;
     min-height: 0;
-    background: #000;
+    background: var(--terms-bg);
   }
   .termwrap {
     position: absolute;
@@ -963,7 +1079,7 @@
   .termwrap.pane {
     inset: auto;
     box-sizing: border-box;
-    border: 1px solid #3a3a3a;
+    border: 1px solid var(--chrome-border-dark);
   }
   .termwrap.pane.focus {
     border-color: var(--accent);
@@ -972,8 +1088,8 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    color: #777;
-    background: #111;
+    color: var(--muted);
+    background: var(--terms-bg);
   }
   .phead {
     display: flex;
@@ -981,13 +1097,13 @@
     gap: 5px;
     height: 20px;
     padding: 0 6px;
-    background: #d9d9d9;
-    color: #222;
+    background: var(--pane-head);
+    color: var(--text);
     font-size: 11.5px;
     user-select: none;
   }
   .pane.focus .phead {
-    background: #cce4f7;
+    background: var(--pane-head-on);
   }
   .ptitle {
     flex: 1;
@@ -1008,8 +1124,8 @@
     align-items: center;
     gap: 8px;
     padding: 3px 8px;
-    background: #fff4c2;
-    border-bottom: 1px solid #e0c96a;
+    background: var(--warn-bg);
+    border-bottom: 1px solid var(--warn-border);
   }
   .mebar span {
     flex: 1;
@@ -1033,7 +1149,7 @@
     background: var(--chrome);
     border-top: 1px solid var(--chrome-border);
     font-size: 11.5px;
-    color: #333;
+    color: var(--muted);
     user-select: none;
   }
   .cell {

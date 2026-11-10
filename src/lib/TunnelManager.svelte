@@ -175,10 +175,10 @@
   }
   .list td {
     padding: 3px 6px;
-    border-bottom: 1px solid #eee;
+    border-bottom: 1px solid var(--row-border);
   }
   .list tr.on td {
-    background: #eefaf1;
+    background: var(--ok-bg);
   }
   .nm {
     font-weight: 600;
@@ -198,12 +198,12 @@
     width: 10px;
     height: 10px;
     border-radius: 50%;
-    background: #c9c9c9;
-    border: 1px solid #999;
+    background: var(--switch-off);
+    border: 1px solid var(--chrome-border-dark);
   }
   .led.run {
-    background: #2fbf5a;
-    border-color: #1f7035;
+    background: var(--ok);
+    border-color: var(--ok);
   }
   .empty {
     color: var(--muted);

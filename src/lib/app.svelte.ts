@@ -78,6 +78,8 @@ export interface Prefs {
   sshSftp: boolean;
   // X11
   xAutoStart: boolean;
+  // apparence de l'interface
+  uiTheme: "light" | "dark" | "system";
 }
 
 export const DEFAULT_PREFS: Prefs = {
@@ -90,7 +92,7 @@ export const DEFAULT_PREFS: Prefs = {
   defaultShell: "",
   termFont: "Cascadia Mono, Consolas, 'DejaVu Sans Mono', monospace",
   termFontSize: 14,
-  termTheme: "dark",
+  termTheme: "orbiterm",
   termScrollback: 10000,
   cursorStyle: "block",
   cursorBlink: true,
@@ -102,6 +104,7 @@ export const DEFAULT_PREFS: Prefs = {
   sshCompression: false,
   sshSftp: true,
   xAutoStart: true,
+  uiTheme: "system",
 };
 
 /** Screen layouts of the terminal area (Split button). */
@@ -126,6 +129,17 @@ function loadJson<T>(key: string, fallback: T): T {
   }
 }
 
+/** Prefs saved by older versions: adopt the new palette once. */
+function migratePrefs(p: Prefs): Prefs {
+  try {
+    const raw = JSON.parse(localStorage.getItem(PREFS_KEY) ?? "{}");
+    if (raw && !("uiTheme" in raw) && p.termTheme === "dark") p.termTheme = "orbiterm";
+  } catch {
+    /* ignore */
+  }
+  return p;
+}
+
 /** Recently opened sessions (saved or quick-connect), newest first. */
 export interface Recent {
   session: Session;
@@ -140,7 +154,11 @@ class App {
   editing: Session | null = $state(null);
   shells: LocalShell[] = $state([]);
   recent: Recent[] = $state([]);
-  prefs: Prefs = $state(loadJson(PREFS_KEY, DEFAULT_PREFS));
+  /** Secrets typed in a tab (memory only, cleared when the tab closes). */
+  private typedSecrets = new Map<string, Secrets>();
+  /** Secrets to use for the first connection of a new tab. */
+  private pendingSecrets = new Map<string, Secrets>();
+  prefs: Prefs = $state(migratePrefs(loadJson(PREFS_KEY, DEFAULT_PREFS)));
   showSettings = $state(false);
   menuOpen = $state(false);
   showImport = $state(false);
@@ -591,7 +609,7 @@ class App {
   }
 
   // ------------------------------------------------------------ tabs / connections
-  openSession(s: Session) {
+  openSession(s: Session, secrets?: Secrets) {
     const p = protocol(s.kind);
     if (!p.ready) {
       this.info(`Le type de session « ${p.label} » arrive dans une prochaine étape.`);
@@ -609,6 +627,7 @@ class App {
     };
     this.tabs.push(tab);
     this.activeKey = tab.key;
+    if (secrets) this.pendingSecrets.set(tab.key, secrets);
     this.remember(session);
     this.connect(this.tabs[this.tabs.length - 1]);
   }
@@ -699,7 +718,18 @@ class App {
           this.xserver = await api.xserverStart().catch(() => x);
       }
       // size is corrected by the terminal right after attaching
-      const connId = await this.withSecrets(s, (sec) => api.termOpen({ session: snap, cols: 120, rows: 32, ...sec }));
+      const initial = this.pendingSecrets.get(tab.key) ?? {};
+      this.pendingSecrets.delete(tab.key);
+      const connId = await this.withSecrets(
+        s,
+        async (sec) => {
+          const id = await api.termOpen({ session: snap, cols: 120, rows: 32, ...sec });
+          // kept in memory only, to open a separate SFTP session later
+          if (sec.password !== undefined || sec.jump_password !== undefined) this.typedSecrets.set(tab.key, { ...sec });
+          return id;
+        },
+        initial,
+      );
       tab.connId = connId;
       tab.state = "open";
       tab.status = "";
@@ -719,6 +749,7 @@ class App {
   }
 
   async closeTab(tab: Tab) {
+    this.typedSecrets.delete(tab.key);
     if (tab.connId) await api.termClose(tab.connId).catch(() => {});
     if (tab.session.kind === "browser") await api.browserClose(`browser-${tab.key}`).catch(() => {});
     const i = this.tabs.findIndex((t) => t.key === tab.key);
@@ -733,6 +764,50 @@ class App {
 
   duplicateTab(tab: Tab) {
     this.openSession(tab.session);
+  }
+
+  /**
+   * From an SSH tab: creates (or reuses) a saved SFTP session to the same
+   * server, with the same login, key and jump host, and opens it. The
+   * password is saved in the system keyring for the new session.
+   */
+  async openSeparateSftp(tab: Tab) {
+    const src = $state.snapshot(tab.session) as Session;
+    if (src.kind !== "ssh" && src.kind !== "sftp") return;
+    const same = (x: Session) =>
+      x.kind === "sftp" &&
+      x.host.toLowerCase() === src.host.toLowerCase() &&
+      x.port === src.port &&
+      x.username === src.username &&
+      (x.extra?.jump_host ?? "") === (src.extra?.jump_host ?? "");
+    let target = this.store.sessions.find(same);
+    if (!target) {
+      const s = this.blank(src.folder, "sftp");
+      const who = `${src.username ? src.username + "@" : ""}${src.host}`;
+      s.name = `${src.id && src.name ? src.name : who} (SFTP)`;
+      s.host = src.host;
+      s.port = src.port;
+      s.username = src.username;
+      s.auth = src.auth;
+      s.key_path = src.key_path;
+      s.remember_password = true;
+      for (const k of ["jump_host", "jump_port", "jump_user", "jump_key", "compression"])
+        if (src.extra?.[k]) s.extra[k] = src.extra[k];
+      target = await api.sessionSave(s);
+      await this.reload();
+    } else if (!target.remember_password) {
+      target = await api.sessionSave({ ...$state.snapshot(target), remember_password: true } as Session);
+      await this.reload();
+    }
+    // password: typed in this tab (memory), else copied inside the keyring
+    const typed = this.typedSecrets.get(tab.key);
+    let secrets: Secrets | undefined;
+    if (typed && (typed.password !== undefined || typed.jump_password !== undefined)) {
+      secrets = { password: typed.password, jump_password: typed.jump_password, remember: true };
+    } else if (src.id) {
+      await api.passwordCopy(src.id, target.id).catch(() => false);
+    }
+    this.openSession(target, secrets);
   }
 
   async renameTab(tab: Tab) {

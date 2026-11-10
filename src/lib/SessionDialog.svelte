@@ -331,9 +331,11 @@
           </div>
           <label class="lbl" for="th">Thème</label>
           <select id="th" bind:value={s.terminal.theme}>
-            <option value="dark">Noir (par défaut)</option>
+            <option value="dark">Noir</option>
             <option value="light">Clair</option>
             <option value="solarized">Solarized sombre</option>
+            <option value="orbiterm">Orbiterm brun</option>
+            <option value="creme">Orbiterm crème</option>
           </select>
           <label class="lbl" for="sbk">Lignes d'historique</label>
           <input id="sbk" class="port" type="number" min="100" max="200000" step="1000" bind:value={s.terminal.scrollback} />

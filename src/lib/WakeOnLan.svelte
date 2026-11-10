@@ -123,7 +123,7 @@
     margin: 0 0 10px;
   }
   .ok {
-    color: #1f7035;
+    color: var(--ok);
   }
   .error {
     color: var(--danger);
@@ -143,7 +143,7 @@
     align-items: center;
     gap: 6px;
     padding: 2px 4px;
-    border-bottom: 1px solid #f0f0f0;
+    border-bottom: 1px solid var(--row-border);
   }
   .link {
     flex: 1;
