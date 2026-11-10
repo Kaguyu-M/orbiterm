@@ -7,6 +7,7 @@ pub mod error;
 pub mod forward;
 pub mod ftp;
 pub mod rdp;
+pub mod rdp_channels;
 pub mod rdp_client;
 pub mod vnc;
 pub mod importer;
@@ -29,6 +30,10 @@ use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // diagnostics on demand: ORBITERM_LOG=debug (or any env_logger filter), written to stderr
+    if let Ok(filter) = std::env::var("ORBITERM_LOG") {
+        let _ = env_logger::Builder::new().parse_filters(&filter).try_init();
+    }
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())

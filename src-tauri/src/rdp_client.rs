@@ -5,7 +5,11 @@
 //! (like the VNC bridge):
 //! - backend → tab (binary): `1` rect (x, y, w, h: u16 LE, then RGBA), `2` desktop size (w, h),
 //!   `3` cursor (hot x, hot y, w, h, RGBA), `4` default cursor, `5` hidden cursor;
-//! - tab → backend (JSON text): keyboard scancodes, mouse, wheel, resize, Ctrl+Alt+Del.
+//! - backend → tab (JSON text): `{"t":"clip","s":…}` text copied on the remote computer;
+//! - tab → backend (JSON text): keyboard scancodes, mouse, wheel, resize, Ctrl+Alt+Del,
+//!   local clipboard text.
+//!
+//! Static channels: CLIPRDR (shared clipboard, text) and RDPDR (one shared local folder).
 //!
 //! The server certificate is checked "trust on first use" (file `rdp_known_hosts`),
 //! like SSH host keys. Passwords only travel inside CredSSP; nothing is written to disk.
@@ -40,7 +44,12 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
 
+use ironrdp_cliprdr::CliprdrClient;
+use ironrdp_cliprdr::pdu::{ClipboardFormat, FormatDataResponse};
+use ironrdp_rdpdr::Rdpdr;
+
 use crate::error::{AppError, AppResult};
+use crate::rdp_channels::{self, CF_UNICODETEXT, ClipEvent};
 use crate::known_hosts::HostKeyStatus;
 use crate::ssh::{CloseSink, HostKeyPrompter, HostKeyQuestion};
 
@@ -56,6 +65,10 @@ pub struct RdpParams {
     pub width: u16,
     pub height: u16,
     pub known_hosts: PathBuf,
+    /// shared clipboard (text)
+    pub clipboard: bool,
+    /// local folder shared with the remote computer
+    pub share_dir: Option<PathBuf>,
 }
 
 /// Messages from the tab.
@@ -82,6 +95,9 @@ enum WsIn {
     /// text typed as Unicode key events (paste of the local clipboard)
     #[serde(rename = "u")]
     Text { s: String },
+    /// the local clipboard changed (text)
+    #[serde(rename = "clip")]
+    Clip { s: String },
 }
 
 enum Cmd {
@@ -301,7 +317,7 @@ pub async fn connect(p: RdpParams, prompter: HostKeyPrompter, on_close: CloseSin
                 }
             };
             rt.block_on(async move {
-                let (framed, result) = match establish(p, prompter).await {
+                let (framed, result, channels) = match establish(p, prompter).await {
                     Ok(v) => v,
                     Err(e) => {
                         let _ = ready_tx.send(Err(e));
@@ -322,7 +338,7 @@ pub async fn connect(p: RdpParams, prompter: HostKeyPrompter, on_close: CloseSin
                 if ready_tx.send(Ok((port, token, desktop))).is_err() {
                     return;
                 }
-                let reason = match active_session(framed, result, loop_tx, cmd_rx).await {
+                let reason = match active_session(framed, result, channels, loop_tx, cmd_rx).await {
                     Ok(r) => r,
                     Err(e) => format!("connexion RDP interrompue : {e}"),
                 };
@@ -334,7 +350,15 @@ pub async fn connect(p: RdpParams, prompter: HostKeyPrompter, on_close: CloseSin
     Ok(RdpSession { port, token, cmd: cmd_tx, desktop })
 }
 
-async fn establish(p: RdpParams, prompter: HostKeyPrompter) -> AppResult<(Framed, ironrdp_connector::ConnectionResult)> {
+struct Channels {
+    clip: Option<mpsc::UnboundedReceiver<ClipEvent>>,
+    drive: bool,
+}
+
+async fn establish(
+    p: RdpParams,
+    prompter: HostKeyPrompter,
+) -> AppResult<(Framed, ironrdp_connector::ConnectionResult, Channels)> {
     if p.username.trim().is_empty() {
         return Err(AppError::Config("RDP : indique le nom d'utilisateur dans les paramètres de la session".into()));
     }
@@ -348,6 +372,18 @@ async fn establish(p: RdpParams, prompter: HostKeyPrompter) -> AppResult<(Framed
     let mut connector = ClientConnector::new(connector_config(&p)?, client_addr).with_static_channel(
         DrdynvcClient::new().with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new()))),
     );
+    let mut channels = Channels { clip: None, drive: false };
+    if p.clipboard {
+        let (cliprdr, rx) = rdp_channels::clipboard();
+        connector.attach_static_channel(cliprdr);
+        channels.clip = Some(rx);
+    }
+    if let Some(dir) = &p.share_dir {
+        let rdpdr = rdp_channels::drive_channel(dir)
+            .map_err(|e| AppError::Config(format!("RDP, dossier partagé : {e}")))?;
+        connector.attach_static_channel(rdpdr);
+        channels.drive = true;
+    }
 
     let should_upgrade = ironrdp_tokio::connect_begin(&mut framed, &mut connector).await.map_err(map_connect_err)?;
     let (initial, leftover) = framed.into_inner();
@@ -397,7 +433,7 @@ async fn establish(p: RdpParams, prompter: HostKeyPrompter) -> AppResult<(Framed
     .and_then(|o| o.into_connected())
     .map_err(map_connect_err)?;
 
-    Ok((framed, result))
+    Ok((framed, result, channels))
 }
 
 async fn accept_viewers(listener: TcpListener, want: String, cmd: mpsc::UnboundedSender<Cmd>) {
@@ -537,7 +573,15 @@ fn input_events(m: WsIn) -> Vec<FastPathInputEvent> {
                 }
             })
             .collect(),
-        WsIn::Resize { .. } => vec![],
+        WsIn::Resize { .. } | WsIn::Clip { .. } => vec![],
+    }
+}
+
+async fn send_text(sink: &mut Option<Sink>, text: String) {
+    if let Some(s) = sink
+        && s.send(Message::text(text)).await.is_err()
+    {
+        *sink = None;
     }
 }
 
@@ -559,6 +603,7 @@ async fn reactivation_step<S: ironrdp_tokio::FramedRead>(
     activation: &mut ConnectionActivationSequence,
     buf: &mut WriteBuf,
     skipped: &mut u32,
+    deferred: &mut Vec<Vec<u8>>,
 ) -> Result<Written, String> {
     loop {
         buf.clear();
@@ -566,6 +611,15 @@ async fn reactivation_step<S: ironrdp_tokio::FramedRead>(
             return activation.step_no_input(buf).map_err(|e| e.to_string());
         };
         let pdu = reader.read_by_hint(hint).await.map_err(|e| e.to_string())?;
+        // virtual channel data (clipboard, drives…): handled once the session is active again
+        if let Ok(ctx) = ironrdp_pdu::mcs::decode_send_data_indication(&pdu)
+            && ctx.channel_id != activation.io_channel_id()
+        {
+            if deferred.len() < 1024 {
+                deferred.push(pdu.to_vec());
+            }
+            continue;
+        }
         let backup = activation.clone();
         match activation.step(&pdu, reader.last_read_at(), buf) {
             Ok(w) => return Ok(w),
@@ -601,6 +655,7 @@ fn describe_pdu(pdu: &[u8]) -> String {
 async fn active_session(
     framed: Framed,
     result: ironrdp_connector::ConnectionResult,
+    channels: Channels,
     cmd_tx: mpsc::UnboundedSender<Cmd>,
     mut cmd_rx: mpsc::UnboundedReceiver<Cmd>,
 ) -> Result<String, String> {
@@ -625,9 +680,57 @@ async fn active_session(
     flush.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut pending_resize: Option<(u16, u16, tokio::time::Instant)> = None;
     let mut last_pointer: Option<Vec<u8>> = None;
+    let Channels { clip: mut clip_rx, drive } = channels;
+    // clipboard: our text (CRLF, as sent to the server), last text received from the server
+    let mut local_clip: Option<String> = None;
+    let mut remote_clip: Option<String> = None;
 
     loop {
         let outputs = tokio::select! {
+            ev = async {
+                match clip_rx.as_mut() {
+                    Some(rx) => rx.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                let Some(ev) = ev else {
+                    clip_rx = None;
+                    continue;
+                };
+                let Some(cliprdr) = stage.get_svc_processor_mut::<CliprdrClient>() else { continue };
+                let msgs = match ev {
+                    ClipEvent::AdvertiseLocal => {
+                        let formats: Vec<ClipboardFormat> =
+                            local_clip.iter().map(|_| ClipboardFormat::new(CF_UNICODETEXT)).collect();
+                        Some(cliprdr.initiate_copy(&formats))
+                    }
+                    ClipEvent::RemoteCopy(true) => Some(cliprdr.initiate_paste(CF_UNICODETEXT)),
+                    ClipEvent::RemoteCopy(false) => None,
+                    ClipEvent::DataRequest(format) => {
+                        let resp = match (&local_clip, format == CF_UNICODETEXT) {
+                            (Some(t), true) => FormatDataResponse::new_unicode_string(t),
+                            _ => FormatDataResponse::new_error(),
+                        };
+                        Some(cliprdr.submit_format_data(resp))
+                    }
+                    ClipEvent::DataResponse(text) => {
+                        if let Some(t) = text
+                            && !t.is_empty()
+                        {
+                            let m = serde_json::json!({ "t": "clip", "s": t }).to_string();
+                            remote_clip = Some(t);
+                            send_text(&mut sink, m).await;
+                        }
+                        None
+                    }
+                };
+                if let Some(msgs) = msgs {
+                    let msgs = msgs.map_err(|e| e.to_string())?;
+                    let frame = stage.process_svc_processor_messages(msgs).map_err(|e| e.to_string())?;
+                    writer.write_all(&frame).await.map_err(|e| e.to_string())?;
+                }
+                Vec::new()
+            }
             frame = reader.read_pdu() => {
                 let (action, payload) = frame.map_err(|e| e.to_string())?;
                 stage.process(&mut image, action, &payload, None).map_err(|e| e.to_string())?
@@ -671,6 +774,25 @@ async fn active_session(
                     }
                     Vec::new()
                 }
+                Some(Cmd::In(WsIn::Clip { s })) => {
+                    // ignore the echo of what the server just gave us
+                    if remote_clip.as_deref() != Some(s.as_str()) && !s.is_empty() {
+                        let t = rdp_channels::to_remote(&s);
+                        if local_clip.as_deref() != Some(t.as_str()) {
+                            local_clip = Some(t);
+                            if let Some(cliprdr) = stage.get_svc_processor_mut::<CliprdrClient>()
+                                && cliprdr.is_ready()
+                            {
+                                let msgs = cliprdr
+                                    .initiate_copy(&[ClipboardFormat::new(CF_UNICODETEXT)])
+                                    .map_err(|e| e.to_string())?;
+                                let frame = stage.process_svc_processor_messages(msgs).map_err(|e| e.to_string())?;
+                                writer.write_all(&frame).await.map_err(|e| e.to_string())?;
+                            }
+                        }
+                    }
+                    Vec::new()
+                }
                 Some(Cmd::In(m)) => {
                     let events = input_events(m);
                     if events.is_empty() {
@@ -681,6 +803,16 @@ async fn active_session(
                 }
             },
             _ = flush.tick() => {
+                // shared folder: I/O completed by the backend's worker threads
+                if drive
+                    && let Some(rdpdr) = stage.get_svc_processor_mut::<Rdpdr>()
+                {
+                    let msgs = rdpdr.poll_deferred_messages().map_err(|e| e.to_string())?;
+                    if !msgs.is_empty() {
+                        let frame = stage.process_svc_messages_by_name(&Rdpdr::NAME, msgs).map_err(|e| e.to_string())?;
+                        writer.write_all(&frame).await.map_err(|e| e.to_string())?;
+                    }
+                }
                 if let Some((w, h, at)) = pending_resize
                     && at <= tokio::time::Instant::now()
                 {
@@ -729,8 +861,10 @@ async fn active_session(
                     let mut activation = activation_factory.create();
                     let mut buf = WriteBuf::new();
                     let mut skipped = 0u32;
+                    let mut deferred = Vec::new();
                     loop {
-                        let written = reactivation_step(&mut reader, &mut activation, &mut buf, &mut skipped).await?;
+                        let written =
+                            reactivation_step(&mut reader, &mut activation, &mut buf, &mut skipped, &mut deferred).await?;
                         if written.size().is_some() {
                             writer.write_all(buf.filled()).await.map_err(|e| e.to_string())?;
                         }
@@ -758,6 +892,14 @@ async fn active_session(
                             send(&mut sink, size_message(desktop_size.width, desktop_size.height)).await;
                             dirty.0 = None;
                             break;
+                        }
+                    }
+                    for pdu in deferred {
+                        let outs = stage.process(&mut image, ironrdp_pdu::Action::X224, &pdu, None).map_err(|e| e.to_string())?;
+                        for o in outs {
+                            if let ActiveStageOutput::ResponseFrame(f) = o {
+                                writer.write_all(&f).await.map_err(|e| e.to_string())?;
+                            }
                         }
                     }
                 }

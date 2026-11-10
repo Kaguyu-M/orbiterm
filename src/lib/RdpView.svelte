@@ -22,7 +22,7 @@
 
 <script lang="ts">
   // Embedded RDP session: the remote desktop drawn in a canvas, fed by the backend (IronRDP).
-  import { clipRead } from "./clipboard";
+  import { clipRead, clipWrite } from "./clipboard";
   import { onMount } from "svelte";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import Icon from "./Icon.svelte";
@@ -48,6 +48,19 @@
   // svelte-ignore state_referenced_locally
   const fit = (tab.session.extra?.rdp_size || "fit") === "fit";
 
+  // shared clipboard (CLIPRDR): the remote copies arrive as {t:"clip"}, ours are sent when they change
+  // svelte-ignore state_referenced_locally
+  const shareClip = (tab.session.extra?.rdp_clipboard ?? "1") !== "0";
+  let lastClip: string | null = null;
+  async function syncClip() {
+    if (!shareClip || !connected) return;
+    const text = await clipRead().catch(() => "");
+    if (text && text !== lastClip) {
+      lastClip = text;
+      send({ t: "clip", s: text });
+    }
+  }
+
   function send(m: object) {
     if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(m));
   }
@@ -69,6 +82,18 @@
   }
 
   function onMessage(ev: MessageEvent) {
+    if (typeof ev.data === "string") {
+      try {
+        const m = JSON.parse(ev.data);
+        if (m.t === "clip" && typeof m.s === "string") {
+          lastClip = m.s;
+          clipWrite(m.s);
+        }
+      } catch {
+        /* ignore */
+      }
+      return;
+    }
     const buf = ev.data as ArrayBuffer;
     const dv = new DataView(buf);
     const t = dv.getUint8(0);
@@ -110,6 +135,7 @@
       status = "";
       if (active) canvas.focus();
       setTimeout(requestFit, 300);
+      syncClip();
     };
     s.onmessage = onMessage;
     s.onclose = () => {
@@ -142,6 +168,16 @@
       requestFit();
       canvas?.focus();
     }
+  });
+
+  // local clipboard → remote: checked while the tab is shown (the remote asks for the data on paste)
+  $effect(() => {
+    if (!shareClip || !active || !connected) return;
+    syncClip();
+    const t = setInterval(() => {
+      if (document.hasFocus()) syncClip();
+    }, 1000);
+    return () => clearInterval(t);
   });
 
   onMount(() => {

@@ -10,7 +10,7 @@ Conception : [`docs/CONCEPTION.md`](docs/CONCEPTION.md).
 |---|---|
 | Sessions | SSH, Telnet, Rlogin, port série, Mosh, shells locaux (PowerShell, cmd, Git Bash…), WSL ; dossiers, glisser-déposer, recherche, connexion rapide, sessions récentes |
 | SSH | mot de passe (trousseau du système) ou clé, vérification des clés d'hôte, navigateur SFTP, compression, commande distante, keepalive ; bandeau au-dessus du terminal (copier, coller, effacer, session SFTP, plein écran, fermer la session), barre d’informations du serveur sous le terminal (CPU, mémoire, disque, réseau, durée de fonctionnement, utilisateurs) ; depuis un onglet SSH : **session SFTP séparée** enregistrée (même serveur, même compte, mot de passe mémorisé dans le trousseau) |
-| Bureaux distants | RDP **intégré dans l'onglet** (client IronRDP : NLA, certificat vérifié comme les clés SSH, mot de passe dans le trousseau, bureau adapté à la taille de l'onglet, plein écran, Ctrl+Alt+Suppr, coller du texte, bouton **Fermer la session** (fermeture de la session Windows ou Linux, ou simple déconnexion), barre d’informations du poste distant ; option fenêtre séparée mstsc / FreeRDP), VNC intégré dans l'onglet (noVNC : mot de passe mémorisable, ajustement, lecture seule, Ctrl+Alt+Suppr, presse-papiers) |
+| Bureaux distants | RDP **intégré dans l'onglet** (client IronRDP : NLA, certificat vérifié comme les clés SSH, mot de passe dans le trousseau, bureau adapté à la taille de l'onglet, plein écran, Ctrl+Alt+Suppr, **presse-papiers partagé** (texte, dans les deux sens), **partage d’un dossier local** (lecteur redirigé : « Ce PC » sous Windows, ~/thinclient_drives avec xrdp), coller du texte, bouton **Fermer la session** (fermeture de la session Windows ou Linux, ou simple déconnexion), barre d’informations du poste distant ; option fenêtre séparée mstsc / FreeRDP), VNC intégré dans l'onglet (noVNC : mot de passe mémorisable, ajustement, lecture seule, Ctrl+Alt+Suppr, presse-papiers) |
 | Fichiers | onglets SFTP et FTP / FTPS autonomes (explorateur plein onglet avec colonnes, envoi / téléchargement / glisser-déposer) |
 | Navigateur | onglet web intégré (précédent / suivant / actualiser / barre d'adresse), sans aucun accès aux commandes d'Orbiterm |
 | Réseau | redirections -L / -R / -D (SOCKS) par session, gestionnaire de tunnels (démarrage auto), rebond SSH (jump host, aussi pour RDP / VNC), redirection X11 (VcXsrv / Xming / X natif) |
@@ -135,6 +135,7 @@ src-tauri/src/               backend Rust
   config.rs, secrets.rs      sessions.toml (écriture atomique), trousseau du système
   importer.rs                import de sessions
   rdp_client.rs              client RDP intégré (IronRDP) + pont WebSocket vers l'onglet
+  rdp_channels.rs            canaux RDP : presse-papiers (cliprdr) et dossier partagé (rdpdr)
   ftp.rs, rdp.rs, vnc.rs     FTP/FTPS (suppaftp), RDP externe (mstsc / FreeRDP), pont WebSocket ↔ VNC
   browser.rs                 webviews enfants du navigateur
   servers/                   serveurs intégrés HTTP, TFTP, FTP (libunftp), SSH (russh) ; sftp_server.rs

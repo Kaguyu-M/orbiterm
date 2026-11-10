@@ -637,6 +637,8 @@ pub async fn term_open(app: AppHandle, state: State<'_, AppState>, args: OpenArg
                     width: opts.width.min(8192) as u16,
                     height: opts.height.min(8192) as u16,
                     known_hosts: state.config_dir.join("rdp_known_hosts"),
+                    clipboard: opts.clipboard,
+                    share_dir: opts.drives.then(|| rdp_share_dir(&session)),
                 };
                 let prompter = make_prompter(app.clone(), state.hostkey_waiters.clone());
                 match rdp_client::connect(params, prompter, on_close).await {
@@ -1139,4 +1141,12 @@ pub async fn xserver_start() -> AppResult<x11::XServerStatus> {
 #[tauri::command]
 pub async fn xserver_stop() -> AppResult<x11::XServerStatus> {
     tokio::task::spawn_blocking(x11::stop).await.map_err(|e| AppError::Conn(e.to_string()))
+}
+/// Local folder shared with the remote computer (embedded RDP): the chosen one, else the home folder.
+fn rdp_share_dir(session: &Session) -> std::path::PathBuf {
+    let d = session.opt("rdp_share_dir").trim();
+    if !d.is_empty() {
+        return std::path::PathBuf::from(d);
+    }
+    directories::UserDirs::new().map(|u| u.home_dir().to_path_buf()).unwrap_or_else(|| std::path::PathBuf::from("."))
 }

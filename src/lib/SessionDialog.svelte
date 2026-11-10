@@ -76,6 +76,10 @@
     const d = await open({ directory: true, title: "Répertoire de démarrage" });
     if (typeof d === "string") setX("cwd", d);
   }
+  async function pickShare() {
+    const d = await open({ directory: true, title: "Dossier local partagé avec le poste distant" });
+    if (typeof d === "string") setX("rdp_share_dir", d);
+  }
   async function pickProgram() {
     const f = await open({ multiple: false, directory: false, title: "Programme à lancer" });
     if (typeof f === "string") setX("program", f);
@@ -251,6 +255,18 @@
               </select>
               <span class="lbl">Infos système</span>
               <label class="chk" title="CPU, mémoire, disque, réseau : lus par SSH (port 22) avec le même compte, si le poste l'accepte"><input type="checkbox" checked={x("rdp_monitor") !== "0"} onchange={(e) => setX("rdp_monitor", e.currentTarget.checked ? "" : "0")} /> Afficher les informations du poste distant (via SSH, même compte)</label>
+              <span class="lbl">Redirections</span>
+              <div class="row">
+                <label class="chk" title="Texte copié d'un côté, collé de l'autre (dans les deux sens)"><input type="checkbox" checked={x("rdp_clipboard", "1") === "1"} onchange={(e) => setX("rdp_clipboard", e.currentTarget.checked ? "1" : "0")} /> Presse-papiers partagé</label>
+                <label class="chk" title="Le dossier apparaît sur le poste distant dans « Ce PC » (Windows) ou ~/thinclient_drives (xrdp)"><input type="checkbox" checked={x("rdp_drives") === "1"} onchange={(e) => setX("rdp_drives", e.currentTarget.checked ? "1" : "0")} /> Partager un dossier local</label>
+              </div>
+              {#if x("rdp_drives") === "1"}
+                <label class="lbl" for="rshare">Dossier partagé</label>
+                <div class="row">
+                  <input id="rshare" value={x("rdp_share_dir")} oninput={(e) => setX("rdp_share_dir", e.currentTarget.value)} placeholder="(dossier personnel)" spellcheck="false" />
+                  <button type="button" onclick={pickShare}>…</button>
+                </div>
+              {/if}
             {:else}
               <span class="lbl">Redirections</span>
               <div class="row">

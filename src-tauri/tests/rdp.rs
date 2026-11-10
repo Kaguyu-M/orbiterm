@@ -46,6 +46,9 @@ fn params(port: u16, password: &str, known: &std::path::Path) -> RdpParams {
         width: 1024,
         height: 768,
         known_hosts: known.to_path_buf(),
+        // the clipboard and drive channels must not disturb the session
+        clipboard: true,
+        share_dir: known.parent().map(|p| p.to_path_buf()),
     }
 }
 
