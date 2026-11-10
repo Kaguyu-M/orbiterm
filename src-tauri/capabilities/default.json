@@ -6,6 +6,8 @@
   "permissions": [
     "core:default",
     "dialog:allow-open",
+    "clipboard-manager:allow-read-text",
+    "clipboard-manager:allow-write-text",
     "opener:allow-open-url",
     "core:window:allow-close",
     "core:window:allow-set-fullscreen",

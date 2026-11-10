@@ -14,6 +14,7 @@
 
 <script lang="ts">
   // One xterm.js terminal bound to one backend connection (any protocol).
+  import { clipRead, clipWrite } from "./clipboard";
   import { onMount } from "svelte";
   import { Terminal } from "@xterm/xterm";
   import { FitAddon } from "@xterm/addon-fit";
@@ -111,9 +112,9 @@
 
     const copy = () => {
       const sel = term!.getSelection();
-      if (sel) navigator.clipboard.writeText(sel);
+      if (sel) clipWrite(sel);
     };
-    const paste = () => navigator.clipboard.readText().then((t) => t && term!.paste(t));
+    const paste = () => clipRead().then((t) => t && term!.paste(t));
 
     // Copy on Ctrl+Shift+C, paste on Ctrl+Shift+V / Shift+Insert (Ctrl+C stays "interrupt").
     term.attachCustomKeyEventHandler((ev) => {
@@ -137,7 +138,7 @@
     term.onSelectionChange(() => {
       if (!prefs.copyOnSelect) return;
       const sel = term!.getSelection();
-      if (sel) navigator.clipboard.writeText(sel).catch(() => {});
+      if (sel) clipWrite(sel).catch(() => {});
     });
     term.onBell(() => {
       if (!prefs.visualBell) return;

@@ -22,6 +22,7 @@
 
 <script lang="ts">
   // Embedded RDP session: the remote desktop drawn in a canvas, fed by the backend (IronRDP).
+  import { clipRead } from "./clipboard";
   import { onMount } from "svelte";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import Icon from "./Icon.svelte";
@@ -207,7 +208,7 @@
   }
 
   async function pasteText() {
-    const text = await navigator.clipboard.readText().catch(() => "");
+    const text = await clipRead().catch(() => "");
     if (text) send({ t: "u", s: text });
     canvas.focus();
   }

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { clipWrite } from "./clipboard";
   import { onMount } from "svelte";
   import Modal from "./Modal.svelte";
   import Icon from "./Icon.svelte";
@@ -82,7 +83,7 @@
         <div class="row">
           <label for="cfg">Dossier de configuration</label>
           <input id="cfg" readonly value={cfgDir} />
-          <button onclick={() => navigator.clipboard.writeText(cfgDir)} title="Copier le chemin"><Icon name="copy" size={14} /></button>
+          <button onclick={() => clipWrite(cfgDir)} title="Copier le chemin"><Icon name="copy" size={14} /></button>
         </div>
         <p class="muted">Sessions, dossiers, tunnels et macros y sont enregistrés (sessions.toml). Les mots de passe restent dans le trousseau du système.</p>
         <button onclick={() => { app.showSettings = false; app.showImport = true; }}><Icon name="download" size={14} /> Importer des sessions (MobaXterm, PuTTY, OpenSSH)…</button>
@@ -163,7 +164,7 @@
         <div class="row">
           <label for="uit">Thème de l'interface</label>
           <select id="uit" bind:value={p.uiTheme} data-uitheme>
-            <option value="system">Suivre Windows / le système</option>
+            <option value="system">Suivre le système</option>
             <option value="light">Clair (crème)</option>
             <option value="dark">Sombre (brun)</option>
           </select>

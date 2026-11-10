@@ -387,7 +387,7 @@ async fn open_ssh(
             let pw = match secrets_in.password.clone() {
                 Some(p) => p,
                 None if saved && session.remember_password => {
-                    secrets::get_password(&session.id)?.ok_or(AppError::NeedPassword)?
+                    secrets::saved_password(&session.id).ok_or(AppError::NeedPassword)?
                 }
                 None => return Err(AppError::NeedPassword),
             };
@@ -413,7 +413,7 @@ async fn open_ssh(
             let pw = match secrets_in.jump_password.clone() {
                 Some(p) => p,
                 None if saved && session.remember_password => {
-                    secrets::get_password(&jump_account(&session.id))?.ok_or(AppError::NeedJumpPassword)?
+                    secrets::saved_password(&jump_account(&session.id)).ok_or(AppError::NeedJumpPassword)?
                 }
                 None => return Err(AppError::NeedJumpPassword),
             };
@@ -540,7 +540,7 @@ fn session_password(session: &Session, typed: &Option<String>) -> AppResult<Stri
     match typed {
         Some(p) => Ok(p.clone()),
         None if !session.id.is_empty() && session.remember_password => {
-            secrets::get_password(&session.id)?.ok_or(AppError::NeedPassword)
+            secrets::saved_password(&session.id).ok_or(AppError::NeedPassword)
         }
         None => Err(AppError::NeedPassword),
     }

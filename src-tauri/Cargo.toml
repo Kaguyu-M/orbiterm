@@ -1,6 +1,6 @@
 [package]
 name = "orbiterm"
-version = "0.7.3"
+version = "0.7.4"
 description = "Orbiterm - SSH terminal & SFTP browser"
 authors = ["Raphael"]
 edition = "2024"
@@ -58,6 +58,7 @@ unftp-sbe-fs = "0.4"
 unftp-core = "0.1"
 async-trait = "0.1"
 rand = "0.10"
+tauri-plugin-clipboard-manager = "2"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"

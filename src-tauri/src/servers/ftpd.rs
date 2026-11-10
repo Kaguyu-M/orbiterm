@@ -188,5 +188,17 @@ pub async fn start(addr: SocketAddr, ctx: Ctx, stop: oneshot::Receiver<()>) -> s
             log.log(format!("Serveur FTP arrêté : {e}"));
         }
     });
+    // libunftp binds inside its task: only report "started" once the port really accepts
+    // connections (on Linux the first client could otherwise be refused).
+    let target = if addr.ip().is_unspecified() { SocketAddr::from(([127, 0, 0, 1], port)) } else { SocketAddr::new(addr.ip(), port) };
+    for _ in 0..100 {
+        if task.is_finished() {
+            return Err(std::io::Error::other("le serveur FTP n'a pas pu démarrer"));
+        }
+        if tokio::net::TcpStream::connect(target).await.is_ok() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
     Ok((task, port))
 }

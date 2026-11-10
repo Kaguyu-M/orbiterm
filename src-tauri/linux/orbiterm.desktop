@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name={{name}}
+GenericName=Terminal et client d'accès distant
+Comment=SSH, SFTP, RDP, VNC, Telnet, terminal local et outils réseau
+Exec={{exec}}
+Icon={{icon}}
+StartupWMClass={{exec}}
+Terminal=false
+Categories=Network;RemoteAccess;System;TerminalEmulator;
+Keywords=ssh;sftp;rdp;vnc;telnet;serial;terminal;

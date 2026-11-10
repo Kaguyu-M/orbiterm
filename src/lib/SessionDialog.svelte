@@ -115,7 +115,7 @@
 
 <Modal title="Paramètres de la session" onclose={() => (app.editing = null)} width="760px">
   <div class="protos" role="radiogroup" aria-label="Type de session">
-    {#each PROTOCOLS as pr (pr.kind)}
+    {#each PROTOCOLS.filter((p) => p.kind !== "wsl" || IS_WINDOWS || s.kind === "wsl") as pr (pr.kind)}
       <button
         class="proto"
         class:on={s.kind === pr.kind}

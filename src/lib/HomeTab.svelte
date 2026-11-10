@@ -2,7 +2,7 @@
   import Icon from "./Icon.svelte";
   import Logo from "./Logo.svelte";
   import { app } from "./app.svelte";
-  import { describe, protocol } from "./api";
+  import { describe, IS_WINDOWS, protocol } from "./api";
 
   let query = $state("");
 
@@ -52,7 +52,7 @@
         <Icon name="session" size={34} />
         <span>
           <b>Nouvelle session</b>
-          <small>SSH, Telnet, série, WSL…</small>
+          <small>SSH, Telnet, série{IS_WINDOWS ? ", WSL" : ""}…</small>
         </span>
       </button>
     </div>

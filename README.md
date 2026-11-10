@@ -21,17 +21,42 @@ Conception : [`docs/CONCEPTION.md`](docs/CONCEPTION.md).
 | Apparence | interface épurée, **mode clair / sombre** (ou suivre le système, menu Affichage → Mode sombre), palette brun profond / noisette / olive / ambre / crème, thèmes de terminal « Orbiterm brun » et « Orbiterm crème » |
 | Configuration | fenêtre Paramètres : général, terminal, SSH, serveur X, affichage |
 
-Prochaine étape : version Linux.
+Disponible pour **Windows** (installateur) et **Linux** : Debian / Ubuntu (`.deb`), Fedora (`.rpm`) et NixOS (flake Nix).
 
 ---
 
 ## Tester l'application (recette)
 
 ### 1. Installer
-Lance `livrables\Orbiterm_0.7.3_x64-setup.exe`.
+
+**Windows** : lance `livrables\Orbiterm_0.7.4_x64-setup.exe`.
 
 > L'installateur n'est pas signé : Windows SmartScreen peut afficher « Windows a protégé votre ordinateur ».
 > Clique sur **Informations complémentaires → Exécuter quand même**.
+
+**Debian / Ubuntu** (Debian 13, Ubuntu 24.04 ou plus récent) :
+```bash
+sudo apt install ./Orbiterm_0.7.4_amd64.deb
+```
+
+**Fedora** (41 ou plus récent) :
+```bash
+sudo dnf install ./Orbiterm-0.7.4-1.x86_64.rpm
+```
+
+**NixOS** : le dépôt est un flake. Essai sans installer : `nix run path:/chemin/vers/Orbiterm`.
+Installation permanente, dans le `flake.nix` du système :
+```nix
+inputs.orbiterm.url = "path:/chemin/vers/Orbiterm";   # ou l'URL git du dépôt
+# puis dans la configuration :
+imports = [ inputs.orbiterm.nixosModules.default ];
+programs.orbiterm.enable = true;
+```
+(ou `environment.systemPackages = [ inputs.orbiterm.packages.x86_64-linux.default ];`, ou Home Manager : `home.packages`).
+
+> Sous Linux, les mots de passe mémorisés vont dans le trousseau du bureau (GNOME Keyring, KWallet, KeePassXC…
+> via Secret Service). S'il est verrouillé, le système demande de le déverrouiller ; sans réponse, Orbiterm
+> continue et redemande simplement le mot de passe.
 
 ### 2. Serveur de test (aucun serveur Linux nécessaire)
 `livrables\serveur-de-test.exe` démarre un serveur SSH/SFTP sur `127.0.0.1:2222` (utilisateur `test`, mot de passe `test`)
@@ -70,14 +95,15 @@ les mots de passe dans le **Gestionnaire d'identifiants Windows** (entrées `…
 ## Développement
 
 Prérequis : Rust (stable), Node.js 20+, sous Windows les Build Tools C++ de Visual Studio,
-sous Linux `libwebkit2gtk-4.1-dev libssl-dev libsecret-1-dev libudev-dev` (voir https://tauri.app/start/prerequisites/).
+sous Linux (Debian) `build-essential pkg-config libwebkit2gtk-4.1-dev libssl-dev libdbus-1-dev libxdo-dev libayatana-appindicator3-dev librsvg2-dev` (voir https://tauri.app/start/prerequisites/).
 
 ```bash
 npm install
 npm run tauri dev            # lancer en mode développement
 cd src-tauri && cargo test   # tests unitaires + bout en bout (SSH, SFTP, FTP, VNC, RDP, tunnels, rebond, X11, PTY, Telnet, import, serveurs intégrés, scanner)
 npm run check                # vérification TypeScript/Svelte
-npm run tauri build          # installateurs (.msi/.exe sous Windows, .deb/.AppImage sous Linux)
+npm run tauri build          # installateurs : .exe (NSIS) sous Windows, .deb + .rpm sous Linux
+nix build path:.             # paquet Nix (NixOS), résultat dans ./result
 cargo run --example test_server -- 2222   # serveur SSH/SFTP de test (user test / test)
 cargo run --example ftp_test_server        # FTP de test sur 2121
 cargo run --example vnc_test_server        # VNC de test sur 5901 (mot de passe test)

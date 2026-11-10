@@ -1,5 +1,6 @@
 <script lang="ts">
   // VNC viewer (noVNC) connected to the backend WebSocket bridge of the tab.
+  import { clipRead } from "./clipboard";
   import RFB from "@novnc/novnc";
   import Icon from "./Icon.svelte";
   import { api, type Session } from "./api";
@@ -93,7 +94,7 @@
   $effect(() => () => rfb?.disconnect());
 
   async function pasteClipboard() {
-    const text = await navigator.clipboard.readText().catch(() => "");
+    const text = await clipRead().catch(() => "");
     if (text) rfb?.clipboardPasteFrom(text);
   }
 </script>
