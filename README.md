@@ -4,7 +4,7 @@ Terminal multi-protocoles multiplateforme (Windows + Linux) : onglets, sessions 
 X11, RDP, VNC, FTP, navigateur web, écran partagé, MultiExec et macros. Application originale dont l'ergonomie s'inspire de MobaXterm.
 Conception : [`docs/CONCEPTION.md`](docs/CONCEPTION.md).
 
-**Version 0.7.0**
+**Version 0.7.1**
 
 | Domaine | Fonctionnalités |
 |---|---|
@@ -28,7 +28,7 @@ Prochaine étape : version Linux.
 ## Tester l'application (recette)
 
 ### 1. Installer
-Lance `livrables\Orbiterm_0.7.0_x64-setup.exe`.
+Lance `livrables\Orbiterm_0.7.1_x64-setup.exe`.
 
 > L'installateur n'est pas signé : Windows SmartScreen peut afficher « Windows a protégé votre ordinateur ».
 > Clique sur **Informations complémentaires → Exécuter quand même**.

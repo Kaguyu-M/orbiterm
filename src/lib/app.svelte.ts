@@ -821,9 +821,11 @@ class App {
     this.activeKey = keys[(i + dir + keys.length) % keys.length];
   }
 
-  onConnectionClosed(connId: string) {
+  onConnectionClosed(connId: string, reason = "") {
     const t = this.tabs.find((x) => x.connId === connId);
     if (t) {
+      // views without a terminal (RDP, VNC…) show it from tab.status
+      t.status = reason;
       // the terminal prints the reason; release the backend connection
       t.state = "closed";
       api.termClose(connId).catch(() => {});

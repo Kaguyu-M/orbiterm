@@ -417,7 +417,7 @@
     startBus();
     app.init();
     listen<HostKeyPrompt>("hostkey-prompt", (e) => app.hostKeys.push(e.payload)).then((u) => unsubs.push(u));
-    unsubs.push(onConnectionClosed((connId) => app.onConnectionClosed(connId)));
+    unsubs.push(onConnectionClosed((connId, reason) => app.onConnectionClosed(connId, reason)));
     // X server and standalone tunnels can change outside the app
     const poll = setInterval(() => {
       app.refreshX();

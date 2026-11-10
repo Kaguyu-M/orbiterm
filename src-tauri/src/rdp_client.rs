@@ -27,10 +27,12 @@ use ironrdp_pdu::input::fast_path::{FastPathInputEvent, KeyboardFlags, Synchroni
 use ironrdp_pdu::input::mouse::PointerFlags;
 use ironrdp_pdu::input::MousePdu;
 use ironrdp_pdu::rdp::capability_sets::{client_codecs_capabilities, MajorPlatformType};
-use ironrdp_pdu::rdp::client_info::{CompressionType, PerformanceFlags, TimezoneInfo};
+use ironrdp_pdu::rdp::client_info::{PerformanceFlags, TimezoneInfo};
 use ironrdp_session::image::DecodedImage;
 use ironrdp_session::{fast_path, ActiveStageBuilder, ActiveStageOutput};
-use ironrdp_tokio::{single_sequence_step_read, split_tokio_framed, FramedWrite as _};
+use ironrdp_connector::connection_activation::ConnectionActivationSequence;
+use ironrdp_connector::{Sequence as _, Written};
+use ironrdp_tokio::{split_tokio_framed, FramedWrite as _};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -231,7 +233,10 @@ fn connector_config(p: &RdpParams) -> AppResult<ironrdp_connector::Config> {
         request_data: None,
         pointer_software_rendering: false,
         multitransport_flags: None,
-        compression_type: Some(CompressionType::K64),
+        // no bulk compression: xrdp then compresses even the share-data PDUs of the
+        // Deactivation-Reactivation sequence, which IronRDP cannot decode there (the
+        // session dropped right after the logon on Kali / xrdp)
+        compression_type: None,
         performance_flags: PerformanceFlags::default(),
         timezone_info: TimezoneInfo::default(),
         alternate_shell: String::new(),
@@ -544,6 +549,55 @@ async fn send(sink: &mut Option<Sink>, data: Vec<u8>) {
     }
 }
 
+/// One step of the Deactivation-Reactivation sequence (server-initiated, e.g. xrdp after
+/// the logon, or after a resolution change).
+///
+/// IronRDP aborts on any share-data PDU it does not expect during the finalization
+/// (xrdp sends some there); like mstsc, such PDUs are skipped and the sequence goes on.
+async fn reactivation_step<S: ironrdp_tokio::FramedRead>(
+    reader: &mut ironrdp_tokio::Framed<S>,
+    activation: &mut ConnectionActivationSequence,
+    buf: &mut WriteBuf,
+    skipped: &mut u32,
+) -> Result<Written, String> {
+    loop {
+        buf.clear();
+        let Some(hint) = activation.next_pdu_hint() else {
+            return activation.step_no_input(buf).map_err(|e| e.to_string());
+        };
+        let pdu = reader.read_by_hint(hint).await.map_err(|e| e.to_string())?;
+        let backup = activation.clone();
+        match activation.step(&pdu, reader.last_read_at(), buf) {
+            Ok(w) => return Ok(w),
+            Err(e)
+                if *skipped < 256
+                    && matches!(backup.connection_activation_state(), ConnectionActivationState::ConnectionFinalization { .. }) =>
+            {
+                log::warn!("RDP : PDU ignoré pendant la réactivation ({}) : {e}", describe_pdu(&pdu));
+                #[cfg(debug_assertions)]
+                eprintln!("RDP : PDU ignoré pendant la réactivation ({}) : {e}", describe_pdu(&pdu));
+                *activation = backup;
+                *skipped += 1;
+            }
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+}
+
+/// Short description of a slow-path PDU, for the logs.
+fn describe_pdu(pdu: &[u8]) -> String {
+    use ironrdp_pdu::rdp::headers::ShareControlPdu;
+    let d = ironrdp_pdu::mcs::decode_send_data_indication(pdu)
+        .ok()
+        .and_then(|ctx| ironrdp_pdu::rdp::headers::decode_share_control(ctx).ok())
+        .map(|c| match c.pdu {
+            ShareControlPdu::Data(h) => format!("{:?}", h.share_data_pdu),
+            other => format!("{other:?}"),
+        })
+        .unwrap_or_else(|| format!("{} octets", pdu.len()));
+    d.chars().take(80).collect()
+}
+
 async fn active_session(
     framed: Framed,
     result: ironrdp_connector::ConnectionResult,
@@ -674,10 +728,9 @@ async fn active_session(
                     // Deactivation-Reactivation Sequence (e.g. after a resolution change)
                     let mut activation = activation_factory.create();
                     let mut buf = WriteBuf::new();
+                    let mut skipped = 0u32;
                     loop {
-                        let written = single_sequence_step_read(&mut reader, &mut activation, &mut buf)
-                            .await
-                            .map_err(|e| e.to_string())?;
+                        let written = reactivation_step(&mut reader, &mut activation, &mut buf, &mut skipped).await?;
                         if written.size().is_some() {
                             writer.write_all(buf.filled()).await.map_err(|e| e.to_string())?;
                         }

@@ -113,7 +113,10 @@
     s.onclose = () => {
       if (ws !== s) return;
       connected = false;
-      status = "Bureau à distance déconnecté.";
+      // the backend reason (server logoff, error…) arrives with term-closed
+      setTimeout(() => {
+        if (ws === s) status = tab.status ? `Bureau à distance déconnecté : ${tab.status}` : "Bureau à distance déconnecté.";
+      }, 150);
     };
   }
 
