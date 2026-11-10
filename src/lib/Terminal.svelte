@@ -117,21 +117,17 @@
 
     // Copy on Ctrl+Shift+C, paste on Ctrl+Shift+V / Shift+Insert (Ctrl+C stays "interrupt").
     term.attachCustomKeyEventHandler((ev) => {
-      if (ev.type !== "keydown") return true;
-      if (ev.shiftKey && ev.code === "Insert") {
-        paste();
-        return false;
+      const pasteKey = (ev.shiftKey && !ev.ctrlKey && ev.code === "Insert") || (ev.ctrlKey && ev.shiftKey && ev.code === "KeyV");
+      const copyKey = ev.ctrlKey && ev.shiftKey && ev.code === "KeyC";
+      if (!pasteKey && !copyKey) return true;
+      // The WebView would also paste natively ("paste as plain text" on Ctrl+Shift+V,
+      // Shift+Insert): xterm then received the text a second time. Only our handler acts.
+      ev.preventDefault();
+      if (ev.type === "keydown") {
+        if (pasteKey) paste();
+        else copy();
       }
-      if (!ev.ctrlKey || !ev.shiftKey) return true;
-      if (ev.code === "KeyC") {
-        copy();
-        return false;
-      }
-      if (ev.code === "KeyV") {
-        paste();
-        return false;
-      }
-      return true;
+      return false;
     });
     // right click = paste, like most Unix terminals (selection is copied automatically)
     host.addEventListener("contextmenu", (e) => {

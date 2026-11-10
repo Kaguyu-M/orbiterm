@@ -4,12 +4,12 @@ Terminal multi-protocoles multiplateforme (Windows + Linux) : onglets, sessions 
 X11, RDP, VNC, FTP, navigateur web, écran partagé, MultiExec et macros. Application originale dont l'ergonomie s'inspire de MobaXterm.
 Conception : [`docs/CONCEPTION.md`](docs/CONCEPTION.md).
 
-**Version 0.7.2**
+**Version 0.7.3**
 
 | Domaine | Fonctionnalités |
 |---|---|
 | Sessions | SSH, Telnet, Rlogin, port série, Mosh, shells locaux (PowerShell, cmd, Git Bash…), WSL ; dossiers, glisser-déposer, recherche, connexion rapide, sessions récentes |
-| SSH | mot de passe (trousseau du système) ou clé, vérification des clés d'hôte, navigateur SFTP, compression, commande distante, keepalive ; barre d’informations du serveur sous le terminal (CPU, mémoire, disque, réseau, durée de fonctionnement, utilisateurs) ; depuis un onglet SSH : **session SFTP séparée** enregistrée (même serveur, même compte, mot de passe mémorisé dans le trousseau) |
+| SSH | mot de passe (trousseau du système) ou clé, vérification des clés d'hôte, navigateur SFTP, compression, commande distante, keepalive ; bandeau au-dessus du terminal (copier, coller, effacer, session SFTP, plein écran, fermer la session), barre d’informations du serveur sous le terminal (CPU, mémoire, disque, réseau, durée de fonctionnement, utilisateurs) ; depuis un onglet SSH : **session SFTP séparée** enregistrée (même serveur, même compte, mot de passe mémorisé dans le trousseau) |
 | Bureaux distants | RDP **intégré dans l'onglet** (client IronRDP : NLA, certificat vérifié comme les clés SSH, mot de passe dans le trousseau, bureau adapté à la taille de l'onglet, plein écran, Ctrl+Alt+Suppr, coller du texte, bouton **Fermer la session** (fermeture de la session Windows ou Linux, ou simple déconnexion), barre d’informations du poste distant ; option fenêtre séparée mstsc / FreeRDP), VNC intégré dans l'onglet (noVNC : mot de passe mémorisable, ajustement, lecture seule, Ctrl+Alt+Suppr, presse-papiers) |
 | Fichiers | onglets SFTP et FTP / FTPS autonomes (explorateur plein onglet avec colonnes, envoi / téléchargement / glisser-déposer) |
 | Navigateur | onglet web intégré (précédent / suivant / actualiser / barre d'adresse), sans aucun accès aux commandes d'Orbiterm |
@@ -28,7 +28,7 @@ Prochaine étape : version Linux.
 ## Tester l'application (recette)
 
 ### 1. Installer
-Lance `livrables\Orbiterm_0.7.2_x64-setup.exe`.
+Lance `livrables\Orbiterm_0.7.3_x64-setup.exe`.
 
 > L'installateur n'est pas signé : Windows SmartScreen peut afficher « Windows a protégé votre ordinateur ».
 > Clique sur **Informations complémentaires → Exécuter quand même**.

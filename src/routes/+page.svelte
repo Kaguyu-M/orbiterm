@@ -10,6 +10,7 @@
   import VncView from "$lib/VncView.svelte";
   import RdpView from "$lib/RdpView.svelte";
   import RemoteInfo from "$lib/RemoteInfo.svelte";
+  import TermBar from "$lib/TermBar.svelte";
   import { app, HOME, SPLIT_LABELS, type SplitMode, type Tab } from "$lib/app.svelte";
   import ImportDialog from "$lib/ImportDialog.svelte";
   import SettingsDialog from "$lib/SettingsDialog.svelte";
@@ -536,7 +537,9 @@
             <div class="tbody" class:withhead={splitOn}>
               {#if view === "terminal"}
                 {@const mon = app.prefs.sshMonitor && t.session.kind === "ssh" && !!t.connId && t.state === "open"}
-                <div class="tmain" class:withinfo={mon}>
+                {@const tbar = app.prefs.termBar && protocol(t.session.kind).remote}
+                {#if tbar}<div class="ttop"><TermBar tab={t} /></div>{/if}
+                <div class="tmain" class:withinfo={mon} class:withbar={tbar}>
                   <Terminal
                     tabKey={t.key}
                     connId={t.connId}
@@ -1080,6 +1083,15 @@
   }
   .tmain.withinfo {
     bottom: 23px;
+  }
+  .tmain.withbar {
+    top: 31px;
+  }
+  .ttop {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 0;
   }
   .tinfo {
     position: absolute;

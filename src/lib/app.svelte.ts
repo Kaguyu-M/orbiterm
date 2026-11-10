@@ -78,6 +78,8 @@ export interface Prefs {
   sshSftp: boolean;
   /** information bar (CPU, RAM…) under SSH terminals */
   sshMonitor: boolean;
+  /** bar above remote terminals (copy / paste, SFTP, close…) */
+  termBar: boolean;
   // X11
   xAutoStart: boolean;
   // apparence de l'interface
@@ -106,6 +108,7 @@ export const DEFAULT_PREFS: Prefs = {
   sshCompression: false,
   sshSftp: true,
   sshMonitor: true,
+  termBar: true,
   xAutoStart: true,
   uiTheme: "system",
 };

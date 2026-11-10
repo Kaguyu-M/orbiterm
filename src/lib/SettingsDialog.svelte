@@ -175,6 +175,7 @@
         <label class="chk"><input type="checkbox" bind:checked={p.toolbar} /> Barre d'outils</label>
         <label class="chk"><input type="checkbox" bind:checked={p.sidebar} /> Barre latérale (sessions, outils, macros, SFTP)</label>
         <label class="chk"><input type="checkbox" bind:checked={p.statusbar} /> Barre d'état</label>
+        <label class="chk"><input type="checkbox" bind:checked={p.termBar} /> Bandeau au-dessus des terminaux distants (copier, coller, SFTP, fermer la session…)</label>
         <div class="row">
           <label for="sw">Largeur de la barre latérale</label>
           <input id="sw" class="num" type="number" min="180" max="600" bind:value={p.sidebarWidth} /> px
