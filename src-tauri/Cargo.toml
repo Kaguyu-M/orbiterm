@@ -1,6 +1,6 @@
 [package]
 name = "orbiterm"
-version = "0.7.5"
+version = "0.7.6"
 description = "Orbiterm - SSH terminal & SFTP browser"
 authors = ["Raphael"]
 edition = "2024"
@@ -64,6 +64,7 @@ ironrdp-rdpdr = "0.9.0"
 ironrdp-rdpdr-native = "0.9"
 env_logger = { version = "0.11", default-features = false }
 ironrdp-svc = "0.10"
+ironrdp-rdpsnd = "0.11"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"
@@ -81,3 +82,7 @@ lto = true
 opt-level = 3
 panic = "abort"
 strip = true
+
+[patch.crates-io]
+# drive name encoding fix for Windows servers (see vendor/ironrdp-rdpdr/src/pdu/efs.rs, "Orbiterm patch")
+ironrdp-rdpdr = { path = "vendor/ironrdp-rdpdr" }

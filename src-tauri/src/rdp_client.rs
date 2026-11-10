@@ -382,6 +382,11 @@ async fn establish(
         let rdpdr = rdp_channels::drive_channel(dir)
             .map_err(|e| AppError::Config(format!("RDP, dossier partagé : {e}")))?;
         connector.attach_static_channel(rdpdr);
+        // Windows only answers on RDPDR when RDPSND is advertised too (MS-RDPEFS appendix A<1>);
+        // no audio format is offered, so nothing is played
+        connector.attach_static_channel(ironrdp_rdpsnd::client::Rdpsnd::new(Box::new(
+            ironrdp_rdpsnd::client::NoopRdpsndBackend,
+        )));
         channels.drive = true;
     }
 
