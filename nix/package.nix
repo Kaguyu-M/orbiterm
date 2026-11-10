@@ -12,6 +12,7 @@
   webkitgtk_4_1,
   glib-networking,
   dbus,
+  aws-lc,
 }:
 
 let
@@ -59,6 +60,7 @@ rustPlatform.buildRustPackage (finalAttrs: {
     webkitgtk_4_1
     glib-networking # TLS for the embedded web views
     dbus # secret service (passwords in the system keyring)
+    aws-lc # rustls crypto (built-in FTP server); nixpkgs links the system AWS-LC
   ];
 
   # the test suite opens network servers and uses the session keyring
