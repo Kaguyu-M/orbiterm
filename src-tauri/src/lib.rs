@@ -24,6 +24,7 @@ pub mod sftp;
 pub mod ssh;
 pub mod telnet;
 pub mod terminal;
+pub mod termlog;
 pub mod x11;
 
 use tauri::Manager;
@@ -76,6 +77,7 @@ pub fn run() {
             commands::term_open,
             commands::hostkey_answer,
             commands::term_write,
+            commands::term_log,
             commands::term_resize,
             commands::term_close,
             commands::local_shells,

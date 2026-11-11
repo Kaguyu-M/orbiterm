@@ -4,7 +4,7 @@
   import Modal from "./Modal.svelte";
   import Icon from "./Icon.svelte";
   import { app } from "./app.svelte";
-  import { api, IS_WINDOWS, newForward, PROTOCOLS, protocol, type Session } from "./api";
+  import { api, IS_WINDOWS, newForward, PROTOCOLS, protocol, viewOf, type Session } from "./api";
 
   let { session }: { session: Session } = $props();
 
@@ -430,7 +430,19 @@
             <option value="">Sessions utilisateur (racine)</option>
             {#each app.store.folders as f (f.id)}<option value={f.id}>{folderPath(f.id)}</option>{/each}
           </select>
+          {#if viewOf(s) === "terminal"}
+            <label class="lbl" for="smac">Macro au démarrage</label>
+            <select id="smac" value={x("startup_macro")} onchange={(e) => setX("startup_macro", e.currentTarget.value)}>
+              <option value="">(aucune)</option>
+              {#each app.store.macros as m (m.id)}<option value={m.id}>{m.name}</option>{/each}
+            </select>
+          {/if}
+          <label class="lbl" for="scom">Commentaire</label>
+          <textarea id="scom" rows="3" value={x("comment")} oninput={(e) => setX("comment", e.currentTarget.value)} placeholder="(affiché au survol de la session)"></textarea>
         </div>
+        {#if viewOf(s) === "terminal" && !app.store.macros.length}
+          <p class="muted note">Enregistre d’abord une macro (menu Macros) pour la lancer automatiquement à l’ouverture de la session.</p>
+        {/if}
       {/if}
     </div>
   </div>

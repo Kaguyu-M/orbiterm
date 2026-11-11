@@ -135,7 +135,7 @@
     aria-selected={selected === s.id}
     tabindex="0"
     draggable="true"
-    title={describe(s)}
+    title={s.extra?.comment?.trim() ? `${describe(s)}\n\n${s.extra.comment.trim()}` : describe(s)}
     data-session={s.name}
     ondragstart={(e) => dragStart(e, "s", s.id)}
     onclick={() => (selected = s.id)}

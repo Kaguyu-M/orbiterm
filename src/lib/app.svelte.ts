@@ -71,6 +71,12 @@ export interface Prefs {
   copyOnSelect: boolean;
   rightClickPaste: boolean;
   visualBell: boolean;
+  /** copy of every terminal session in a text file */
+  termLog: boolean;
+  /** folder of the session logs ("" = Documents/Orbiterm/journaux) */
+  termLogDir: string;
+  /** colours keywords (error, warning, ok…) in the terminals */
+  termHighlight: boolean;
   // SSH
   keepalive: number;
   sshX11: boolean;
@@ -103,6 +109,9 @@ export const DEFAULT_PREFS: Prefs = {
   copyOnSelect: true,
   rightClickPaste: true,
   visualBell: false,
+  termLog: false,
+  termLogDir: "",
+  termHighlight: true,
   keepalive: 30,
   sshX11: false,
   sshCompression: false,
@@ -716,6 +725,7 @@ class App {
         const bar = viewOf(snap) === "rdp" ? (snap.extra?.rdp_monitor === "0" ? 30 : 53) : 0;
         if (r) snap.extra = { ...snap.extra, rdp_w: String(Math.round(r.width * k)), rdp_h: String(Math.round((r.height - bar) * k)) };
       }
+      if (this.prefs.termLog) snap.extra = { ...snap.extra, log_dir: this.prefs.termLogDir };
       if (snap.kind === "ssh") {
         snap.extra = { ...snap.extra, keepalive: String(this.prefs.keepalive) };
         // like the original: the X server is started on demand for X11 sessions
@@ -740,6 +750,18 @@ class App {
       tab.state = "open";
       tab.status = "";
       if (s.kind === "ssh" && s.sftp_enabled && tab.key === this.activeKey && this.prefs.sidebar) this.sideTab = "sftp";
+      // macro launched at startup (session "bookmark" settings), once the shell has shown its prompt
+      const startup = this.store.macros.find((m) => m.id === s.extra?.startup_macro);
+      if (startup && viewOf(s) === "terminal") {
+        void (async () => {
+          await sleep(1200);
+          for (const st of startup.steps) {
+            if (tab.connId !== connId) return; // closed or reconnected meanwhile
+            if (st.delay_ms) await sleep(Math.min(st.delay_ms, 1500));
+            await api.termWrite(connId, st.data).catch(() => {});
+          }
+        })();
+      }
     } catch (e) {
       const err = asApiError(e);
       tab.state = "error";

@@ -1,6 +1,6 @@
 [package]
 name = "orbiterm"
-version = "0.7.6"
+version = "0.7.7"
 description = "Orbiterm - SSH terminal & SFTP browser"
 authors = ["Raphael"]
 edition = "2024"
@@ -65,6 +65,7 @@ ironrdp-rdpdr-native = "0.9"
 env_logger = { version = "0.11", default-features = false }
 ironrdp-svc = "0.10"
 ironrdp-rdpsnd = "0.11"
+chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"

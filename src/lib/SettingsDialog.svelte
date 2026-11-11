@@ -4,6 +4,7 @@
   import Modal from "./Modal.svelte";
   import Icon from "./Icon.svelte";
   import { api } from "./api";
+  import { open } from "@tauri-apps/plugin-dialog";
   import { app, DEFAULT_PREFS, type Prefs } from "./app.svelte";
 
   type TabId = "general" | "terminal" | "ssh" | "x11" | "display";
@@ -30,6 +31,11 @@
   onMount(async () => {
     cfgDir = await api.configPath().catch(() => "");
   });
+
+  async function pickLogDir() {
+    const d = await open({ directory: true, title: "Dossier des journaux de session" });
+    if (typeof d === "string") p.termLogDir = d;
+  }
 
   function save() {
     Object.assign(app.prefs, $state.snapshot(p));
@@ -125,6 +131,17 @@
         <label class="chk"><input type="checkbox" bind:checked={p.copyOnSelect} /> Copier automatiquement le texte sélectionné</label>
         <label class="chk"><input type="checkbox" bind:checked={p.rightClickPaste} /> Coller avec le clic droit</label>
         <label class="chk"><input type="checkbox" bind:checked={p.visualBell} /> Sonnerie visuelle (le terminal clignote)</label>
+        <label class="chk" title="error, échec, refusé en rouge ; warning, attention en ambre ; ok, réussi en vert"><input type="checkbox" bind:checked={p.termHighlight} /> Mettre en couleur les mots-clés (erreur, avertissement, succès)</label>
+      </fieldset>
+      <fieldset>
+        <legend>Journalisation</legend>
+        <label class="chk"><input type="checkbox" bind:checked={p.termLog} /> Enregistrer l’activité de chaque terminal dans un fichier texte</label>
+        <div class="row">
+          <label for="logdir">Dossier</label>
+          <input id="logdir" class="grow" bind:value={p.termLogDir} placeholder="(Documents/Orbiterm/journaux)" disabled={!p.termLog} spellcheck="false" />
+          <button type="button" disabled={!p.termLog} onclick={pickLogDir}>…</button>
+        </div>
+        <p class="muted">Un fichier par session ouverte (nom de la session, date et heure), sans les codes de couleur. Effet à la prochaine ouverture.</p>
       </fieldset>
     {:else if tab === "ssh"}
       <fieldset>

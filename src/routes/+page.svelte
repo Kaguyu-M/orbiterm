@@ -119,6 +119,7 @@
         { label: "Copier", icon: "copy", shortcut: "Ctrl+Maj+C", disabled: !app.active, action: () => term()?.copy() },
         { label: "Coller", shortcut: "Ctrl+Maj+V", disabled: !app.active, action: () => term()?.paste() },
         { label: "Tout sélectionner", disabled: !app.active, action: () => term()?.selectAll() },
+        { label: "Rechercher…", icon: "search", shortcut: "Ctrl+Maj+F", disabled: !app.active, action: () => term()?.search() },
         { label: "Effacer l'historique", disabled: !app.active, action: () => term()?.clear() },
         { sep: true },
         { label: "MultiExec (saisie dans tous les terminaux)", icon: "multiexec", checked: app.multiExec, disabled: !app.tabs.length, action: () => app.toggleMultiExec() },

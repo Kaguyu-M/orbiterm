@@ -282,6 +282,7 @@ export const api = {
   hostkeyAnswer: (requestId: string, accept: boolean) =>
     invoke<void>("hostkey_answer", { requestId, accept }),
   termWrite: (connId: string, data: string) => invoke<void>("term_write", { connId, data }),
+  termLog: (connId: string, text: string) => invoke<void>("term_log", { connId, text }),
   termResize: (connId: string, cols: number, rows: number) =>
     invoke<void>("term_resize", { connId, cols, rows }),
   termClose: (connId: string) => invoke<void>("term_close", { connId }),

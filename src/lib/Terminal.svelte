@@ -8,6 +8,7 @@
     zoom: (delta: number) => void;
     focus: () => void;
     write: (text: string) => void;
+    search: () => void;
   }
   export const terminals = new Map<string, TermControls>();
 </script>
@@ -19,6 +20,8 @@
   import { Terminal } from "@xterm/xterm";
   import { FitAddon } from "@xterm/addon-fit";
   import { WebLinksAddon } from "@xterm/addon-web-links";
+  import { SearchAddon } from "@xterm/addon-search";
+  import { highlightLines, LineTracker, linesText } from "./highlight";
   import { openUrl } from "@tauri-apps/plugin-opener";
   import "@xterm/xterm/css/xterm.css";
   import { api, type TerminalSettings } from "./api";
@@ -66,6 +69,55 @@
   let attachedTo: string | null = null;
   let detach: (() => void) | undefined;
   let lastSize = "";
+  let hlLines: LineTracker | undefined;
+  let logLines: LineTracker | undefined;
+  /** session log requested when this connection was opened */
+  let logging = false;
+  function flushLog(withCursorLine: boolean) {
+    if (!logging || !term || !connId) return;
+    const r = logLines?.take(withCursorLine);
+    if (r) api.termLog(connId, linesText(term, r)).catch(() => {});
+  }
+  // search bar (Ctrl+Shift+F)
+  let search: SearchAddon | undefined;
+  let searchOpen = $state(false);
+  let query = $state("");
+  let matchCase = $state(false);
+  let found = $state(""); // "3 / 12", "aucun résultat"
+  let searchInput: HTMLInputElement | undefined = $state();
+  const SEARCH_DECO = {
+    matchBackground: "#7a5a2a",
+    activeMatchBackground: "#d9a35f",
+    matchOverviewRuler: "#d9a35f",
+    activeMatchColorOverviewRuler: "#f0c27e",
+  };
+  function openSearch() {
+    searchOpen = true;
+    const sel = term?.getSelection();
+    if (sel && !sel.includes("\n")) query = sel;
+    requestAnimationFrame(() => {
+      searchInput?.focus();
+      searchInput?.select();
+    });
+  }
+  function find(back = false) {
+    if (!search) return;
+    if (!query) {
+      search.clearDecorations();
+      found = "";
+      return;
+    }
+    const opts = { caseSensitive: matchCase, decorations: SEARCH_DECO };
+    const ok = back ? search.findPrevious(query, opts) : search.findNext(query, opts);
+    if (!ok) found = "aucun résultat";
+  }
+  function closeSearch() {
+    searchOpen = false;
+    search?.clearDecorations();
+    term?.clearSelection();
+    found = "";
+    term?.focus();
+  }
   const bg = $derived((THEMES[settings.theme] ?? THEMES.dark).background);
 
   function sendSize() {
@@ -103,7 +155,27 @@
     fit = new FitAddon();
     term.loadAddon(fit);
     term.loadAddon(new WebLinksAddon((_e, uri) => openUrl(uri)));
+    search = new SearchAddon();
+    term.loadAddon(search);
+    search.onDidChangeResults(({ resultIndex, resultCount }) => {
+      found = resultCount === 0 ? "aucun résultat" : resultIndex >= 0 ? `${resultIndex + 1} / ${resultCount}` : `${resultCount}`;
+    });
     term.open(host);
+    // completed lines: keywords in colour (error / warning / success) and session log
+    hlLines = new LineTracker(term, false);
+    logLines = new LineTracker(term, true);
+    let scanQueued = false;
+    term.onWriteParsed(() => {
+      if (scanQueued) return;
+      scanQueued = true;
+      requestAnimationFrame(() => {
+        scanQueued = false;
+        if (!term) return;
+        const r = hlLines!.take();
+        if (r && prefs.termHighlight) highlightLines(term, r, settings.theme);
+        flushLog(false);
+      });
+    });
 
     term.onData((d) => {
       send(d);
@@ -120,6 +192,11 @@
     term.attachCustomKeyEventHandler((ev) => {
       const pasteKey = (ev.shiftKey && !ev.ctrlKey && ev.code === "Insert") || (ev.ctrlKey && ev.shiftKey && ev.code === "KeyV");
       const copyKey = ev.ctrlKey && ev.shiftKey && ev.code === "KeyC";
+      if (ev.ctrlKey && ev.shiftKey && ev.code === "KeyF") {
+        if (ev.type === "keydown") openSearch();
+        ev.preventDefault();
+        return false;
+      }
       if (!pasteKey && !copyKey) return true;
       // The WebView would also paste natively ("paste as plain text" on Ctrl+Shift+V,
       // Shift+Insert): xterm then received the text a second time. Only our handler acts.
@@ -158,6 +235,7 @@
       },
       focus: () => term!.focus(),
       write: (text) => send(text),
+      search: openSearch,
     });
 
     const ro = new ResizeObserver(() => refit());
@@ -178,9 +256,14 @@
     detach?.();
     attachedTo = connId;
     lastSize = "";
+    logging = prefs.termLog;
     detach = attach(connId, {
       data: (bytes) => term!.write(bytes),
-      closed: (reason) => term!.write(`\r\n\x1b[33m[${reason}]\x1b[0m\r\n`),
+      closed: (reason) => {
+        // the last lines (prompt included) before the backend closes the file
+        term!.write("", () => flushLog(true));
+        term!.write(`\r\n\x1b[33m[${reason}]\x1b[0m\r\n`);
+      },
     });
     refit();
     sendSize();
@@ -217,12 +300,69 @@
 </script>
 
 <div class="term" class:flash bind:this={host} style:background={bg} style:--term-bg={bg}></div>
+{#if searchOpen}
+  <div class="find" role="search">
+    <input
+      bind:this={searchInput}
+      bind:value={query}
+      placeholder="Rechercher dans le terminal"
+      spellcheck="false"
+      oninput={() => find()}
+      onkeydown={(e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          find(e.shiftKey);
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          closeSearch();
+        }
+      }}
+    />
+    <span class="count">{found}</span>
+    <button class:on={matchCase} title="Respecter la casse" onclick={() => { matchCase = !matchCase; find(); }}>Aa</button>
+    <button title="Précédent (Maj+Entrée)" onclick={() => find(true)}>▲</button>
+    <button title="Suivant (Entrée)" onclick={() => find()}>▼</button>
+    <button title="Fermer (Échap)" onclick={closeSearch}>✕</button>
+  </div>
+{/if}
 
 <style>
   .term {
     position: absolute;
     inset: 0;
     padding: 3px 0 0 5px;
+  }
+  .find {
+    position: absolute;
+    top: 6px;
+    right: 18px;
+    z-index: 5;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 6px;
+    background: var(--panel, #2f2a22);
+    border: 1px solid var(--border, #5a4f3c);
+    border-radius: 6px;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+    font-size: 12px;
+  }
+  .find input {
+    width: 210px;
+    padding: 3px 6px;
+  }
+  .find .count {
+    min-width: 74px;
+    color: var(--muted, #a99c84);
+    text-align: center;
+  }
+  .find button {
+    padding: 2px 7px;
+    min-width: 26px;
+  }
+  .find button.on {
+    background: var(--accent, #d9a35f);
+    color: #28251f;
   }
   .term.flash {
     outline: 3px solid var(--warn);

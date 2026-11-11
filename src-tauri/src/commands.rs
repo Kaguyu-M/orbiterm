@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use base64::Engine;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::{Mutex, oneshot};
 
 use crate::config::{AuthMethod, Folder, Forward, ForwardKind, Macro, Session, Store, Tunnel};
@@ -43,6 +43,8 @@ pub struct AppState {
     pub servers: crate::servers::ServerManager,
     /// system information of RDP tabs (SSH to the same host), by connection id
     pub monitors: Mutex<HashMap<String, MonitorSlot>>,
+    /// session logs, by connection id (lines rendered by the terminal tab)
+    pub logs: std::sync::Mutex<HashMap<String, Arc<crate::termlog::TermLog>>>,
 }
 
 /// SSH access used to read the system information of an RDP host.
@@ -71,6 +73,7 @@ impl AppState {
             tunnels: Mutex::new(HashMap::new()),
             gateways: Mutex::new(HashMap::new()),
             monitors: Mutex::new(HashMap::new()),
+            logs: std::sync::Mutex::new(HashMap::new()),
         })
     }
 
@@ -266,7 +269,7 @@ fn make_prompter(app: AppHandle, waiters: Arc<Mutex<HashMap<String, oneshot::Sen
     })
 }
 
-fn sinks(app: &AppHandle, conn_id: &str) -> (DataSink, CloseSink) {
+fn sinks(app: &AppHandle, conn_id: &str, log: Option<Arc<crate::termlog::TermLog>>) -> (DataSink, CloseSink) {
     let (app_d, id_d) = (app.clone(), conn_id.to_string());
     let on_data: DataSink = Arc::new(move |bytes: Vec<u8>| {
         let data = base64::engine::general_purpose::STANDARD.encode(bytes);
@@ -274,6 +277,17 @@ fn sinks(app: &AppHandle, conn_id: &str) -> (DataSink, CloseSink) {
     });
     let (app_c, id_c) = (app.clone(), conn_id.to_string());
     let on_close: CloseSink = Arc::new(move |reason: String| {
+        if let Some(l) = log.clone() {
+            // the tab still sends its last lines: the file is closed a moment later
+            let (app_l, id_l, why) = (app_c.clone(), id_c.clone(), reason.clone());
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(1500));
+                l.close(&why);
+                if let Ok(mut logs) = app_l.state::<AppState>().logs.lock() {
+                    logs.remove(&id_l);
+                }
+            });
+        }
         let _ = app_c.emit("term-closed", TermClosed { conn_id: id_c.clone(), reason });
     });
     (on_data, on_close)
@@ -559,7 +573,25 @@ pub async fn term_open(app: AppHandle, state: State<'_, AppState>, args: OpenArg
         session.extra.insert("keepalive".into(), k.clone());
     }
     let conn_id = crate::config::new_id("c");
-    let (on_data, on_close) = sinks(&app, &conn_id);
+    // session log (global setting injected by the UI): terminals only
+    let log = match args.session.extra.get("log_dir") {
+        Some(dir) if !matches!(session.kind.as_str(), "rdp" | "vnc" | "ftp" | "sftp" | "browser") => {
+            let dir = if dir.trim().is_empty() { crate::termlog::default_dir() } else { PathBuf::from(dir.trim()) };
+            let name = if session.name.trim().is_empty() { session.host.clone() } else { session.name.clone() };
+            match crate::termlog::TermLog::create(&dir, &name) {
+                Ok(l) => Some(Arc::new(l)),
+                Err(e) => {
+                    log::warn!("journal de session impossible dans {} : {e}", dir.display());
+                    None
+                }
+            }
+        }
+        _ => None,
+    };
+    if let (Some(l), Ok(mut logs)) = (&log, state.logs.lock()) {
+        logs.insert(conn_id.clone(), l.clone());
+    }
+    let (on_data, on_close) = sinks(&app, &conn_id, log);
 
     let conn = match session.kind.as_str() {
         "ssh" => {
@@ -765,13 +797,34 @@ pub async fn term_write(state: State<'_, AppState>, conn_id: String, data: Strin
     state.conn(&conn_id).await?.write(data.as_bytes()).await
 }
 
+/// Lines completed in a terminal tab, appended to its session log (if any).
+#[tauri::command]
+pub fn term_log(state: State<'_, AppState>, conn_id: String, text: String) {
+    let log = state.logs.lock().ok().and_then(|l| l.get(&conn_id).cloned());
+    if let Some(l) = log {
+        l.write_text(&text);
+    }
+}
+
 #[tauri::command]
 pub async fn term_resize(state: State<'_, AppState>, conn_id: String, cols: u32, rows: u32) -> AppResult<()> {
     state.conn(&conn_id).await?.resize(cols, rows).await
 }
 
 #[tauri::command]
-pub async fn term_close(state: State<'_, AppState>, conn_id: String) -> AppResult<()> {
+pub async fn term_close(app: AppHandle, state: State<'_, AppState>, conn_id: String) -> AppResult<()> {
+    let log = state.logs.lock().ok().and_then(|l| l.get(&conn_id).cloned());
+    if let Some(l) = log {
+        // the tab may still send its last lines: closed a moment later
+        let id = conn_id.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(1500));
+            l.close("onglet fermé");
+            if let Ok(mut logs) = app.state::<AppState>().logs.lock() {
+                logs.remove(&id);
+            }
+        });
+    }
     let conn = state.conns.lock().await.remove(&conn_id);
     if let Some(c) = conn {
         c.close().await;

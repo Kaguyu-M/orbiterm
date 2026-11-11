@@ -4,7 +4,7 @@ Terminal multi-protocoles multiplateforme (Windows + Linux) : onglets, sessions 
 X11, RDP, VNC, FTP, navigateur web, écran partagé, MultiExec et macros. Application originale dont l'ergonomie s'inspire de MobaXterm.
 Conception : [`docs/CONCEPTION.md`](docs/CONCEPTION.md).
 
-**Version 0.7.3**
+**Version 0.7.7**
 
 | Domaine | Fonctionnalités |
 |---|---|
@@ -16,7 +16,7 @@ Conception : [`docs/CONCEPTION.md`](docs/CONCEPTION.md).
 | Réseau | redirections -L / -R / -D (SOCKS) par session, gestionnaire de tunnels (démarrage auto), rebond SSH (jump host, aussi pour RDP / VNC), redirection X11 (VcXsrv / Xming / X natif) |
 | Outils | scanner de ports (plages, sous-réseaux /24, listes prédéfinies, ouverture directe d'une session SSH / RDP / VNC / web sur un port trouvé), ports ouverts et connexions du poste (avec le programme), Wake-on-LAN (machines mémorisées) |
 | Serveurs intégrés | HTTP (liste des dossiers, reprise de téléchargement), TFTP (blksize / tsize, PXE), FTP (compte ou anonyme), SSH/SFTP (shell du poste, commandes, SFTP limité au dossier partagé) ; lecture seule possible, écoute locale ou réseau, journal d'activité en direct, démarrage avec Orbiterm |
-| Terminal | écran partagé (2 côte à côte, 2 superposés, grille 2×2, mosaïque), MultiExec (saisie dans plusieurs terminaux), macros (enregistrer / rejouer), thèmes, zoom |
+| Terminal | écran partagé (2 côte à côte, 2 superposés, grille 2×2, mosaïque), MultiExec (saisie dans plusieurs terminaux), macros (enregistrer / rejouer, macro lancée au démarrage d’une session), recherche (Ctrl+Maj+F), mots-clés en couleur (erreurs, avertissements, succès), journalisation des sessions dans des fichiers texte (Documents/Orbiterm/journaux par défaut), commentaire de session (info-bulle), thèmes, zoom |
 | Import | MobaXterm (`MobaXterm.ini`, exports `.moba`), PuTTY, OpenSSH `~/.ssh/config` — sans jamais importer de mot de passe |
 | Apparence | interface épurée, **mode clair / sombre** (ou suivre le système, menu Affichage → Mode sombre), palette brun profond / noisette / olive / ambre / crème, thèmes de terminal « Orbiterm brun » et « Orbiterm crème » |
 | Configuration | fenêtre Paramètres : général, terminal, SSH, serveur X, affichage |
@@ -29,19 +29,19 @@ Disponible pour **Windows** (installateur) et **Linux** : Debian / Ubuntu (`.deb
 
 ### 1. Installer
 
-**Windows** : lance `livrables\Orbiterm_0.7.4_x64-setup.exe`.
+**Windows** : lance `livrables\Orbiterm_0.7.7_x64-setup.exe`.
 
 > L'installateur n'est pas signé : Windows SmartScreen peut afficher « Windows a protégé votre ordinateur ».
 > Clique sur **Informations complémentaires → Exécuter quand même**.
 
 **Debian / Ubuntu** (Debian 13, Ubuntu 24.04 ou plus récent) :
 ```bash
-sudo apt install ./Orbiterm_0.7.4_amd64.deb
+sudo apt install ./Orbiterm_0.7.7_amd64.deb
 ```
 
 **Fedora** (41 ou plus récent) :
 ```bash
-sudo dnf install ./Orbiterm-0.7.4-1.x86_64.rpm
+sudo dnf install ./Orbiterm-0.7.7-1.x86_64.rpm
 ```
 
 **NixOS** : le dépôt est un flake. Essai sans installer : `nix run path:/chemin/vers/Orbiterm`.
@@ -122,6 +122,7 @@ src/                         interface (Svelte 5 + xterm.js)
   lib/TunnelManager.svelte   gestionnaire de tunnels
   lib/SettingsDialog.svelte  configuration générale
   lib/ImportDialog.svelte    import MobaXterm / PuTTY / OpenSSH
+  lib/highlight.ts           mots-clés en couleur, suivi des lignes du terminal
   lib/VncView.svelte         visionneuse VNC (noVNC)
   lib/RdpView.svelte         bureau RDP dans l'onglet (canvas, clavier par scancodes)
   lib/ExternalView.svelte    onglet d'une session RDP ouverte dans une fenêtre séparée (mstsc)
@@ -132,6 +133,7 @@ src-tauri/src/               backend Rust
   ssh.rs, forward.rs, x11.rs SSH (russh), redirections, X11
   pty.rs, telnet.rs, serial.rs  terminaux locaux, Telnet/Rlogin, port série
   sftp.rs, known_hosts.rs    SFTP, clés d'hôte
+  termlog.rs                 journaux des sessions (fichiers texte)
   config.rs, secrets.rs      sessions.toml (écriture atomique), trousseau du système
   importer.rs                import de sessions
   rdp_client.rs              client RDP intégré (IronRDP) + pont WebSocket vers l'onglet
