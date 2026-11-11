@@ -14,7 +14,7 @@ use crate::ssh::CloseSink;
 
 /// RDP options of a session (`extra` keys).
 pub struct RdpOptions {
-    /// "fit" (size of the Orbiterm tab), "fullscreen", or "WxH"
+    /// "fit" (size of the Orbiterm tab), "fullscreen", "multimon" (every monitor of this computer), or "WxH"
     pub size: String,
     pub width: u32,
     pub height: u32,
@@ -65,7 +65,8 @@ impl RdpOptions {
 pub fn rdp_file(host: &str, port: u16, user: &str, o: &RdpOptions) -> String {
     let mut l = vec![
         format!("full address:s:{host}:{port}"),
-        format!("screen mode id:i:{}", if o.size == "fullscreen" { 2 } else { 1 }),
+        format!("screen mode id:i:{}", if o.size == "fullscreen" || o.size == "multimon" { 2 } else { 1 }),
+        format!("use multimon:i:{}", (o.size == "multimon") as u8),
         format!("desktopwidth:i:{}", o.width),
         format!("desktopheight:i:{}", o.height),
         "session bpp:i:32".into(),
@@ -102,7 +103,10 @@ pub fn freerdp_args(host: &str, port: u16, user: &str, o: &RdpOptions) -> Vec<St
     if !o.domain.is_empty() {
         a.push(format!("/d:{}", o.domain));
     }
-    if o.size == "fullscreen" {
+    if o.size == "multimon" {
+        a.push("/multimon".into());
+        a.push("/f".into());
+    } else if o.size == "fullscreen" {
         a.push("/f".into());
     } else {
         a.push(format!("/size:{}x{}", o.width, o.height));
@@ -216,6 +220,16 @@ mod tests {
             extra: extra.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
             forwards: vec![],
         }
+    }
+
+    #[test]
+    fn multimon_external_clients() {
+        let o = RdpOptions::from_session(&sess(&[("rdp_size", "multimon")]));
+        let f = rdp_file("h", 3389, "u", &o);
+        assert!(f.contains("use multimon:i:1") && f.contains("screen mode id:i:2"));
+        let a = freerdp_args("h", 3389, "u", &o);
+        assert!(a.contains(&"/multimon".to_string()) && a.contains(&"/f".to_string()));
+        assert!(rdp_file("h", 3389, "u", &RdpOptions::from_session(&sess(&[]))).contains("use multimon:i:0"));
     }
 
     #[test]

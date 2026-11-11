@@ -25,7 +25,7 @@
   // Embedded RDP session: the remote desktop drawn in a canvas, fed by the backend (IronRDP).
   import { clipRead, clipWrite } from "./clipboard";
   import { onMount } from "svelte";
-  import { getCurrentWindow } from "@tauri-apps/api/window";
+  import { availableMonitors, getCurrentWindow, PhysicalPosition, PhysicalSize } from "@tauri-apps/api/window";
   import Icon from "./Icon.svelte";
   import { api, type Session } from "./api";
   import { app, type Tab } from "./app.svelte";
@@ -204,6 +204,8 @@
       ro.disconnect();
       ws?.close();
       sound.close();
+      // tab closed in full screen: give the window back
+      if (full) (multimon ? spanMonitors(false) : getCurrentWindow().setFullscreen(false)).catch(() => {});
       box.removeEventListener("pointerdown", wake);
       box.removeEventListener("keydown", wake);
     };
@@ -319,9 +321,44 @@
     app.closeTab(tab);
   }
 
+  // multi-monitor session: full screen covers every monitor (the remote desktop has their layout)
+  // svelte-ignore state_referenced_locally
+  const multimon = tab.session.extra?.rdp_size === "multimon";
+  let before: { x: number; y: number; w: number; h: number; max: boolean } | null = null;
+
+  async function spanMonitors(on: boolean) {
+    const w = getCurrentWindow();
+    if (on) {
+      const ms = await availableMonitors();
+      if (!ms.length) return w.setFullscreen(true);
+      const left = Math.min(...ms.map((m) => m.position.x)), top = Math.min(...ms.map((m) => m.position.y));
+      const right = Math.max(...ms.map((m) => m.position.x + m.size.width));
+      const bottom = Math.max(...ms.map((m) => m.position.y + m.size.height));
+      const [pos, size, max] = await Promise.all([w.outerPosition(), w.innerSize(), w.isMaximized()]);
+      before = { x: pos.x, y: pos.y, w: size.width, h: size.height, max };
+      if (max) await w.unmaximize();
+      await w.setDecorations(false);
+      await w.setPosition(new PhysicalPosition(left, top));
+      await w.setSize(new PhysicalSize(right - left, bottom - top));
+      await w.setAlwaysOnTop(true);
+    } else {
+      await w.setAlwaysOnTop(false);
+      await w.setDecorations(true);
+      if (before) {
+        // inner size, then outer position once the frame is back
+        await w.setSize(new PhysicalSize(before.w, before.h));
+        await new Promise((r) => setTimeout(r, 100));
+        await w.setPosition(new PhysicalPosition(before.x, before.y));
+        if (before.max) await w.maximize();
+      }
+      before = null;
+    }
+  }
+
   async function toggleFull() {
     full = !full;
-    await getCurrentWindow().setFullscreen(full).catch(() => {});
+    if (multimon) await spanMonitors(full).catch(() => {});
+    else await getCurrentWindow().setFullscreen(full).catch(() => {});
     setTimeout(() => {
       layout();
       requestFit();

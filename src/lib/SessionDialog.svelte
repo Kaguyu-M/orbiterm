@@ -240,10 +240,17 @@
             <select id="rsz" value={x("rdp_size", "fit")} onchange={(e) => setX("rdp_size", e.currentTarget.value)}>
               <option value="fit">Adapter à l'onglet (suit le redimensionnement)</option>
               {#if ext}<option value="fullscreen">Plein écran</option>{/if}
+              <option value="multimon">Tous les écrans de ce poste (multi-écran)</option>
               {#each RDP_SIZES as z (z)}<option value={z}>{z.replace("x", " × ")}</option>{/each}
             </select>
             <label class="lbl" for="rdom">Domaine</label>
             <input id="rdom" value={x("rdp_domain")} oninput={(e) => setX("rdp_domain", e.currentTarget.value)} placeholder="(aucun — ou DOMAINE\utilisateur)" spellcheck="false" />
+            <label class="lbl" for="rsnd">Son</label>
+            <select id="rsnd" value={x("rdp_sound", "local")} onchange={(e) => setX("rdp_sound", e.currentTarget.value)}>
+              <option value="local">Lire sur cet ordinateur</option>
+              <option value="remote">Lire sur l'ordinateur distant</option>
+              <option value="none">Ne pas lire</option>
+            </select>
             {#if !ext}
               <span class="lbl">Mot de passe</span>
               <label class="chk"><input type="checkbox" bind:checked={s.remember_password} /> Mémoriser le mot de passe (trousseau du système)</label>
@@ -274,12 +281,6 @@
                 <label class="chk"><input type="checkbox" checked={x("rdp_drives") === "1"} onchange={(e) => setX("rdp_drives", e.currentTarget.checked ? "1" : "0")} /> Disques locaux</label>
                 <label class="chk"><input type="checkbox" checked={x("rdp_printers") === "1"} onchange={(e) => setX("rdp_printers", e.currentTarget.checked ? "1" : "0")} /> Imprimantes</label>
               </div>
-              <label class="lbl" for="rsnd">Son</label>
-              <select id="rsnd" value={x("rdp_sound", "local")} onchange={(e) => setX("rdp_sound", e.currentTarget.value)}>
-                <option value="local">Lire sur cet ordinateur</option>
-                <option value="remote">Lire sur l'ordinateur distant</option>
-                <option value="none">Ne pas lire</option>
-              </select>
               <span class="lbl">Session</span>
               <label class="chk"><input type="checkbox" checked={x("rdp_admin") === "1"} onchange={(e) => setX("rdp_admin", e.currentTarget.checked ? "1" : "0")} /> Session d'administration (console)</label>
             {/if}

@@ -50,6 +50,7 @@ fn params(port: u16, password: &str, known: &std::path::Path) -> RdpParams {
         clipboard: true,
         share_dir: known.parent().map(|p| p.to_path_buf()),
         sound: true,
+        monitors: Vec::new(),
     }
 }
 
@@ -165,6 +166,15 @@ async fn embedded_rdp_client() {
     let l = log.lock().unwrap().clone();
     assert!(l.contains("key:0x1e"), "server log: {l}");
     assert!(l.contains("click:300,200"), "server log: {l}");
+    drop(s);
+
+    // multi-monitor: two 800×600 monitors side by side (monitor layout in the GCC block) are accepted
+    let mut p = params(port, "test", &known);
+    p.monitors = vec![(0, 0, 800, 600, true), (800, 0, 800, 600, false)];
+    let s = connect(p, prompter(seen.clone()), Arc::new(|_| {})).await.expect("connect multi-monitor");
+    let (ws, _) = tokio_tungstenite::connect_async(s.url()).await.expect("viewer");
+    let (_tx, mut rx) = ws.split();
+    wait_msg(&mut rx, "image (multi-monitor)", |m| m.first() == Some(&1)).await;
     drop(s);
 }
 

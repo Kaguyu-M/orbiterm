@@ -679,6 +679,7 @@ pub async fn term_open(app: AppHandle, state: State<'_, AppState>, args: OpenArg
                     clipboard: opts.clipboard,
                     share_dir: opts.drives.then(|| rdp_share_dir(&session)),
                     sound: opts.sound == "local",
+                    monitors: if opts.size == "multimon" { local_monitors(&app) } else { Vec::new() },
                 };
                 let prompter = make_prompter(app.clone(), state.hostkey_waiters.clone());
                 match rdp_client::connect(params, prompter, on_close).await {
@@ -1409,4 +1410,17 @@ fn rdp_share_dir(session: &Session) -> std::path::PathBuf {
         return std::path::PathBuf::from(d);
     }
     directories::UserDirs::new().map(|u| u.home_dir().to_path_buf()).unwrap_or_else(|| std::path::PathBuf::from("."))
+}
+
+/// Monitors of this computer (physical pixels), for a multi-monitor RDP session.
+fn local_monitors(app: &AppHandle) -> Vec<(i32, i32, u32, u32, bool)> {
+    let primary = app.primary_monitor().ok().flatten().map(|m| *m.position());
+    app.available_monitors()
+        .unwrap_or_default()
+        .iter()
+        .map(|m| {
+            let (p, s) = (m.position(), m.size());
+            (p.x, p.y, s.width, s.height, Some(*p) == primary)
+        })
+        .collect()
 }

@@ -40,7 +40,7 @@ Base : rapport d'analyse de MobaXterm (`Documents\MobaXterm-Analyse`) et code d'
 | MobaXterm | Orbiterm |
 |---|---|
 | RDP intégré, presse-papiers, lecteurs redirigés, rebond SSH | ✅ |
-| Passerelle RDP (RD Gateway), multi-écran | ❌ → lot 5 |
+| Passerelle RDP (RD Gateway), multi-écran | 🟡 multi-écran ✅ 0.7.13 (tous les écrans du poste, plein écran sur tous) ; passerelle → lot 5 |
 | Son RDP | ✅ 0.7.11 (lu dans l'onglet ; option de session « Son ») |
 | VNC intégré | ✅ |
 

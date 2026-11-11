@@ -71,6 +71,33 @@ pub struct RdpParams {
     pub share_dir: Option<PathBuf>,
     /// play the remote computer's sound in the tab
     pub sound: bool,
+    /// monitors of this computer (multi-monitor session): x, y, width, height, primary
+    pub monitors: Vec<(i32, i32, u32, u32, bool)>,
+}
+
+/// Remote desktop spanning `monitors` (physical pixels of this computer): its size and the
+/// monitor layout sent to the server, where the primary monitor starts at (0, 0).
+pub fn monitor_layout(monitors: &[(i32, i32, u32, u32, bool)]) -> Option<(u16, u16, Vec<ironrdp_pdu::gcc::Monitor>)> {
+    use ironrdp_pdu::gcc::{Monitor, MonitorFlags};
+    let (px, py) = monitors.iter().find(|m| m.4).or(monitors.first()).map(|m| (m.0, m.1))?;
+    let mut out: Vec<Monitor> = monitors
+        .iter()
+        .map(|&(x, y, w, h, primary)| Monitor {
+            left: x - px,
+            top: y - py,
+            right: x - px + w as i32 - 1,
+            bottom: y - py + h as i32 - 1,
+            flags: if primary { MonitorFlags::PRIMARY } else { MonitorFlags::empty() },
+        })
+        .collect();
+    // exactly one primary monitor (the first one when the system does not say)
+    if !out.iter().any(|m| m.flags.contains(MonitorFlags::PRIMARY)) {
+        out[0].flags = MonitorFlags::PRIMARY;
+    }
+    let (l, t) = (out.iter().map(|m| m.left).min()?, out.iter().map(|m| m.top).min()?);
+    let (r, b) = (out.iter().map(|m| m.right).max()?, out.iter().map(|m| m.bottom).max()?);
+    let (w, h) = ((r - l + 1).clamp(200, 8192) as u16, (b - t + 1).clamp(200, 8192) as u16);
+    Some((w, h, out))
 }
 
 /// Messages from the tab.
@@ -223,9 +250,14 @@ fn connector_config(p: &RdpParams) -> AppResult<ironrdp_connector::Config> {
         keyboard_functional_keys_count: 12,
         ime_file_name: String::new(),
         dig_product_id: String::new(),
-        desktop_size: DesktopSize { width: p.width, height: p.height },
+        desktop_size: match monitor_layout(&p.monitors) {
+            Some((w, h, _)) => DesktopSize { width: w, height: h },
+            None => DesktopSize { width: p.width, height: p.height },
+        },
         desktop_scale_factor: 0,
-        monitor_layout: None,
+        monitor_layout: monitor_layout(&p.monitors)
+            .filter(|(_, _, m)| m.len() > 1)
+            .map(|(_, _, monitors)| ironrdp_pdu::gcc::ClientMonitorData { monitors }),
         desktop_physical_size: None,
         desktop_orientation: None,
         device_scale_factor: None,
@@ -940,6 +972,22 @@ async fn active_session(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn multi_monitor_layout() {
+        use ironrdp_pdu::gcc::MonitorFlags;
+        assert!(super::monitor_layout(&[]).is_none());
+        // a 1280x1024 monitor on the left of the 1920x1080 primary, lower by 100 px
+        let (w, h, m) = super::monitor_layout(&[(-1280, 100, 1280, 1024, false), (0, 0, 1920, 1080, true)]).unwrap();
+        assert_eq!((w, h), (3200, 1124));
+        assert_eq!((m[0].left, m[0].top, m[0].right, m[0].bottom), (-1280, 100, -1, 1123));
+        assert_eq!((m[1].left, m[1].top, m[1].right, m[1].bottom), (0, 0, 1919, 1079));
+        assert!(m[1].flags.contains(MonitorFlags::PRIMARY) && !m[0].flags.contains(MonitorFlags::PRIMARY));
+        // no primary reported: the first monitor becomes the primary, at (0, 0)
+        let (_, _, m) = super::monitor_layout(&[(1920, 0, 1920, 1080, false), (3840, 0, 1920, 1080, false)]).unwrap();
+        assert_eq!((m[0].left, m[1].left), (0, 1920));
+        assert!(m[0].flags.contains(MonitorFlags::PRIMARY));
+    }
+
     use super::*;
 
     #[test]
