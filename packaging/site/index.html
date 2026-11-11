@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Orbiterm — installation</title>
+<style>
+  :root { --bg: #f7f5f0; --fg: #1f1d1a; --muted: #6b665d; --card: #fff; --line: #e2ddd2; --accent: #c2621a; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #1c1b19; --fg: #ece8e1; --muted: #a39d92; --card: #262421; --line: #3a3732; --accent: #f0a050; } }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.55 system-ui, sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 32px 16px 64px; }
+  h1 { margin: 0 0 4px; font-size: 1.9rem; }
+  h2 { margin: 28px 0 8px; font-size: 1.15rem; }
+  p.sub { margin: 0 0 20px; color: var(--muted); }
+  pre { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; overflow-x: auto; font: 14px/1.5 ui-monospace, Consolas, monospace; }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Orbiterm</h1>
+  <p class="sub">Terminal et client d’accès distant tout-en-un — version @VERSION@ · <a href="https://github.com/Kaguyu-M/orbiterm">code source</a> · <a href="https://github.com/Kaguyu-M/orbiterm/releases/latest">téléchargements</a></p>
+
+  <h2>Windows (winget)</h2>
+  <pre>winget install Kaguyu-M.Orbiterm</pre>
+
+  <h2>Windows (Scoop)</h2>
+  <pre>scoop bucket add orbiterm https://github.com/Kaguyu-M/orbiterm
+scoop install orbiterm/orbiterm</pre>
+
+  <h2>Debian / Ubuntu</h2>
+  <pre>sudo curl -fsSLo /usr/share/keyrings/orbiterm.asc https://kaguyu-m.github.io/orbiterm/orbiterm.asc
+sudo curl -fsSLo /etc/apt/sources.list.d/orbiterm.sources https://kaguyu-m.github.io/orbiterm/orbiterm.sources
+sudo apt update &amp;&amp; sudo apt install orbiterm</pre>
+
+  <h2>Fedora</h2>
+  <pre>sudo curl -fsSLo /etc/yum.repos.d/orbiterm.repo https://kaguyu-m.github.io/orbiterm/orbiterm.repo
+sudo dnf install Orbiterm</pre>
+
+  <h2>NixOS / Nix</h2>
+  <pre>nix profile install github:Kaguyu-M/orbiterm</pre>
+
+  <p>Les mises à jour arrivent ensuite par <code>winget upgrade</code>, <code>scoop update</code>, <code>apt upgrade</code>, <code>dnf upgrade</code> ou <code>nix profile upgrade</code>.</p>
+</main>
+</body>
+</html>

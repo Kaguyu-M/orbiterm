@@ -2,7 +2,9 @@
 name = "orbiterm"
 version = "0.7.7"
 description = "Orbiterm - SSH terminal & SFTP browser"
-authors = ["Raphael"]
+authors = ["Kaguyu-M"]
+license = "MIT"
+repository = "https://github.com/Kaguyu-M/orbiterm"
 edition = "2024"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html

@@ -29,30 +29,44 @@ Disponible pour **Windows** (installateur) et **Linux** : Debian / Ubuntu (`.deb
 
 ### 1. Installer
 
-**Windows** : lance `livrables\Orbiterm_0.7.7_x64-setup.exe`.
+| Système | Commande |
+|---|---|
+| **Windows** (winget) | `winget install Kaguyu-M.Orbiterm` |
+| **Windows** (Scoop) | `scoop bucket add orbiterm https://github.com/Kaguyu-M/orbiterm` puis `scoop install orbiterm/orbiterm` |
+| **Debian / Ubuntu** | voir ci-dessous (dépôt APT signé) |
+| **Fedora** | voir ci-dessous (dépôt DNF signé) |
+| **NixOS / Nix** | `nix profile install github:Kaguyu-M/orbiterm` |
 
-> L'installateur n'est pas signé : Windows SmartScreen peut afficher « Windows a protégé votre ordinateur ».
-> Clique sur **Informations complémentaires → Exécuter quand même**.
+Les fichiers (installateur Windows, version portable, .deb, .rpm) sont aussi sur la page
+[Releases](https://github.com/Kaguyu-M/orbiterm/releases/latest). Page d’installation : https://kaguyu-m.github.io/orbiterm/
 
 **Debian / Ubuntu** (Debian 13, Ubuntu 24.04 ou plus récent) :
 ```bash
-sudo apt install ./Orbiterm_0.7.7_amd64.deb
+sudo curl -fsSLo /usr/share/keyrings/orbiterm.asc https://kaguyu-m.github.io/orbiterm/orbiterm.asc
+sudo curl -fsSLo /etc/apt/sources.list.d/orbiterm.sources https://kaguyu-m.github.io/orbiterm/orbiterm.sources
+sudo apt update && sudo apt install orbiterm
 ```
 
 **Fedora** (41 ou plus récent) :
 ```bash
-sudo dnf install ./Orbiterm-0.7.7-1.x86_64.rpm
+sudo curl -fsSLo /etc/yum.repos.d/orbiterm.repo https://kaguyu-m.github.io/orbiterm/orbiterm.repo
+sudo dnf install Orbiterm
 ```
 
-**NixOS** : le dépôt est un flake. Essai sans installer : `nix run path:/chemin/vers/Orbiterm`.
-Installation permanente, dans le `flake.nix` du système :
+**NixOS**, installation permanente dans le `flake.nix` du système :
 ```nix
-inputs.orbiterm.url = "path:/chemin/vers/Orbiterm";   # ou l'URL git du dépôt
+inputs.orbiterm.url = "github:Kaguyu-M/orbiterm";
 # puis dans la configuration :
 imports = [ inputs.orbiterm.nixosModules.default ];
 programs.orbiterm.enable = true;
 ```
 (ou `environment.systemPackages = [ inputs.orbiterm.packages.x86_64-linux.default ];`, ou Home Manager : `home.packages`).
+Essai sans installer : `nix run github:Kaguyu-M/orbiterm`.
+
+Mises à jour : `winget upgrade`, `scoop update`, `apt upgrade`, `dnf upgrade`, `nix profile upgrade`.
+
+> L'installateur Windows n'est pas signé : Windows SmartScreen peut afficher « Windows a protégé votre ordinateur ».
+> Clique sur **Informations complémentaires → Exécuter quand même**.
 
 > Sous Linux, les mots de passe mémorisés vont dans le trousseau du bureau (GNOME Keyring, KWallet, KeePassXC…
 > via Secret Service). S'il est verrouillé, le système demande de le déverrouiller ; sans réponse, Orbiterm
@@ -147,3 +161,7 @@ src-tauri/examples/                 serveurs de test SSH/SFTP, FTP, VNC
 tools/rdp-test-server/              serveur RDP de test (projet Cargo séparé)
 src-tauri/tests/                    tests de bout en bout
 ```
+
+## Licence
+
+MIT — voir [LICENSE](LICENSE).

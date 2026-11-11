@@ -38,7 +38,9 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "publisher": "Orbiterm",
+    "publisher": "Kaguyu-M",
+    "homepage": "https://github.com/Kaguyu-M/orbiterm",
+    "copyright": "© 2026 Kaguyu-M — licence MIT",
     "category": "Utility",
     "shortDescription": "Terminal et client d’accès distant tout-en-un",
     "longDescription": "Orbiterm regroupe dans une seule fenêtre à onglets un terminal local, des sessions SSH (avec explorateur SFTP), RDP et VNC intégrés, Telnet, Rlogin, série, FTP, ainsi que des outils réseau et des serveurs intégrés.",
