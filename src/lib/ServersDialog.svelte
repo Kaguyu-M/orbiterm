@@ -11,8 +11,10 @@
     tftp: { name: "Serveur TFTP", icon: "network", desc: "Transferts simples : équipements réseau, démarrage PXE", scheme: "tftp" },
     ftp: { name: "Serveur FTP", icon: "ftp", desc: "Partage de fichiers FTP, avec compte ou anonyme", scheme: "ftp" },
     ssh: { name: "Serveur SSH/SFTP", icon: "ssh", desc: "Shell de ce poste à distance, et fichiers par SFTP", scheme: "ssh" },
+    telnet: { name: "Serveur Telnet", icon: "telnet", desc: "Shell de ce poste par Telnet (non chiffré : réseau local uniquement)", scheme: "telnet" },
+    iperf: { name: "Serveur Iperf", icon: "scan", desc: "Mesure du débit réseau avec un client iperf3 (TCP)", scheme: "iperf3" },
   };
-  const ORDER: ServerKind[] = ["http", "tftp", "ftp", "ssh"];
+  const ORDER: ServerKind[] = ["http", "tftp", "ftp", "ssh", "telnet", "iperf"];
 
   let edit: ServerConfig | null = $state(null);
   let password = $state("");
@@ -55,7 +57,7 @@
     if (!edit) return;
     error = "";
     if (!edit.port || edit.port < 1 || edit.port > 65535) return (error = "Port invalide (1 à 65535).");
-    if ((edit.kind === "ftp" || edit.kind === "ssh") && !edit.user.trim()) return (error = "Indique le nom d'utilisateur.");
+    if ((edit.kind === "ftp" || edit.kind === "ssh" || edit.kind === "telnet") && !edit.user.trim()) return (error = "Indique le nom d'utilisateur.");
     saving = true;
     try {
       await api.serverSave($state.snapshot(edit) as ServerConfig, password || undefined);
@@ -81,9 +83,11 @@
   function urls(s: ServerStatus): string[] {
     const m = META[s.config.kind];
     const user = s.config.kind === "ssh" || (s.config.kind === "ftp" && !s.config.anonymous) ? `${s.config.user}@` : "";
-    const def: Record<ServerKind, number> = { http: 80, tftp: 69, ftp: 21, ssh: 22 };
+    const def: Record<ServerKind, number> = { http: 80, tftp: 69, ftp: 21, ssh: 22, telnet: 23, iperf: 5201 };
     return s.addresses.map((a) => {
       const port = s.port === def[s.config.kind] ? "" : `:${s.port}`;
+      if (s.config.kind === "telnet") return `telnet ${a}${port ? " " + s.port : ""}`;
+      if (s.config.kind === "iperf") return `iperf3 -c ${a}${port ? " -p " + s.port : ""}`;
       return s.config.kind === "ssh" ? `ssh ${user}${a}${port ? " -p " + s.port : ""}` : `${m.scheme}://${user}${a}${port}/`;
     });
   }
@@ -169,16 +173,18 @@
           <label for="sp">Port</label>
           <input id="sp" type="number" min="1" max="65535" bind:value={edit.port} />
 
-          <label for="sr">Dossier partagé</label>
-          <span class="row">
-            <input id="sr" bind:value={edit.root} placeholder={sel.root} spellcheck="false" />
-            <button title="Choisir le dossier" onclick={browse}><Icon name="folder_open" size={16} /></button>
-          </span>
+          {#if edit.kind !== "iperf"}
+            <label for="sr">{edit.kind === "telnet" ? "Dossier de départ" : "Dossier partagé"}</label>
+            <span class="row">
+              <input id="sr" bind:value={edit.root} placeholder={sel.root} spellcheck="false" />
+              <button title="Choisir le dossier" onclick={browse}><Icon name="folder_open" size={16} /></button>
+            </span>
+          {/if}
 
           <span></span>
           <label class="chk"><input type="checkbox" bind:checked={edit.local_only} /> Accessible depuis ce poste uniquement (127.0.0.1)</label>
 
-          {#if edit.kind !== "http"}
+          {#if edit.kind === "tftp" || edit.kind === "ftp" || edit.kind === "ssh"}
             <span></span>
             <label class="chk"><input type="checkbox" bind:checked={edit.writable} /> Autoriser l'envoi et la modification de fichiers</label>
           {/if}
@@ -188,7 +194,7 @@
             <label class="chk"><input type="checkbox" bind:checked={edit.listing} /> Afficher le contenu des dossiers (sans index.html)</label>
           {/if}
 
-          {#if edit.kind === "ftp" || edit.kind === "ssh"}
+          {#if edit.kind === "ftp" || edit.kind === "ssh" || edit.kind === "telnet"}
             <label for="su">Utilisateur</label>
             <input id="su" bind:value={edit.user} spellcheck="false" autocomplete="off" />
             <label for="spw">Mot de passe</label>
@@ -203,7 +209,7 @@
             <label class="chk"><input type="checkbox" bind:checked={edit.anonymous} /> Accès anonyme (utilisateur « anonymous »)</label>
           {/if}
 
-          {#if edit.kind === "ssh"}
+          {#if edit.kind === "ssh" || edit.kind === "telnet"}
             <label for="ssh-shell">Shell proposé</label>
             <select id="ssh-shell" bind:value={edit.shell}>
               <option value="">Par défaut ({app.shells[0]?.label ?? "système"})</option>

@@ -11,6 +11,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::{Mutex, oneshot};
 
 use crate::config::{AuthMethod, Folder, Forward, ForwardKind, Macro, Session, Store, Tunnel};
+use crate::bundle;
 use crate::editor;
 use crate::importer;
 use crate::error::{AppError, AppResult};
@@ -1080,6 +1081,40 @@ pub async fn sftp_upload(
 #[tauri::command]
 pub async fn ssh_cwd(state: State<'_, AppState>, conn_id: String) -> AppResult<Option<String>> {
     state.ssh(&conn_id).await?.shell_cwd().await
+}
+
+// ---------------------------------------------------------------- configuration export / import
+
+/// Writes sessions, folders, macros, tunnels (and the interface settings when given) to `path`.
+#[tauri::command]
+pub async fn config_export(state: State<'_, AppState>, path: String, prefs: Option<serde_json::Value>) -> AppResult<()> {
+    let store = state.store.lock().await.clone();
+    bundle::export(std::path::Path::new(&path), &store, prefs, env!("CARGO_PKG_VERSION"))
+}
+
+#[derive(Serialize)]
+pub struct ConfigImport {
+    pub stats: bundle::MergeStats,
+    /// interface settings found in the file (applied by the interface if asked)
+    pub prefs: Option<serde_json::Value>,
+}
+
+/// Adds the content of a configuration file to the current one (nothing is replaced).
+#[tauri::command]
+pub async fn config_import(state: State<'_, AppState>, path: String) -> AppResult<ConfigImport> {
+    let b = bundle::read(std::path::Path::new(&path))?;
+    let mut store = state.store.lock().await;
+    let stats = bundle::merge(&mut store, &b.store);
+    store.save(&state.config_dir)?;
+    Ok(ConfigImport { stats, prefs: b.prefs })
+}
+
+/// Compares two local folders (recursively).
+#[tauri::command]
+pub async fn dir_compare(left: String, right: String) -> AppResult<crate::dircmp::DirDiff> {
+    tokio::task::spawn_blocking(move || crate::dircmp::compare(std::path::Path::new(&left), std::path::Path::new(&right)))
+        .await
+        .map_err(|e| AppError::Conn(e.to_string()))?
 }
 
 // ---------------------------------------------------------------- text editor

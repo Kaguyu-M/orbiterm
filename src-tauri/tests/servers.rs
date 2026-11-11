@@ -345,3 +345,193 @@ async fn port_scanner_and_wol() {
     let socks = nettools::open_ports().await.unwrap();
     assert!(socks.iter().any(|s| s.local_port == p && s.state == "ÉCOUTE"), "{} sockets", socks.len());
 }
+// ------------------------------------------------------------------ Telnet
+
+async fn read_until(s: &mut TcpStream, acc: &mut Vec<u8>, needle: &str) -> String {
+    let mut buf = [0u8; 4096];
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        let text = String::from_utf8_lossy(acc).into_owned();
+        if text.contains(needle) {
+            return text;
+        }
+        let n = tokio::time::timeout_at(deadline, s.read(&mut buf))
+            .await
+            .unwrap_or_else(|_| panic!("{needle:?} non reçu ; reçu : {text}"))
+            .unwrap();
+        assert!(n > 0, "fermé avant {needle:?} ; reçu : {text}");
+        acc.extend(&buf[..n]);
+    }
+}
+
+#[tokio::test]
+async fn telnet_server() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let m = ServerManager::new(dir.path().to_path_buf());
+    // no password: refused
+    assert!(m.start_with(cfg(ServerKind::Telnet, root.path()), String::new()).await.is_err());
+    let port = m.start_with(cfg(ServerKind::Telnet, root.path()), "pw-telnet".into()).await.unwrap();
+
+    let mut s = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    let mut acc = vec![];
+    read_until(&mut s, &mut acc, "login: ").await;
+    assert!(acc.windows(3).any(|w| w == [255, 251, 1]), "IAC WILL ECHO attendu");
+    // the client answers the negotiation and gives its window size
+    s.write_all(&[255, 251, 31, 255, 250, 31, 0, 100, 0, 30, 255, 240]).await.unwrap();
+    s.write_all(b"orbi\r\nwrong\r\n").await.unwrap();
+    acc.clear();
+    read_until(&mut s, &mut acc, "Login incorrect\r\n\r\nlogin: ").await;
+    s.write_all(b"orbi\r\n").await.unwrap();
+    acc.clear();
+    read_until(&mut s, &mut acc, "Password: ").await;
+    s.write_all(b"pw-telnet\r\n").await.unwrap();
+    acc.clear();
+    let mut buf = [0u8; 4096];
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    let mut sent = false;
+    // typed command echoed by the shell + its output; like a terminal, answer the
+    // cursor position requests (Windows ConPTY waits for one before starting)
+    while String::from_utf8_lossy(&acc).matches("orbi-telnet-ok").count() < 2 {
+        let n = match tokio::time::timeout(Duration::from_millis(1500), s.read(&mut buf)).await {
+            Ok(r) => r.unwrap(),
+            Err(_) => {
+                assert!(tokio::time::Instant::now() < deadline, "sortie du shell : {:?}", String::from_utf8_lossy(&acc));
+                if !sent {
+                    s.write_all(b"echo orbi-telnet-ok\r\n").await.unwrap();
+                    sent = true;
+                }
+                continue;
+            }
+        };
+        assert!(n > 0, "{}", String::from_utf8_lossy(&acc));
+        if buf[..n].windows(4).any(|w| w == b"\x1b[6n") {
+            s.write_all(b"\x1b[1;1R").await.unwrap();
+        }
+        acc.extend(&buf[..n]);
+    }
+    s.write_all(b"exit\r\n").await.unwrap();
+    let _ = tokio::time::timeout(Duration::from_secs(10), s.read_to_end(&mut acc)).await;
+    let st = m.status().await;
+    let log: Vec<String> =
+        st.iter().find(|s| s.config.kind == ServerKind::Telnet).unwrap().log.iter().map(|l| l.msg.clone()).collect();
+    assert!(log.iter().any(|l| l.contains("refusée pour")), "{log:?}");
+    assert!(log.iter().any(|l| l.contains("connecté en tant que orbi")), "{log:?}");
+    m.stop(ServerKind::Telnet).await;
+}
+
+// ------------------------------------------------------------------ Iperf (minimal iperf3 client)
+
+async fn json_msg(s: &mut TcpStream, v: &serde_json::Value) {
+    let b = serde_json::to_vec(v).unwrap();
+    s.write_all(&(b.len() as u32).to_be_bytes()).await.unwrap();
+    s.write_all(&b).await.unwrap();
+}
+
+async fn read_msg(s: &mut TcpStream) -> serde_json::Value {
+    let n = s.read_u32().await.unwrap() as usize;
+    let mut b = vec![0u8; n];
+    s.read_exact(&mut b).await.unwrap();
+    serde_json::from_slice(&b).unwrap()
+}
+
+/// Runs one test the way iperf3 does; returns (bytes on the client side, server results).
+async fn iperf_run(port: u16, streams: usize, reverse: bool) -> (u64, serde_json::Value) {
+    let cookie = format!("{:<36}\0", format!("orbiterm-test-{streams}-{reverse}"));
+    let mut ctl = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    ctl.write_all(cookie.as_bytes()).await.unwrap();
+    assert_eq!(ctl.read_u8().await.unwrap(), 9); // PARAM_EXCHANGE
+    json_msg(&mut ctl, &serde_json::json!({"tcp": true, "time": 1, "parallel": streams, "reverse": reverse, "len": 131072}))
+        .await;
+    assert_eq!(ctl.read_u8().await.unwrap(), 10); // CREATE_STREAMS
+    let mut data = vec![];
+    for _ in 0..streams {
+        let mut d = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        d.write_all(cookie.as_bytes()).await.unwrap();
+        data.push(d);
+    }
+    assert_eq!(ctl.read_u8().await.unwrap(), 1); // TEST_START
+    assert_eq!(ctl.read_u8().await.unwrap(), 2); // TEST_RUNNING
+    let mut tasks = vec![];
+    for mut d in data {
+        tasks.push(tokio::spawn(async move {
+            let mut n = 0u64;
+            let end = tokio::time::Instant::now() + Duration::from_millis(700);
+            let mut buf = vec![7u8; 131072];
+            while tokio::time::Instant::now() < end {
+                if reverse {
+                    match tokio::time::timeout_at(end, d.read(&mut buf)).await {
+                        Ok(Ok(0)) | Ok(Err(_)) | Err(_) => break,
+                        Ok(Ok(k)) => n += k as u64,
+                    }
+                } else {
+                    d.write_all(&buf).await.unwrap();
+                    n += buf.len() as u64;
+                }
+            }
+            if !reverse {
+                d.shutdown().await.unwrap();
+            }
+            (n, d)
+        }));
+    }
+    let mut total = 0;
+    let mut keep = vec![];
+    for t in tasks {
+        let (n, d) = t.await.unwrap();
+        total += n;
+        keep.push(d);
+    }
+    ctl.write_u8(4).await.unwrap(); // TEST_END
+    if reverse {
+        // keep draining what is still in flight until the server stops
+        for d in keep.iter_mut() {
+            let mut buf = vec![0u8; 65536];
+            while let Ok(Ok(k)) = tokio::time::timeout(Duration::from_millis(300), d.read(&mut buf)).await {
+                if k == 0 {
+                    break;
+                }
+                total += k as u64;
+            }
+        }
+    }
+    assert_eq!(ctl.read_u8().await.unwrap(), 13); // EXCHANGE_RESULTS
+    json_msg(&mut ctl, &serde_json::json!({"cpu_util_total": 1.0, "streams": []})).await;
+    let res = read_msg(&mut ctl).await;
+    assert_eq!(ctl.read_u8().await.unwrap(), 14); // DISPLAY_RESULTS
+    ctl.write_u8(16).await.unwrap(); // IPERF_DONE
+    (total, res)
+}
+
+#[tokio::test]
+async fn iperf_server() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let m = ServerManager::new(dir.path().to_path_buf());
+    let port = m.start_with(cfg(ServerKind::Iperf, root.path()), String::new()).await.unwrap();
+
+    // normal: the server receives exactly what the client sent
+    let (sent, res) = iperf_run(port, 2, false).await;
+    let streams = res["streams"].as_array().unwrap();
+    assert_eq!(streams.iter().map(|s| s["id"].as_u64().unwrap()).collect::<Vec<_>>(), [1, 3]);
+    let got: u64 = streams.iter().map(|s| s["bytes"].as_u64().unwrap()).sum();
+    assert!(sent > 0 && got == sent, "envoyé {sent}, reçu {got}");
+
+    // reverse: the server sends, the client counts
+    let (recv, res) = iperf_run(port, 1, true).await;
+    let sent_srv = res["streams"][0]["bytes"].as_u64().unwrap();
+    assert!(recv > 0 && sent_srv >= recv, "serveur {sent_srv}, client {recv}");
+
+    // UDP is refused with a server error
+    let mut ctl = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    ctl.write_all(&[b'u'; 37]).await.unwrap();
+    assert_eq!(ctl.read_u8().await.unwrap(), 9);
+    json_msg(&mut ctl, &serde_json::json!({"udp": true, "time": 1})).await;
+    assert_eq!(ctl.read_u8().await.unwrap(), 0xFE);
+
+    let st = m.status().await;
+    let log: Vec<String> =
+        st.iter().find(|s| s.config.kind == ServerKind::Iperf).unwrap().log.iter().map(|l| l.msg.clone()).collect();
+    assert!(log.iter().any(|l| l.contains("Mbit/s reçus")) && log.iter().any(|l| l.contains("Mbit/s envoyés")), "{log:?}");
+    m.stop(ServerKind::Iperf).await;
+}

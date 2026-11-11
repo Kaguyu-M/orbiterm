@@ -276,6 +276,54 @@ class App {
   }
 
   // ------------------------------------------------------------ sessions
+  /** Saves sessions, folders, macros, tunnels and the interface settings in one file (no passwords). */
+  async exportConfig() {
+    const { save } = await import("@tauri-apps/plugin-dialog");
+    const day = new Date().toISOString().slice(0, 10);
+    const path = await save({
+      title: "Exporter la configuration",
+      defaultPath: `orbiterm-config-${day}.json`,
+      filters: [{ name: "Configuration Orbiterm", extensions: ["json"] }],
+    });
+    if (!path) return;
+    try {
+      await api.configExport(path, $state.snapshot(this.prefs));
+      const n = this.store.sessions.length;
+      this.info(`Configuration exportée (${n} session${n > 1 ? "s" : ""}, sans les mots de passe) :\n${path}`);
+    } catch (e) {
+      this.alert(asApiError(e).message);
+    }
+  }
+
+  /** Adds the content of an exported configuration (nothing is replaced or deleted). */
+  async importConfig() {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const path = await open({ title: "Importer une configuration", multiple: false, directory: false, filters: [{ name: "Configuration Orbiterm", extensions: ["json"] }] });
+    if (!path || Array.isArray(path)) return;
+    try {
+      const r = await api.configImport(path);
+      await this.reload();
+      const st = r.stats;
+      const parts = [
+        `${st.sessions} session(s)`,
+        `${st.folders} dossier(s)`,
+        `${st.macros} macro(s)`,
+        `${st.tunnels} tunnel(s)`,
+      ];
+      let msg = `Ajouté : ${parts.join(", ")}.`;
+      if (st.skipped) msg += `\n${st.skipped} élément(s) déjà présent(s), non dupliqué(s).`;
+      msg += "\nLes mots de passe seront demandés à la première connexion.";
+      if (r.prefs && (await this.confirm(`${msg}\n\nAppliquer aussi les paramètres de l'interface contenus dans le fichier ?`))) {
+        // folders and programs of the other computer are kept from this one
+        const { defaultShell, termLogDir, sidebarWidth } = this.prefs;
+        Object.assign(this.prefs, { ...DEFAULT_PREFS, ...this.prefs, ...r.prefs, defaultShell, termLogDir, sidebarWidth });
+        this.savePrefs();
+      } else if (!r.prefs) this.info(msg);
+    } catch (e) {
+      this.alert(asApiError(e).message);
+    }
+  }
+
   async reload() {
     this.store = await api.sessionsLoad();
   }
@@ -673,6 +721,16 @@ class App {
     this.activeKey = tab.key;
   }
 
+  /** Opens a comparison tab (two files or two folders; empty paths: chosen in the tab). */
+  openDiff(left = "", right = "", mode: "files" | "dirs" = "files") {
+    const s = this.blank("", "diff");
+    s.extra = { left, right, mode };
+    s.name = "Comparaison";
+    const tab: Tab = { key: crypto.randomUUID(), session: s, title: s.name, connId: null, status: "", state: "open" };
+    this.tabs.push(tab);
+    this.activeKey = tab.key;
+  }
+
   /** Opens a local terminal with the given shell id (default shell when empty). */
   startLocalTerminal(shellId = "") {
     const sh = this.shells.find((x) => x.id === (shellId || this.prefs.defaultShell)) ?? this.shells[0];
@@ -734,7 +792,7 @@ class App {
   async connect(tab: Tab): Promise<void> {
     const s = tab.session;
     tab.state = "connecting";
-    if (s.kind === "browser" || s.kind === "editor") {
+    if (s.kind === "browser" || s.kind === "editor" || s.kind === "diff") {
       // no backend connection: the view owns its content
       tab.state = "open";
       tab.status = "";

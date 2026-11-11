@@ -1,4 +1,4 @@
-//! Built-in servers (HTTP, TFTP, FTP, SSH/SFTP): configuration, start/stop and
+//! Built-in servers (HTTP, TFTP, FTP, SSH/SFTP, Telnet, Iperf): configuration, start/stop and
 //! activity log. Each server shares one directory of this computer.
 //!
 //! A server runs in a tokio task; stopping it drops the listener and every client
@@ -6,7 +6,9 @@
 
 mod ftpd;
 mod httpd;
+mod iperfd;
 mod sshd;
+mod telnetd;
 mod tftpd;
 
 use std::collections::{HashMap, VecDeque};
@@ -28,9 +30,12 @@ pub enum ServerKind {
     Tftp,
     Ftp,
     Ssh,
+    Telnet,
+    Iperf,
 }
 
-pub const ALL: [ServerKind; 4] = [ServerKind::Http, ServerKind::Tftp, ServerKind::Ftp, ServerKind::Ssh];
+pub const ALL: [ServerKind; 6] =
+    [ServerKind::Http, ServerKind::Tftp, ServerKind::Ftp, ServerKind::Ssh, ServerKind::Telnet, ServerKind::Iperf];
 
 impl ServerKind {
     /// Usual port (unprivileged alternative on Unix, where ports < 1024 need root).
@@ -40,6 +45,8 @@ impl ServerKind {
             ServerKind::Tftp => (69, 6969),
             ServerKind::Ftp => (21, 2121),
             ServerKind::Ssh => (22, 2222),
+            ServerKind::Telnet => (23, 2323),
+            ServerKind::Iperf => (5201, 5201),
         };
         if cfg!(windows) { std } else { alt }
     }
@@ -50,10 +57,12 @@ impl ServerKind {
             ServerKind::Tftp => "TFTP",
             ServerKind::Ftp => "FTP",
             ServerKind::Ssh => "SSH/SFTP",
+            ServerKind::Telnet => "Telnet",
+            ServerKind::Iperf => "Iperf",
         }
     }
 
-    /// Keyring entry of the server password (FTP and SSH).
+    /// Keyring entry of the server password (FTP, SSH and Telnet).
     pub fn secret_key(self) -> String {
         format!("server:{}", serde_json::to_value(self).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default())
     }
@@ -72,11 +81,11 @@ pub struct ServerConfig {
     pub writable: bool,
     /// FTP: accept "anonymous" without password
     pub anonymous: bool,
-    /// FTP / SSH login
+    /// FTP / SSH / Telnet login
     pub user: String,
     /// HTTP: list folders without index.html
     pub listing: bool,
-    /// SSH: id of the local shell started for clients ("" = default)
+    /// SSH / Telnet: id of the local shell started for clients ("" = default)
     pub shell: String,
     pub autostart: bool,
 }
@@ -94,7 +103,7 @@ impl ServerConfig {
             port: kind.default_port(),
             root: String::new(),
             local_only: false,
-            writable: kind != ServerKind::Http,
+            writable: !matches!(kind, ServerKind::Http | ServerKind::Iperf),
             anonymous: false,
             user: whoami(),
             listing: true,
@@ -131,7 +140,7 @@ struct ServersFile {
 
 const FILE: &str = "servers.toml";
 
-/// Loads the four server configurations (missing ones get their defaults).
+/// Loads the server configurations (missing ones get their defaults).
 pub fn load(dir: &Path) -> Vec<ServerConfig> {
     let saved: ServersFile =
         std::fs::read_to_string(dir.join(FILE)).ok().and_then(|s| toml::from_str(&s).ok()).unwrap_or_default();
@@ -297,8 +306,8 @@ impl ServerManager {
         let root = cfg.root_dir();
         std::fs::create_dir_all(&root)
             .map_err(|e| AppError::Config(format!("dossier partagé {} : {e}", root.display())))?;
-        if matches!(kind, ServerKind::Ssh) && password.is_empty() {
-            return Err(AppError::Config("définis d'abord le mot de passe du serveur SSH".into()));
+        if matches!(kind, ServerKind::Ssh | ServerKind::Telnet) && password.is_empty() {
+            return Err(AppError::Config(format!("définis d'abord le mot de passe du serveur {}", kind.label())));
         }
         if matches!(kind, ServerKind::Ftp) && password.is_empty() && !cfg.anonymous {
             return Err(AppError::Config("définis un mot de passe FTP ou autorise l'accès anonyme".into()));
@@ -312,6 +321,8 @@ impl ServerManager {
             ServerKind::Tftp => tftpd::start(addr, ctx, stop_rx).await,
             ServerKind::Ftp => ftpd::start(addr, ctx, stop_rx).await,
             ServerKind::Ssh => sshd::start(addr, ctx, stop_rx).await,
+            ServerKind::Telnet => telnetd::start(addr, ctx, stop_rx).await,
+            ServerKind::Iperf => iperfd::start(addr, ctx, stop_rx).await,
         }
         .map_err(|e| bind_error(kind, addr, e))?;
         log.log(format!("Serveur {} démarré sur le port {port}", kind.label()));

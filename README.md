@@ -4,7 +4,7 @@ Terminal multi-protocoles multiplateforme (Windows + Linux) : onglets, sessions 
 X11, RDP, VNC, FTP, navigateur web, écran partagé, MultiExec et macros. Application originale dont l'ergonomie s'inspire de MobaXterm.
 Conception : [`docs/CONCEPTION.md`](docs/CONCEPTION.md).
 
-**Version 0.7.8**
+**Version 0.7.9**
 
 | Domaine | Fonctionnalités |
 |---|---|
@@ -13,10 +13,11 @@ Conception : [`docs/CONCEPTION.md`](docs/CONCEPTION.md).
 | Bureaux distants | RDP **intégré dans l'onglet** (client IronRDP : NLA, certificat vérifié comme les clés SSH, mot de passe dans le trousseau, bureau adapté à la taille de l'onglet, plein écran, Ctrl+Alt+Suppr, **presse-papiers partagé** (texte, dans les deux sens), **partage d’un dossier local** (lecteur redirigé : « Ce PC » sous Windows, ~/thinclient_drives avec xrdp), coller du texte, bouton **Fermer la session** (fermeture de la session Windows ou Linux, ou simple déconnexion), barre d’informations du poste distant ; option fenêtre séparée mstsc / FreeRDP), VNC intégré dans l'onglet (noVNC : mot de passe mémorisable, ajustement, lecture seule, Ctrl+Alt+Suppr, presse-papiers) |
 | Fichiers | onglets SFTP et FTP / FTPS autonomes (explorateur plein onglet avec colonnes, envoi / téléchargement / glisser-déposer), édition des fichiers distants (double-clic, renvoyés au serveur à l’enregistrement), navigateur SFTP qui suit le dossier du terminal (serveurs Linux) |
 | Éditeur | onglet éditeur de texte (coloration syntaxique, rechercher / remplacer, aller à la ligne, encodage et fins de ligne conservés), fichiers locaux (Ctrl+Maj+O) ou distants |
+| Comparaison | onglet de comparaison de deux fichiers (côte à côte, recopie d'un bloc d'un côté à l'autre, enregistrement) ou de deux dossiers (fichiers identiques, différents, absents d'un côté ; double-clic pour comparer un fichier) |
 | Navigateur | onglet web intégré (précédent / suivant / actualiser / barre d'adresse), sans aucun accès aux commandes d'Orbiterm |
 | Réseau | redirections -L / -R / -D (SOCKS) par session, gestionnaire de tunnels (démarrage auto), rebond SSH (jump host, aussi pour RDP / VNC), redirection X11 (VcXsrv / Xming / X natif) |
-| Outils | scanner de ports (plages, sous-réseaux /24, listes prédéfinies, ouverture directe d'une session SSH / RDP / VNC / web sur un port trouvé), ports ouverts et connexions du poste (avec le programme), Wake-on-LAN (machines mémorisées) |
-| Serveurs intégrés | HTTP (liste des dossiers, reprise de téléchargement), TFTP (blksize / tsize, PXE), FTP (compte ou anonyme), SSH/SFTP (shell du poste, commandes, SFTP limité au dossier partagé) ; lecture seule possible, écoute locale ou réseau, journal d'activité en direct, démarrage avec Orbiterm |
+| Outils | export / import de toute la configuration (sessions, dossiers, macros, tunnels, préférences ; jamais de mot de passe), recherche des mises à jour (menu Aide), scanner de ports (plages, sous-réseaux /24, listes prédéfinies, ouverture directe d'une session SSH / RDP / VNC / web sur un port trouvé), ports ouverts et connexions du poste (avec le programme), Wake-on-LAN (machines mémorisées) |
+| Serveurs intégrés | HTTP (liste des dossiers, reprise de téléchargement), TFTP (blksize / tsize, PXE), FTP (compte ou anonyme), SSH/SFTP (shell du poste, commandes, SFTP limité au dossier partagé), Telnet (shell du poste, non chiffré), Iperf (mesure de débit avec un client `iperf3`, TCP, normal / inverse / plusieurs flux) ; lecture seule possible, écoute locale ou réseau, journal d'activité en direct, démarrage avec Orbiterm |
 | Terminal | écran partagé (2 côte à côte, 2 superposés, grille 2×2, mosaïque), MultiExec (saisie dans plusieurs terminaux), macros (enregistrer / rejouer, macro lancée au démarrage d’une session), recherche (Ctrl+Maj+F), mots-clés en couleur (erreurs, avertissements, succès), journalisation des sessions dans des fichiers texte (Documents/Orbiterm/journaux par défaut), commentaire de session (info-bulle), thèmes, zoom |
 | Import | MobaXterm (`MobaXterm.ini`, exports `.moba`), PuTTY, OpenSSH `~/.ssh/config` — sans jamais importer de mot de passe |
 | Apparence | interface épurée, **mode clair / sombre** (ou suivre le système, menu Affichage → Mode sombre), palette brun profond / noisette / olive / ambre / crème, thèmes de terminal « Orbiterm brun » et « Orbiterm crème » |
@@ -122,6 +123,7 @@ nix build path:.             # paquet Nix (NixOS), résultat dans ./result
 cargo run --example test_server -- 2222   # serveur SSH/SFTP de test (user test / test)
 cargo run --example ftp_test_server        # FTP de test sur 2121
 cargo run --example vnc_test_server        # VNC de test sur 5901 (mot de passe test)
+cargo run --example builtin_server -- iperf 5201   # un serveur intégré seul (http, tftp, ftp, ssh, telnet, iperf ; mot de passe : ORB_SERVER_PW)
 cd tools/rdp-test-server && cargo run       # RDP de test sur 3390 (test / test) — utilisé par tests/rdp.rs
 ```
 
@@ -138,6 +140,8 @@ src/                         interface (Svelte 5 + xterm.js)
   lib/SettingsDialog.svelte  configuration générale
   lib/ImportDialog.svelte    import MobaXterm / PuTTY / OpenSSH
   lib/EditorView.svelte      onglet éditeur de texte (CodeMirror)
+  lib/DiffView.svelte        onglet de comparaison de fichiers / dossiers
+  lib/update.ts              recherche des mises à jour (publications GitHub)
   lib/highlight.ts           mots-clés en couleur, suivi des lignes du terminal
   lib/VncView.svelte         visionneuse VNC (noVNC)
   lib/RdpView.svelte         bureau RDP dans l'onglet (canvas, clavier par scancodes)
@@ -150,6 +154,7 @@ src-tauri/src/               backend Rust
   pty.rs, telnet.rs, serial.rs  terminaux locaux, Telnet/Rlogin, port série
   sftp.rs, known_hosts.rs    SFTP, clés d'hôte
   editor.rs                  fichiers texte de l’éditeur (encodage, fins de ligne)
+  dircmp.rs, bundle.rs       comparaison de dossiers, export / import de la configuration
   termlog.rs                 journaux des sessions (fichiers texte)
   config.rs, secrets.rs      sessions.toml (écriture atomique), trousseau du système
   importer.rs                import de sessions
@@ -157,10 +162,10 @@ src-tauri/src/               backend Rust
   rdp_channels.rs            canaux RDP : presse-papiers (cliprdr) et dossier partagé (rdpdr)
   ftp.rs, rdp.rs, vnc.rs     FTP/FTPS (suppaftp), RDP externe (mstsc / FreeRDP), pont WebSocket ↔ VNC
   browser.rs                 webviews enfants du navigateur
-  servers/                   serveurs intégrés HTTP, TFTP, FTP (libunftp), SSH (russh) ; sftp_server.rs
+  servers/                   serveurs intégrés HTTP, TFTP, FTP (libunftp), SSH (russh), Telnet, Iperf ; sftp_server.rs
   nettools.rs                scanner de ports, sockets du poste, Wake-on-LAN
   commands.rs, tools_commands.rs  API exposée à l'interface
-src-tauri/examples/                 serveurs de test SSH/SFTP, FTP, VNC
+src-tauri/examples/                 serveurs de test SSH/SFTP, FTP, VNC ; lancement d'un serveur intégré seul
 tools/rdp-test-server/              serveur RDP de test (projet Cargo séparé)
 src-tauri/tests/                    tests de bout en bout
 ```

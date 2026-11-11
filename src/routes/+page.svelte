@@ -6,7 +6,10 @@
   import { api, describe, forwardLabel, protocol, viewOf, type HostKeyPrompt, type ServerKind } from "$lib/api";
   import BrowserView from "$lib/BrowserView.svelte";
   import EditorView from "$lib/EditorView.svelte";
+  import DiffView from "$lib/DiffView.svelte";
   import { open as openDialog } from "@tauri-apps/plugin-dialog";
+  import { openUrl } from "@tauri-apps/plugin-opener";
+  import { checkUpdate, type UpdateInfo } from "$lib/update";
   import ExternalView from "$lib/ExternalView.svelte";
   import SftpPanel from "$lib/SftpPanel.svelte";
   import VncView from "$lib/VncView.svelte";
@@ -35,6 +38,16 @@
 
   import pkg from "../../package.json";
   const VERSION = pkg.version;
+  let upd: { state: "idle" | "checking" | "done" | "error"; info?: UpdateInfo; msg?: string } = $state({ state: "idle" });
+  async function runUpdateCheck() {
+    about = true;
+    upd = { state: "checking" };
+    try {
+      upd = { state: "done", info: await checkUpdate(VERSION) };
+    } catch (e) {
+      upd = { state: "error", msg: e instanceof Error ? e.message : String(e) };
+    }
+  }
   let about = $state(false);
   let shortcuts = $state(false);
 
@@ -143,6 +156,8 @@
         { label: "Connexion rapide…", icon: "search", action: focusQuick },
         { sep: true },
         { label: "Importer des sessions (MobaXterm, PuTTY, OpenSSH)…", icon: "download", action: () => (app.showImport = true) },
+        { label: "Exporter la configuration…", icon: "upload", action: () => app.exportConfig() },
+        { label: "Importer une configuration Orbiterm…", icon: "download", action: () => app.importConfig() },
         { sep: true },
         ...sessionItems(),
       ],
@@ -168,6 +183,8 @@
         { sep: true },
         { label: "Éditeur de texte (nouveau fichier)", icon: "edit", action: () => app.openEditor("") },
         { label: "Ouvrir un fichier dans l'éditeur…", icon: "file", shortcut: "Ctrl+Maj+O", action: openInEditor },
+        { label: "Comparer deux fichiers…", icon: "split", action: () => app.openDiff("", "", "files") },
+        { label: "Comparer deux dossiers…", icon: "folder", action: () => app.openDiff("", "", "dirs") },
         { sep: true },
         ...netItems(),
         { sep: true },
@@ -180,6 +197,9 @@
         { label: "Configuration…", icon: "settings", action: () => (app.showSettings = true) },
         { label: "Importer des sessions…", icon: "download", action: () => (app.showImport = true) },
         { sep: true },
+        { label: "Exporter la configuration…", icon: "upload", action: () => app.exportConfig() },
+        { label: "Importer une configuration Orbiterm…", icon: "download", action: () => app.importConfig() },
+        { sep: true },
         { label: "Afficher la barre latérale", checked: app.prefs.sidebar, action: () => togglePref("sidebar") },
       ],
     },
@@ -189,6 +209,7 @@
       items: () => [
         { label: "Raccourcis clavier", icon: "keyboard", action: () => (shortcuts = true) },
         { sep: true },
+        { label: "Rechercher les mises à jour…", icon: "refresh", action: runUpdateCheck },
         { label: "À propos d'Orbiterm", icon: "info", action: () => (about = true) },
       ],
     },
@@ -213,6 +234,8 @@
     ["tftp", "Serveur TFTP", "network"],
     ["ftp", "Serveur FTP", "ftp"],
     ["ssh", "Serveur SSH/SFTP", "ssh"],
+    ["telnet", "Serveur Telnet", "telnet"],
+    ["iperf", "Serveur Iperf", "scan"],
   ];
   function serverItems(): MenuItem[] {
     return [
@@ -299,7 +322,7 @@
       if (!(await app.confirm(`Modifications non enregistrées : ${names}. Quitter sans enregistrer ?`))) return;
       for (const t of unsaved) t.dirty = false;
     }
-    const open = app.tabs.filter((t) => t.state === "open" && t.session.kind !== "editor").length;
+    const open = app.tabs.filter((t) => t.state === "open" && t.session.kind !== "editor" && t.session.kind !== "diff").length;
     if (open && app.prefs.confirmQuit && !(await app.confirm(`${open} session(s) ouverte(s). Quitter quand même ?`))) return;
     await app.closeAllTabs();
     await getCurrentWindow().close();
@@ -319,8 +342,8 @@
       y: e.clientY,
       items: [
         { label: "Renommer l'onglet", icon: "edit", action: () => app.renameTab(t) },
-        { label: "Dupliquer l'onglet", icon: "copy", disabled: t.session.kind === "editor", action: () => app.duplicateTab(t) },
-        { label: "Reconnecter", icon: "refresh", disabled: t.session.kind === "editor", action: () => app.reconnect(t) },
+        { label: "Dupliquer l'onglet", icon: "copy", disabled: t.session.kind === "editor" || t.session.kind === "diff", action: () => app.duplicateTab(t) },
+        { label: "Reconnecter", icon: "refresh", disabled: t.session.kind === "editor" || t.session.kind === "diff", action: () => app.reconnect(t) },
         {
           label: "Redirections de ports actives…",
           icon: "tunnel",
@@ -593,8 +616,10 @@
                 <BrowserView tab={t} visible={shown} />
               {:else if view === "editor"}
                 <EditorView tab={t} visible={shown} />
+              {:else if view === "diff"}
+                <DiffView tab={t} />
               {/if}
-              {#if (t.state === "closed" || t.state === "error") && view !== "external" && view !== "browser" && view !== "editor"}
+              {#if (t.state === "closed" || t.state === "error") && view !== "external" && view !== "browser" && view !== "editor" && view !== "diff"}
                 <div class="overlay">
                   <button class="primary" onclick={() => app.reconnect(t)}><Icon name="refresh" size={14} /> Redémarrer la session</button>
                   <button onclick={() => app.closeTab(t)}>Fermer l'onglet</button>
@@ -613,7 +638,7 @@
       <span class="cell grow">
         {#if app.active}
           <Icon name={protocol(app.active.session.kind).icon} size={13} />
-          {describe(app.active.session)} — {app.active.session.kind === "editor" ? (app.active.dirty ? "modifié" : "enregistré") : stateLabel[app.active.state]}
+          {describe(app.active.session)} — {app.active.session.kind === "editor" || app.active.session.kind === "diff" ? (app.active.dirty ? "modifié" : "enregistré") : stateLabel[app.active.state]}
         {:else}
           Accueil
         {/if}
@@ -757,6 +782,21 @@
         <p><b>Orbiterm {VERSION}</b></p>
         <p>Terminal multi-protocoles pour Windows et Linux : SSH, SFTP, Telnet, Rlogin, port série, Mosh, shells locaux et WSL.</p>
         <p class="muted">Tauri 2 · Rust · Svelte · xterm.js</p>
+        <p class="upd" data-update>
+          {#if upd.state === "checking"}
+            Recherche de mises à jour…
+          {:else if upd.state === "error"}
+            <span class="error">Vérification impossible : {upd.msg}</span>
+          {:else if upd.state === "done" && upd.info?.newer}
+            <b>Version {upd.info.latest} disponible.</b>
+            <button class="link" onclick={() => openUrl(upd.info!.url).catch(() => {})}>Voir la publication</button>
+            <span class="muted">(ou winget upgrade, apt upgrade, dnf upgrade, scoop update selon l'installation)</span>
+          {:else if upd.state === "done"}
+            Orbiterm est à jour.
+          {:else}
+            <button class="link" onclick={runUpdateCheck}>Rechercher les mises à jour</button>
+          {/if}
+        </p>
       </div>
     </div>
     {#snippet actions()}
@@ -1251,6 +1291,20 @@
   }
   .danger {
     color: var(--danger);
+  }
+  .msg p.upd {
+    white-space: normal;
+    border-top: 1px solid var(--border);
+    padding-top: 8px;
+  }
+  button.link {
+    background: none;
+    border: none;
+    padding: 0;
+    color: var(--accent);
+    text-decoration: underline;
+    cursor: pointer;
+    font: inherit;
   }
   .full {
     width: 100%;

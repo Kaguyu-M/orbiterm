@@ -1,9 +1,11 @@
 //! Orbiterm backend entry point.
 
 pub mod browser;
+pub mod bundle;
 pub mod commands;
 pub mod editor;
 pub mod config;
+pub mod dircmp;
 pub mod error;
 pub mod forward;
 pub mod ftp;
@@ -100,6 +102,9 @@ pub fn run() {
             commands::sftp_download,
             commands::sftp_upload,
             commands::text_read,
+            commands::dir_compare,
+            commands::config_export,
+            commands::config_import,
             commands::ssh_cwd,
             commands::text_write,
             tools_commands::servers_status,

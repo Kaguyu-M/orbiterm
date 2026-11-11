@@ -72,6 +72,16 @@ pub async fn start(addr: SocketAddr, ctx: Ctx, stop: oneshot::Receiver<()>) -> s
     Ok((task, port))
 }
 
+/// Program and arguments of the local shell `id` ("" or unknown = the first one).
+pub(super) fn configured_shell(id: &str) -> (String, Vec<String>) {
+    let shells = local_shells();
+    let sh = shells.iter().find(|s| s.id == id).or_else(|| shells.first());
+    match sh {
+        Some(s) => (s.program.clone(), s.args.clone()),
+        None => (if cfg!(windows) { "cmd.exe".into() } else { "/bin/sh".into() }, vec![]),
+    }
+}
+
 struct Sshd {
     ctx: Arc<Ctx>,
     peer: SocketAddr,
@@ -131,12 +141,7 @@ impl Sshd {
 
     /// The local shell configured for clients (program, args).
     fn shell(&self) -> (String, Vec<String>) {
-        let shells = local_shells();
-        let sh = shells.iter().find(|s| s.id == self.ctx.cfg.shell).or_else(|| shells.first());
-        match sh {
-            Some(s) => (s.program.clone(), s.args.clone()),
-            None => (if cfg!(windows) { "cmd.exe".into() } else { "/bin/sh".into() }, vec![]),
-        }
+        configured_shell(&self.ctx.cfg.shell)
     }
 
     /// Arguments that make the configured shell run one command.

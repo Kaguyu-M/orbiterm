@@ -76,6 +76,8 @@
             ["tftp", "Serveur TFTP", "network"],
             ["ftp", "Serveur FTP", "ftp"],
             ["ssh", "Serveur SSH/SFTP", "ssh"],
+            ["telnet", "Serveur Telnet", "telnet"],
+            ["iperf", "Serveur Iperf", "scan"],
           ] as const
         ).map(([k, l, icon]) => {
           const s = app.servers.find((x) => x.config.kind === k);
