@@ -42,6 +42,11 @@ Base : rapport d'analyse de MobaXterm (`Documents\MobaXterm-Analyse`) et code d'
 | Ouvrir / éditer un fichier distant (renvoyé à l'enregistrement) | ✅ 0.7.8 (double-clic → onglet éditeur, Ctrl+S renvoie le fichier) |
 | Suivre le dossier courant du terminal | ✅ 0.7.8 (serveurs Linux) |
 | Repli SCP quand SFTP est absent | ✅ 0.7.10 (automatique, signalé « Mode SCP » dans le navigateur) |
+| Menu contextuel (clic droit) sur les fichiers et le fond de la liste | ✅ 0.7.15 |
+| Droits d'accès (chmod) : cases lecture / écriture / exécution et valeur octale | ✅ 0.7.15 (SFTP, SCP, FTP `SITE CHMOD`) |
+| Nouveau fichier vide, copier le chemin | ✅ 0.7.15 |
+| Téléchargement et envoi de dossiers entiers (bouton, menu, glisser-déposer) | ✅ 0.7.15 |
+| Ouvrir avec le programme par défaut du poste (renvoyé à chaque enregistrement) | ✅ 0.7.15 |
 
 ## Bureaux distants
 
@@ -88,3 +93,4 @@ Base : rapport d'analyse de MobaXterm (`Documents\MobaXterm-Analyse`) et code d'
 4. ✅ (0.7.10) **Protocoles** : ZMODEM, repli SCP.
 5. ✅ (0.7.11 – 0.7.13) **Bureau à distance et partage** : son RDP, serveur VNC (partage de l'écran de ce poste), RDP multi-écran et passerelle RD Gateway.
 6. ✅ (0.7.14) **Clés SSH** : générateur de clés, clés PuTTY, clés publiques sur le serveur SSH intégré (0.7.14) ; agent SSH (agent du système / Pageant, transfert d'agent).
+7. ✅ (0.7.15) **Navigateur SFTP complet** : menu contextuel, droits d'accès, nouveau fichier, copie du chemin, dossiers entiers, ouverture avec le programme par défaut.

@@ -148,6 +148,20 @@ impl FtpConnection {
         self.with(async |ftp| ftp.mkdir(path).await.map_err(fe)).await
     }
 
+    /// SITE CHMOD (most Unix FTP servers).
+    pub async fn chmod(&self, path: &str, mode: u32) -> AppResult<()> {
+        self.with(async |ftp| ftp.site(format!("CHMOD {:o} {path}", mode & 0o7777)).await.map(|_| ()).map_err(fe)).await
+    }
+
+    /// Creates an empty file.
+    pub async fn touch(&self, path: &str) -> AppResult<()> {
+        self.with(async |ftp| {
+            ftp.transfer_type(FileType::Binary).await.map_err(fe)?;
+            ftp.put_file(path, &mut tokio::io::empty()).await.map(|_| ()).map_err(fe)
+        })
+        .await
+    }
+
     pub async fn rename(&self, from: &str, to: &str) -> AppResult<()> {
         self.with(async |ftp| ftp.rename(from, to).await.map_err(fe)).await
     }

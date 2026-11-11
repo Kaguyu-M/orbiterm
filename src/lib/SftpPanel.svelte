@@ -6,7 +6,10 @@
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import { api, asApiError, formatSize, remoteJoin, remoteParent, type Entry } from "./api";
   import Icon from "./Icon.svelte";
+  import Modal from "./Modal.svelte";
   import { app } from "./app.svelte";
+  import { clipWrite } from "./clipboard";
+  import type { MenuItem } from "./MenuBar.svelte";
 
   let {
     connId,
@@ -138,12 +141,19 @@
     return transfers[0];
   }
 
+  /** Automated GUI tests replace the native folder / file pickers: window.__orbitermSftpPick = { dir, files, folder }. */
+  type Pick = { dir?: string; files?: string[]; folder?: string };
+  const testPick = () => (window as unknown as { __orbitermSftpPick?: Pick }).__orbitermSftpPick;
+
   async function download(e: Entry) {
-    const dir = await open({ directory: true, title: "Télécharger dans…" });
+    const dir = testPick()?.dir ?? (await open({ directory: true, title: "Télécharger dans…" }));
     if (typeof dir !== "string") return;
-    const t = newTransfer(`⬇ ${e.name}`);
+    const t = newTransfer(`⬇ ${e.name}${e.kind === "dir" ? "/" : ""}`);
     try {
-      await api.sftpDownload(connId, e.path, dir, t.id);
+      if (e.kind === "dir") {
+        const r = await api.sftpDownloadDir(connId, e.path, dir, t.id);
+        t.msg = `${r.files} fichier(s), ${formatSize(r.bytes)}${r.skipped ? ` — ${r.skipped} lien(s) ignoré(s)` : ""}`;
+      } else await api.sftpDownload(connId, e.path, dir, t.id);
       t.state = "ok";
     } catch (err) {
       t.state = "err";
@@ -155,9 +165,13 @@
     const target = path;
     for (const f of files) {
       const name = f.split(/[\\/]/).pop() ?? f;
-      const t = newTransfer(`⬆ ${name}`);
+      const isDir = (await api.localKind(f).catch(() => "file")) === "dir";
+      const t = newTransfer(`⬆ ${name}${isDir ? "/" : ""}`);
       try {
-        await api.sftpUpload(connId, f, target, t.id);
+        if (isDir) {
+          const r = await api.sftpUploadDir(connId, f, target, t.id);
+          t.msg = `${r.files} fichier(s), ${formatSize(r.bytes)}${r.skipped ? ` — ${r.skipped} élément(s) ignoré(s)` : ""}`;
+        } else await api.sftpUpload(connId, f, target, t.id);
         t.state = "ok";
       } catch (err) {
         t.state = "err";
@@ -168,9 +182,113 @@
   }
 
   async function pickUpload() {
-    const files = await open({ multiple: true, directory: false, title: "Fichiers à envoyer" });
+    const files = testPick()?.files ?? (await open({ multiple: true, directory: false, title: "Fichiers à envoyer" }));
     if (!files) return;
     await uploadFiles(Array.isArray(files) ? files : [files]);
+  }
+
+  async function pickUploadDir() {
+    const dir = testPick()?.folder ?? (await open({ directory: true, title: "Dossier à envoyer" }));
+    if (typeof dir === "string") await uploadFiles([dir]);
+  }
+
+  async function newFile() {
+    const name = await askText("Nouveau fichier", "");
+    if (!name) return;
+    try {
+      await api.sftpTouch(connId, remoteJoin(path, name));
+      await load(path);
+      selected = remoteJoin(path, name);
+    } catch (e) {
+      error = asApiError(e).message;
+    }
+  }
+
+  // ---- "Open with the default program": the file is sent back each time it is saved
+  async function openExternal(e: Entry) {
+    try {
+      await api.sftpOpenExternal(connId, e.path);
+      app.info(`« ${e.name} » est ouvert avec le programme associé : chaque enregistrement est renvoyé au serveur tant que l'onglet reste ouvert.`);
+    } catch (err) {
+      error = asApiError(err).message;
+    }
+  }
+
+  // ---- permissions (chmod)
+  const PERM_BITS: Array<[string, number]> = [
+    ["Lecture", 4],
+    ["Écriture", 2],
+    ["Exécution", 1],
+  ];
+  const WHO: Array<[string, number]> = [
+    ["Propriétaire", 6],
+    ["Groupe", 3],
+    ["Autres", 0],
+  ];
+  let perm: { entry: Entry; mode: number } | null = $state(null);
+  let permText = $state("");
+  function modeOf(perms: string): number {
+    // "rwxr-xr-x" (an optional type letter first)
+    const p = perms.length === 10 ? perms.slice(1) : perms;
+    let m = 0;
+    for (let i = 0; i < 9 && i < p.length; i++) if (p[i] !== "-") m |= 1 << (8 - i);
+    return m;
+  }
+  function editPerms(e: Entry) {
+    perm = { entry: e, mode: modeOf(e.perms) };
+    permText = perm.mode.toString(8).padStart(3, "0");
+  }
+  function toggleBit(bit: number) {
+    if (!perm) return;
+    perm.mode ^= bit;
+    permText = perm.mode.toString(8).padStart(3, "0");
+  }
+  function setOctal(v: string) {
+    permText = v;
+    if (perm && /^[0-7]{3,4}$/.test(v)) perm.mode = parseInt(v, 8) & 0o777;
+  }
+  async function applyPerms() {
+    if (!perm) return;
+    const { entry, mode } = perm;
+    perm = null;
+    try {
+      await api.sftpChmod(connId, entry.path, mode);
+      load(path);
+    } catch (err) {
+      error = asApiError(err).message;
+    }
+  }
+
+  // ---- context menu (MobaXterm-like)
+  function menu(ev: MouseEvent, e: Entry | null) {
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (e) selected = e.path;
+    const isFile = !!e && e.kind !== "dir";
+    const items: MenuItem[] = [];
+    if (e) {
+      items.push(
+        { label: e.kind === "dir" ? "Ouvrir" : "Modifier dans l'éditeur", icon: e.kind === "dir" ? "folder" : "edit", action: () => activate(e) },
+        { label: "Ouvrir avec le programme par défaut", icon: "file", disabled: !isFile, action: () => openExternal(e) },
+        { label: e.kind === "dir" ? "Télécharger le dossier…" : "Télécharger…", icon: "download", action: () => download(e) },
+        { sep: true },
+        { label: "Renommer", icon: "edit", shortcut: "F2", action: () => rename(e) },
+        { label: "Supprimer", icon: "trash", shortcut: "Suppr", action: () => remove(e) },
+        { label: "Droits d'accès…", icon: "lock", disabled: !e.perms, action: () => editPerms(e) },
+        { label: "Copier le chemin", icon: "copy", action: () => clipWrite(e.path) },
+        { sep: true },
+      );
+    }
+    items.push(
+      { label: "Nouveau fichier…", icon: "file", action: newFile },
+      { label: "Nouveau dossier…", icon: "newfolder", action: mkdir },
+      { label: "Envoyer des fichiers…", icon: "upload", action: pickUpload },
+      { label: "Envoyer un dossier…", icon: "upload", action: pickUploadDir },
+      { sep: true },
+      { label: "Copier le chemin du dossier", icon: "copy", action: () => clipWrite(path) },
+      { label: "Rafraîchir", icon: "refresh", action: () => load(path) },
+    );
+    app.ctx = { x: ev.clientX, y: ev.clientY, items };
   }
 
   async function mkdir() {
@@ -228,6 +346,13 @@
         t.total = ev.payload.total;
       }
     }).then((u) => unsubs.push(u));
+    listen<{ conn_id: string; remote: string; ok: boolean; message: string }>("external-saved", (ev) => {
+      if (ev.payload.conn_id !== connId) return;
+      const name = ev.payload.remote.split("/").pop();
+      if (ev.payload.ok) app.info(`« ${name} » enregistré sur le serveur.`);
+      else app.alert(`Renvoi de « ${name} » impossible : ${ev.payload.message}`);
+      if (ev.payload.ok) load(path);
+    }).then((u) => unsubs.push(u));
 
     // Drag & drop of local files onto the panel = upload into the current folder.
     getCurrentWebview()
@@ -258,10 +383,11 @@
     <button title="Dossier parent" aria-label="Dossier parent" onclick={() => load(remoteParent(path))}><Icon name="up" size={16} /></button>
     <button title="Dossier personnel" aria-label="Dossier personnel" onclick={init}><Icon name="home" size={16} /></button>
     <button title="Rafraîchir" aria-label="Rafraîchir" onclick={() => load(path)}><Icon name="refresh" size={16} /></button>
+    <button title="Nouveau fichier" aria-label="Nouveau fichier" onclick={newFile}><Icon name="file" size={16} /></button>
     <button title="Nouveau dossier" aria-label="Nouveau dossier" onclick={mkdir}><Icon name="newfolder" size={16} /></button>
     <button title="Envoyer des fichiers dans ce dossier" aria-label="Envoyer des fichiers" onclick={pickUpload}><Icon name="upload" size={16} /></button>
     <button title="Modifier le fichier sélectionné dans l'éditeur (double-clic)" aria-label="Modifier" disabled={!selectedEntry || selectedEntry.kind === "dir"} onclick={() => selectedEntry && edit(selectedEntry)}><Icon name="edit" size={16} /></button>
-    <button title="Télécharger le fichier sélectionné" aria-label="Télécharger" disabled={!selectedEntry || selectedEntry.kind === "dir"} onclick={() => selectedEntry && download(selectedEntry)}><Icon name="download" size={16} /></button>
+    <button title="Télécharger la sélection (fichier ou dossier)" aria-label="Télécharger" disabled={!selectedEntry} onclick={() => selectedEntry && download(selectedEntry)}><Icon name="download" size={16} /></button>
     <button title="Supprimer la sélection" aria-label="Supprimer" disabled={!selectedEntry} onclick={() => selectedEntry && remove(selectedEntry)}><Icon name="trash" size={16} /></button>
     {#if onseparate}
       <button title="Ouvrir dans une session SFTP séparée (enregistrée, mot de passe mémorisé)" aria-label="Session SFTP séparée" data-sftp-separate onclick={onseparate}><Icon name="sftp" size={16} /></button>
@@ -284,7 +410,7 @@
   {#if wide}
     <div class="cols"><span></span><span>Nom</span><span class="r">Taille</span><span>Modifié</span><span>Droits</span><span></span></div>
   {/if}
-  <div class="list" class:loading>
+  <div class="list" class:loading role="presentation" oncontextmenu={(ev) => menu(ev, null)}>
     {#each shown as e (e.path)}
       <div
         class="item"
@@ -293,6 +419,8 @@
         tabindex="0"
         onclick={() => (selected = e.path)}
         ondblclick={() => activate(e)}
+        oncontextmenu={(ev) => menu(ev, e)}
+        data-sftp-entry={e.name}
         onkeydown={(k) => {
           if (k.key === "Enter") activate(e);
           if (k.key === "Delete") remove(e);
@@ -333,6 +461,33 @@
   {/if}
   <div class="hint">Glisse des fichiers ici pour les envoyer</div>
 </div>
+
+{#if perm}
+  <Modal title={`Droits d'accès — ${perm.entry.name}`} onclose={() => (perm = null)} width="420px">
+    <table class="perm" data-perm>
+      <thead><tr><th></th>{#each PERM_BITS as [l] (l)}<th>{l}</th>{/each}</tr></thead>
+      <tbody>
+        {#each WHO as [who, shift] (who)}
+          <tr>
+            <td>{who}</td>
+            {#each PERM_BITS as [l, b] (l)}
+              <td><input type="checkbox" aria-label="{who} : {l}" checked={(perm.mode & (b << shift)) !== 0} onchange={() => toggleBit(b << shift)} /></td>
+            {/each}
+          </tr>
+        {/each}
+      </tbody>
+    </table>
+    <div class="octal">
+      <label for="perm-oct">Valeur octale</label>
+      <input id="perm-oct" value={permText} oninput={(e) => setOctal(e.currentTarget.value)} maxlength="4" spellcheck="false" />
+      <span class="muted">{perm.entry.perms}</span>
+    </div>
+    {#snippet actions()}
+      <button class="primary dlg" onclick={applyPerms} disabled={!/^[0-7]{3,4}$/.test(permText)} data-perm-apply>Appliquer</button>
+      <button class="dlg" onclick={() => (perm = null)}>Annuler</button>
+    {/snippet}
+  </Modal>
+{/if}
 
 <style>
   .sftp {
@@ -517,5 +672,28 @@
     font-size: 11px;
     padding: 4px 8px 6px;
     text-align: center;
+  }
+  .perm {
+    border-collapse: collapse;
+    margin: 0 auto 10px;
+  }
+  .perm th,
+  .perm td {
+    padding: 4px 10px;
+    text-align: center;
+  }
+  .perm td:first-child {
+    text-align: left;
+    font-weight: 600;
+  }
+  .octal {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    justify-content: center;
+  }
+  .octal input {
+    width: 60px;
+    font-family: var(--mono, monospace);
   }
 </style>

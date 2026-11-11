@@ -358,6 +358,14 @@ export const api = {
   sftpRename: (connId: string, from: string, to: string) =>
     invoke<void>("sftp_rename", { connId, from, to }),
   sftpRemove: (connId: string, path: string) => invoke<void>("sftp_remove", { connId, path }),
+  sftpChmod: (connId: string, path: string, mode: number) => invoke<void>("sftp_chmod", { connId, path, mode }),
+  sftpTouch: (connId: string, path: string) => invoke<void>("sftp_touch", { connId, path }),
+  sftpDownloadDir: (connId: string, remote: string, localDir: string, transferId: string) =>
+    invoke<TreeTransfer>("sftp_download_dir", { connId, remote, localDir, transferId }),
+  sftpUploadDir: (connId: string, local: string, remoteDir: string, transferId: string) =>
+    invoke<TreeTransfer>("sftp_upload_dir", { connId, local, remoteDir, transferId }),
+  sftpOpenExternal: (connId: string, remote: string) => invoke<string>("sftp_open_external", { connId, remote }),
+  localKind: (path: string) => invoke<"file" | "dir" | "other">("local_kind", { path }),
   sftpDownload: (connId: string, remote: string, localDir: string, transferId: string) =>
     invoke<string>("sftp_download", { connId, remote, localDir, transferId }),
   sftpUpload: (connId: string, local: string, remoteDir: string, transferId: string) =>
@@ -397,6 +405,14 @@ export interface AgentState {
   keys: AgentKey[];
   /** running system agent ("" when none) */
   system: string;
+}
+
+/** Result of a folder download / upload. */
+export interface TreeTransfer {
+  target: string;
+  files: number;
+  bytes: number;
+  skipped: number;
 }
 
 /** Key held by the SSH key generator (the private part stays in the backend). */

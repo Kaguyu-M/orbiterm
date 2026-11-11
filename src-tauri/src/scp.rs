@@ -117,6 +117,15 @@ pub async fn mkdir(conn: &SshConnection, path: &str) -> AppResult<()> {
     run_ok(conn, &format!("mkdir -- {}", sh_quote(path))).await.map(|_| ())
 }
 
+pub async fn chmod(conn: &SshConnection, path: &str, mode: u32) -> AppResult<()> {
+    run_ok(conn, &format!("chmod {:o} -- {}", mode & 0o7777, sh_quote(path))).await.map(|_| ())
+}
+
+/// Creates an empty file (noclobber: fails if the name is already taken).
+pub async fn touch(conn: &SshConnection, path: &str) -> AppResult<()> {
+    run_ok(conn, &format!("set -C; : > {}", sh_quote(path))).await.map(|_| ())
+}
+
 pub async fn rename(conn: &SshConnection, from: &str, to: &str) -> AppResult<()> {
     run_ok(conn, &format!("mv -- {} {}", sh_quote(from), sh_quote(to))).await.map(|_| ())
 }

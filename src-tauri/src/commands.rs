@@ -885,6 +885,17 @@ pub async fn local_file_info(path: String) -> AppResult<LocalFileInfo> {
     Ok(LocalFileInfo { size: md.len(), mtime })
 }
 
+/// "file", "dir" or "other" (dropped paths: files or folders).
+#[tauri::command]
+pub async fn local_kind(path: String) -> String {
+    match tokio::fs::metadata(&path).await {
+        Ok(m) if m.is_dir() => "dir",
+        Ok(m) if m.is_file() => "file",
+        _ => "other",
+    }
+    .into()
+}
+
 /// Reads up to `len` bytes (1 MiB at most) of a local file at `offset`, as base64.
 #[tauri::command]
 pub async fn local_read_chunk(path: String, offset: u64, len: u32) -> AppResult<String> {
@@ -1231,6 +1242,246 @@ pub async fn sftp_upload(
         Files::Ftp(f) => f.upload(&local_path, &remote, &progress).await?,
     }
     Ok(remote)
+}
+
+impl Files {
+    async fn list(&self, path: &str) -> AppResult<Vec<Entry>> {
+        match self {
+            Files::Sftp(s) => sftp::list(s, path).await,
+            Files::Scp(c) => scp::list(c, path).await,
+            Files::Ftp(f) => f.list(path).await,
+        }
+    }
+
+    async fn mkdir(&self, path: &str) -> AppResult<()> {
+        match self {
+            Files::Sftp(s) => sftp::mkdir(s, path).await,
+            Files::Scp(c) => scp::mkdir(c, path).await,
+            Files::Ftp(f) => f.mkdir(path).await,
+        }
+    }
+
+    async fn download(&self, remote: &str, local: &std::path::Path, progress: &(dyn Fn(u64, u64) + Send + Sync)) -> AppResult<()> {
+        match self {
+            Files::Sftp(s) => sftp::download(s, remote, local, progress).await,
+            Files::Scp(c) => scp::download(c, remote, local, progress).await,
+            Files::Ftp(f) => f.download(remote, local, progress).await,
+        }
+    }
+
+    async fn upload(&self, local: &std::path::Path, remote: &str, progress: &(dyn Fn(u64, u64) + Send + Sync)) -> AppResult<()> {
+        match self {
+            Files::Sftp(s) => sftp::upload(s, local, remote, progress).await,
+            Files::Scp(c) => scp::upload(c, local, remote, progress).await,
+            Files::Ftp(f) => f.upload(local, remote, progress).await,
+        }
+    }
+}
+
+/// Changes the permissions of a remote file or folder (octal mode, e.g. 0o755).
+#[tauri::command]
+pub async fn sftp_chmod(state: State<'_, AppState>, conn_id: String, path: String, mode: u32) -> AppResult<()> {
+    match state.files(&conn_id).await? {
+        Files::Sftp(s) => sftp::chmod(&s, &path, mode).await,
+        Files::Scp(c) => scp::chmod(&c, &path, mode).await,
+        Files::Ftp(f) => f.chmod(&path, mode).await,
+    }
+}
+
+/// Creates an empty remote file.
+#[tauri::command]
+pub async fn sftp_touch(state: State<'_, AppState>, conn_id: String, path: String) -> AppResult<()> {
+    match state.files(&conn_id).await? {
+        Files::Sftp(s) => sftp::touch(&s, &path).await,
+        Files::Scp(c) => scp::touch(&c, &path).await,
+        Files::Ftp(f) => f.touch(&path).await,
+    }
+}
+
+/// Result of a folder transfer.
+#[derive(Serialize)]
+pub struct TreeTransfer {
+    /// local or remote folder created
+    pub target: String,
+    pub files: u32,
+    pub bytes: u64,
+    /// symbolic links and special files left out
+    pub skipped: u32,
+}
+
+/// Lists a remote tree: (relative directories, (relative file, remote path, size)), links skipped.
+async fn remote_tree(files: &Files, root: &str) -> AppResult<(Vec<String>, Vec<(String, String, u64)>, u32)> {
+    let (mut dirs, mut out, mut skipped) = (Vec::new(), Vec::new(), 0u32);
+    let mut stack = vec![(root.to_string(), String::new())];
+    while let Some((dir, rel)) = stack.pop() {
+        for e in files.list(&dir).await? {
+            if e.name == "." || e.name == ".." {
+                continue;
+            }
+            let r = if rel.is_empty() { e.name.clone() } else { format!("{rel}/{}", e.name) };
+            match e.kind.as_str() {
+                "dir" => {
+                    dirs.push(r.clone());
+                    stack.push((e.path.clone(), r));
+                }
+                "file" => out.push((r, e.path.clone(), e.size)),
+                _ => skipped += 1,
+            }
+        }
+    }
+    Ok((dirs, out, skipped))
+}
+
+/// Local path of a relative remote path under `base` (each part checked: no "..", no separators).
+fn local_under(base: &std::path::Path, rel: &str) -> AppResult<PathBuf> {
+    let mut p = base.to_path_buf();
+    for part in rel.split('/') {
+        p = sftp::safe_local_join(&p, part)?;
+    }
+    Ok(p)
+}
+
+/// Downloads a remote folder (recursively) into `local_dir`/<folder name>.
+#[tauri::command]
+pub async fn sftp_download_dir(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    conn_id: String,
+    remote: String,
+    local_dir: String,
+    transfer_id: String,
+) -> AppResult<TreeTransfer> {
+    let files = state.files(&conn_id).await?;
+    let name = remote.trim_end_matches('/').rsplit('/').next().unwrap_or("").to_string();
+    let target = sftp::safe_local_join(std::path::Path::new(&local_dir), &name)?;
+    if target.exists() {
+        return Err(AppError::Config(format!("{} existe déjà sur ce poste", target.display())));
+    }
+    let (dirs, list, skipped) = remote_tree(&files, &remote).await?;
+    let total: u64 = list.iter().map(|f| f.2).sum();
+    std::fs::create_dir_all(&target)?;
+    for d in &dirs {
+        std::fs::create_dir_all(local_under(&target, d)?)?;
+    }
+    let progress = progress_emitter(app, transfer_id);
+    let mut done = 0u64;
+    for (rel, path, size) in &list {
+        let local = local_under(&target, rel)?;
+        let base = done;
+        files.download(path, &local, &|d, _| progress(base + d, total.max(1))).await?;
+        done += size;
+    }
+    progress(total, total);
+    Ok(TreeTransfer { target: target.to_string_lossy().into_owned(), files: list.len() as u32, bytes: total, skipped })
+}
+
+/// Uploads a local folder (recursively) into `remote_dir`/<folder name>.
+#[tauri::command]
+pub async fn sftp_upload_dir(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    conn_id: String,
+    local: String,
+    remote_dir: String,
+    transfer_id: String,
+) -> AppResult<TreeTransfer> {
+    let files = state.files(&conn_id).await?;
+    let root = PathBuf::from(&local);
+    let name = root.file_name().map(|n| n.to_string_lossy().into_owned()).ok_or_else(|| AppError::InvalidPath(local.clone()))?;
+    let target = sftp::remote_join(&remote_dir, &name);
+    if files.list(&remote_dir).await?.iter().any(|e| e.name == name) {
+        return Err(AppError::Config(format!("{target} existe déjà sur le serveur")));
+    }
+    // local tree (symbolic links left out)
+    let (mut dirs, mut list, mut skipped) = (Vec::new(), Vec::new(), 0u32);
+    let mut stack = vec![(root.clone(), String::new())];
+    while let Some((dir, rel)) = stack.pop() {
+        for e in std::fs::read_dir(&dir)? {
+            let e = e?;
+            let n = e.file_name().to_string_lossy().into_owned();
+            let r = if rel.is_empty() { n.clone() } else { format!("{rel}/{n}") };
+            let t = e.file_type()?;
+            if t.is_dir() {
+                dirs.push(r.clone());
+                stack.push((e.path(), r));
+            } else if t.is_file() {
+                list.push((r, e.path(), e.metadata()?.len()));
+            } else {
+                skipped += 1;
+            }
+        }
+    }
+    let total: u64 = list.iter().map(|f| f.2).sum();
+    files.mkdir(&target).await?;
+    dirs.sort();
+    for d in &dirs {
+        files.mkdir(&format!("{target}/{d}")).await?;
+    }
+    let progress = progress_emitter(app, transfer_id);
+    let mut done = 0u64;
+    for (rel, path, size) in &list {
+        let base = done;
+        files.upload(path, &format!("{target}/{rel}"), &|d, _| progress(base + d, total.max(1))).await?;
+        done += size;
+    }
+    progress(total, total);
+    Ok(TreeTransfer { target, files: list.len() as u32, bytes: total, skipped })
+}
+
+#[derive(Clone, Serialize)]
+struct ExternalSaved {
+    conn_id: String,
+    remote: String,
+    ok: bool,
+    message: String,
+}
+
+/// Opens a remote file with the program associated on this computer (downloaded to a
+/// temporary folder); every time the file is saved there, it is sent back to the server
+/// (event "external-saved"). Watching stops when the tab is closed.
+#[tauri::command]
+pub async fn sftp_open_external(app: AppHandle, state: State<'_, AppState>, conn_id: String, remote: String) -> AppResult<String> {
+    let files = state.files(&conn_id).await?;
+    let name = remote.rsplit('/').next().unwrap_or("").to_string();
+    let dir = std::env::temp_dir().join("orbiterm-ouverts").join(crate::config::new_id("f"));
+    std::fs::create_dir_all(&dir)?;
+    let local = sftp::safe_local_join(&dir, &name)?;
+    files.download(&remote, &local, &|_, _| {}).await?;
+    let modified = |p: &std::path::Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+    let mut last = modified(&local);
+    {
+        use tauri_plugin_opener::OpenerExt;
+        app.opener()
+            .open_path(local.to_string_lossy(), None::<&str>)
+            .map_err(|e| AppError::Conn(format!("ouverture de {name} : {e}")))?;
+    }
+    let path = local.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_millis(1500)).await;
+            let state = app.state::<AppState>();
+            let Ok(files) = state.files(&conn_id).await else { break };
+            let now = modified(&path);
+            if now.is_none() || now == last {
+                continue;
+            }
+            // let the editor finish writing
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            last = modified(&path);
+            let r = files.upload(&path, &remote, &|_, _| {}).await;
+            let _ = app.emit(
+                "external-saved",
+                ExternalSaved {
+                    conn_id: conn_id.clone(),
+                    remote: remote.clone(),
+                    ok: r.is_ok(),
+                    message: r.err().map(|e| e.to_string()).unwrap_or_default(),
+                },
+            );
+        }
+        let _ = std::fs::remove_dir_all(path.parent().unwrap_or(&path));
+    });
+    Ok(local.to_string_lossy().into_owned())
 }
 
 /// Current folder of the shell of an SSH tab (None when the server cannot tell).

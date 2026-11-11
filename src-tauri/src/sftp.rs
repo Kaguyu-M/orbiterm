@@ -118,6 +118,20 @@ pub async fn mkdir(sftp: &SftpSession, path: &str) -> AppResult<()> {
     Ok(sftp.create_dir(path).await?)
 }
 
+/// Changes the permission bits of a file or directory.
+pub async fn chmod(sftp: &SftpSession, path: &str, mode: u32) -> AppResult<()> {
+    let mut attrs = russh_sftp::protocol::FileAttributes::empty();
+    attrs.permissions = Some(mode & 0o7777);
+    Ok(sftp.set_metadata(path, attrs).await?)
+}
+
+/// Creates an empty file (fails if the name is already taken).
+pub async fn touch(sftp: &SftpSession, path: &str) -> AppResult<()> {
+    let mut f = sftp.open_with_flags(path, OpenFlags::CREATE | OpenFlags::EXCLUDE | OpenFlags::WRITE).await?;
+    f.shutdown().await?;
+    Ok(())
+}
+
 pub async fn rename(sftp: &SftpSession, from: &str, to: &str) -> AppResult<()> {
     Ok(sftp.rename(from, to).await?)
 }

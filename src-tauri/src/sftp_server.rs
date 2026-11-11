@@ -87,6 +87,20 @@ fn ok(id: u32) -> Status {
     Status { id, status_code: StatusCode::Ok, error_message: "Ok".into(), language_tag: "en-US".into() }
 }
 
+/// SFTP attributes of a local file. Windows has no Unix modes: advertise realistic ones
+/// (644 / 755, without write bits for read-only files) rather than rwxrwxrwx.
+fn attrs_of(md: &std::fs::Metadata) -> FileAttributes {
+    #[allow(unused_mut)]
+    let mut a = FileAttributes::from(md);
+    #[cfg(windows)]
+    if let Some(p) = a.permissions {
+        let base = if md.is_dir() { 0o755 } else { 0o644 };
+        let mode = if md.permissions().readonly() { base & !0o222 } else { base };
+        a.permissions = Some((p & !0o7777) | mode);
+    }
+    a
+}
+
 fn io_err(e: std::io::Error) -> StatusCode {
     match e.kind() {
         std::io::ErrorKind::NotFound => StatusCode::NoSuchFile,
@@ -112,19 +126,19 @@ impl russh_sftp::server::Handler for SftpServer {
 
     async fn stat(&mut self, id: u32, path: String) -> Result<Attrs, Self::Error> {
         let md = std::fs::metadata(self.real(&path)).map_err(io_err)?;
-        Ok(Attrs { id, attrs: FileAttributes::from(&md) })
+        Ok(Attrs { id, attrs: attrs_of(&md) })
     }
 
     async fn lstat(&mut self, id: u32, path: String) -> Result<Attrs, Self::Error> {
         let md = std::fs::symlink_metadata(self.real(&path)).map_err(io_err)?;
-        Ok(Attrs { id, attrs: FileAttributes::from(&md) })
+        Ok(Attrs { id, attrs: attrs_of(&md) })
     }
 
     async fn fstat(&mut self, id: u32, handle: String) -> Result<Attrs, Self::Error> {
         match self.handles.get(&handle) {
-            Some(OpenHandle::File(f)) => Ok(Attrs { id, attrs: FileAttributes::from(&f.metadata().map_err(io_err)?) }),
+            Some(OpenHandle::File(f)) => Ok(Attrs { id, attrs: attrs_of(&f.metadata().map_err(io_err)?) }),
             Some(OpenHandle::Dir { path, .. }) => {
-                Ok(Attrs { id, attrs: FileAttributes::from(&std::fs::metadata(path).map_err(io_err)?) })
+                Ok(Attrs { id, attrs: attrs_of(&std::fs::metadata(path).map_err(io_err)?) })
             }
             None => Err(StatusCode::Failure),
         }
@@ -150,7 +164,7 @@ impl russh_sftp::server::Handler for SftpServer {
         let mut files = vec![];
         for e in std::fs::read_dir(path).map_err(io_err)?.flatten() {
             if let Ok(md) = e.metadata() {
-                files.push(File::new(e.file_name().to_string_lossy(), FileAttributes::from(&md)));
+                files.push(File::new(e.file_name().to_string_lossy(), attrs_of(&md)));
             }
         }
         Ok(Name { id, files })
@@ -166,7 +180,8 @@ impl russh_sftp::server::Handler for SftpServer {
             .read(pflags.contains(OpenFlags::READ))
             .write(pflags.contains(OpenFlags::WRITE) || pflags.contains(OpenFlags::APPEND))
             .append(pflags.contains(OpenFlags::APPEND))
-            .create(pflags.contains(OpenFlags::CREATE))
+            .create(pflags.contains(OpenFlags::CREATE) && !pflags.contains(OpenFlags::EXCLUDE))
+            .create_new(pflags.contains(OpenFlags::CREATE) && pflags.contains(OpenFlags::EXCLUDE))
             .truncate(pflags.contains(OpenFlags::TRUNCATE))
             .open(real)
             .map_err(io_err)?;
@@ -234,7 +249,25 @@ impl russh_sftp::server::Handler for SftpServer {
         Ok(ok(id))
     }
 
-    async fn setstat(&mut self, id: u32, _path: String, _a: FileAttributes) -> Result<Status, Self::Error> {
+    async fn setstat(&mut self, id: u32, path: String, a: FileAttributes) -> Result<Status, Self::Error> {
+        if let Some(mode) = a.permissions {
+            self.check_write()?;
+            let real = self.real(&path);
+            #[cfg(unix)]
+            let perms = {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::Permissions::from_mode(mode & 0o7777)
+            };
+            // Windows: only the read-only attribute exists (no write bit for the owner)
+            #[cfg(not(unix))]
+            let perms = {
+                let mut p = std::fs::metadata(&real).map_err(io_err)?.permissions();
+                p.set_readonly(mode & 0o200 == 0);
+                p
+            };
+            std::fs::set_permissions(&real, perms).map_err(io_err)?;
+            self.note(format!("droits {:o} {}", mode & 0o7777, virt(&path)));
+        }
         Ok(ok(id))
     }
 

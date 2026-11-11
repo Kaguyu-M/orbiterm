@@ -394,3 +394,26 @@ async fn agent_forwarding() {
     }
     orbiterm_lib::agent::remove(&fp);
 }
+
+/// New empty file (never overwrites) and permission changes through SFTP.
+#[tokio::test]
+async fn sftp_touch_and_chmod() {
+    let f = fixture().await;
+    let (conn, _out) = connect(&f, server::PASSWORD, true, Arc::new(AtomicUsize::new(0))).await.unwrap();
+    let s = conn.sftp().await.unwrap();
+    let home = sftp::home(&s).await.unwrap();
+    let p = sftp::remote_join(&home, "vide.txt");
+    sftp::touch(&s, &p).await.unwrap();
+    assert_eq!(std::fs::metadata(f.root.path().join("vide.txt")).unwrap().len(), 0);
+    std::fs::write(f.root.path().join("vide.txt"), "contenu").unwrap();
+    assert!(sftp::touch(&s, &p).await.is_err(), "an existing file must not be truncated");
+    assert_eq!(std::fs::read_to_string(f.root.path().join("vide.txt")).unwrap(), "contenu");
+    // read-only, then writable again
+    sftp::chmod(&s, &p, 0o444).await.unwrap();
+    assert!(std::fs::metadata(f.root.path().join("vide.txt")).unwrap().permissions().readonly());
+    let e = sftp::list(&s, &home).await.unwrap().into_iter().find(|e| e.name == "vide.txt").unwrap();
+    assert!(!e.perms.contains('w'), "{}", e.perms);
+    sftp::chmod(&s, &p, 0o644).await.unwrap();
+    assert!(!std::fs::metadata(f.root.path().join("vide.txt")).unwrap().permissions().readonly());
+    conn.disconnect().await;
+}
