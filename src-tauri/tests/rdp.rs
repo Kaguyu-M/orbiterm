@@ -49,6 +49,7 @@ fn params(port: u16, password: &str, known: &std::path::Path) -> RdpParams {
         // the clipboard and drive channels must not disturb the session
         clipboard: true,
         share_dir: known.parent().map(|p| p.to_path_buf()),
+        sound: true,
     }
 }
 
@@ -129,6 +130,20 @@ async fn embedded_rdp_client() {
     // size, then the test pattern: red bar at the top left, grey bottom
     wait_msg(&mut rx, "size", |m| m.first() == Some(&2) && m[1..5] == [0, 4, 0, 3]).await;
     wait_msg(&mut rx, "red bar", |m| pixel(m, 50, 50).is_some_and(|p| p[0] > 200 && p[1] < 60 && p[3] == 255)).await;
+
+    // sound: the server plays a 440 Hz tone, forwarded as PCM frames (type 6)
+    let (mut pcm, mut loud) = (0usize, 0i16);
+    wait_msg(&mut rx, "sound", |m| {
+        if m.first() == Some(&6) {
+            assert_eq!(m[1], 2, "stereo");
+            assert_eq!(u32::from_le_bytes([m[2], m[3], m[4], m[5]]), 44_100);
+            pcm += m.len() - 6;
+            loud = m[6..].chunks_exact(2).map(|s| i16::from_le_bytes([s[0], s[1]]).saturating_abs()).max().unwrap_or(0).max(loud);
+        }
+        pcm >= 100_000
+    })
+    .await;
+    assert!(loud > 7000, "the tone must not be silent (peak {loud})");
 
     // a bad token is refused
     let bad = s.url().rsplit_once('/').unwrap().0.to_string() + "/nope";

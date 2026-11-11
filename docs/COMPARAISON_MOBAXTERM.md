@@ -41,7 +41,7 @@ Base : rapport d'analyse de MobaXterm (`Documents\MobaXterm-Analyse`) et code d'
 |---|---|
 | RDP intégré, presse-papiers, lecteurs redirigés, rebond SSH | ✅ |
 | Passerelle RDP (RD Gateway), multi-écran | ❌ → lot 5 |
-| Son RDP | 🟡 canal présent, muet → lot 5 |
+| Son RDP | ✅ 0.7.11 (lu dans l'onglet ; option de session « Son ») |
 | VNC intégré | ✅ |
 
 ## Serveurs intégrés

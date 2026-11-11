@@ -69,6 +69,8 @@ pub struct RdpParams {
     pub clipboard: bool,
     /// local folder shared with the remote computer
     pub share_dir: Option<PathBuf>,
+    /// play the remote computer's sound in the tab
+    pub sound: bool,
 }
 
 /// Messages from the tab.
@@ -245,7 +247,7 @@ fn connector_config(p: &RdpParams) -> AppResult<ironrdp_connector::Config> {
         enable_server_pointer: true,
         // without NLA (TLS only), log on with the same credentials instead of the logon screen
         autologon: !p.password.is_empty(),
-        enable_audio_playback: false,
+        enable_audio_playback: p.sound,
         request_data: None,
         pointer_software_rendering: false,
         multitransport_flags: None,
@@ -352,6 +354,8 @@ pub async fn connect(p: RdpParams, prompter: HostKeyPrompter, on_close: CloseSin
 
 struct Channels {
     clip: Option<mpsc::UnboundedReceiver<ClipEvent>>,
+    /// sound frames for the tab
+    audio: Option<mpsc::UnboundedReceiver<Vec<u8>>>,
     drive: bool,
 }
 
@@ -372,7 +376,7 @@ async fn establish(
     let mut connector = ClientConnector::new(connector_config(&p)?, client_addr).with_static_channel(
         DrdynvcClient::new().with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new()))),
     );
-    let mut channels = Channels { clip: None, drive: false };
+    let mut channels = Channels { clip: None, drive: false, audio: None };
     if p.clipboard {
         let (cliprdr, rx) = rdp_channels::clipboard();
         connector.attach_static_channel(cliprdr);
@@ -382,12 +386,18 @@ async fn establish(
         let rdpdr = rdp_channels::drive_channel(dir)
             .map_err(|e| AppError::Config(format!("RDP, dossier partagé : {e}")))?;
         connector.attach_static_channel(rdpdr);
+        channels.drive = true;
+    }
+    if p.sound {
+        let (rdpsnd, rx) = rdp_channels::audio();
+        connector.attach_static_channel(rdpsnd);
+        channels.audio = Some(rx);
+    } else if channels.drive {
         // Windows only answers on RDPDR when RDPSND is advertised too (MS-RDPEFS appendix A<1>);
         // no audio format is offered, so nothing is played
         connector.attach_static_channel(ironrdp_rdpsnd::client::Rdpsnd::new(Box::new(
             ironrdp_rdpsnd::client::NoopRdpsndBackend,
         )));
-        channels.drive = true;
     }
 
     let should_upgrade = ironrdp_tokio::connect_begin(&mut framed, &mut connector).await.map_err(map_connect_err)?;
@@ -685,13 +695,26 @@ async fn active_session(
     flush.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut pending_resize: Option<(u16, u16, tokio::time::Instant)> = None;
     let mut last_pointer: Option<Vec<u8>> = None;
-    let Channels { clip: mut clip_rx, drive } = channels;
+    let Channels { clip: mut clip_rx, drive, audio: mut audio_rx } = channels;
     // clipboard: our text (CRLF, as sent to the server), last text received from the server
     let mut local_clip: Option<String> = None;
     let mut remote_clip: Option<String> = None;
 
     loop {
         let outputs = tokio::select! {
+            a = async {
+                match audio_rx.as_mut() {
+                    Some(rx) => rx.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                match a {
+                    // no viewer: the sound is dropped (nobody to hear it)
+                    Some(frame) => send(&mut sink, frame).await,
+                    None => audio_rx = None,
+                }
+                continue;
+            }
             ev = async {
                 match clip_rx.as_mut() {
                     Some(rx) => rx.recv().await,

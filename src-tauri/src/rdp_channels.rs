@@ -264,3 +264,83 @@ mod tests {
         assert!(drive_channel(&dir.path().join("absent")).is_err());
     }
 }
+
+// ------------------------------------------------------------------ sound (RDPSND)
+
+/// Audio frames for the tab (binary WebSocket messages):
+/// 6, channels (u8), sample rate (u32 LE), then 16-bit little-endian PCM samples;
+/// 7, left volume (u16 LE), right volume (u16 LE) (0..=0xFFFF).
+pub const AUDIO_FRAME: u8 = 6;
+pub const VOLUME_FRAME: u8 = 7;
+
+fn pcm(rate: u32, channels: u16) -> ironrdp_rdpsnd::pdu::AudioFormat {
+    ironrdp_rdpsnd::pdu::AudioFormat {
+        format: ironrdp_rdpsnd::pdu::WaveFormat::PCM,
+        n_channels: channels,
+        n_samples_per_sec: rate,
+        n_avg_bytes_per_sec: rate * u32::from(channels) * 2,
+        n_block_align: channels * 2,
+        bits_per_sample: 16,
+        data: None,
+    }
+}
+
+/// Plays the remote computer's sound in the tab: the PCM blocks are forwarded as they come,
+/// the tab schedules them with Web Audio. Only uncompressed PCM is offered (LAN use).
+#[derive(Debug)]
+struct AudioOut {
+    tx: mpsc::UnboundedSender<Vec<u8>>,
+    formats: Vec<ironrdp_rdpsnd::pdu::AudioFormat>,
+    /// when the audio queued so far finishes playing (estimate for the latency report)
+    end: Option<std::time::Instant>,
+}
+
+impl ironrdp_rdpsnd::client::RdpsndClientHandler for AudioOut {
+    fn get_flags(&self) -> ironrdp_rdpsnd::pdu::AudioFormatFlags {
+        ironrdp_rdpsnd::pdu::AudioFormatFlags::VOLUME
+    }
+
+    fn get_formats(&self) -> &[ironrdp_rdpsnd::pdu::AudioFormat] {
+        &self.formats
+    }
+
+    fn wave(&mut self, format: &ironrdp_rdpsnd::pdu::AudioFormat, _ts: u32, data: std::borrow::Cow<'_, [u8]>) {
+        if format.format != ironrdp_rdpsnd::pdu::WaveFormat::PCM || format.bits_per_sample != 16 || format.n_channels == 0 {
+            return;
+        }
+        let mut m = Vec::with_capacity(6 + data.len());
+        m.push(AUDIO_FRAME);
+        m.push(format.n_channels as u8);
+        m.extend_from_slice(&format.n_samples_per_sec.to_le_bytes());
+        m.extend_from_slice(&data);
+        let _ = self.tx.send(m);
+        let secs = data.len() as f64 / f64::from(format.n_avg_bytes_per_sec.max(1));
+        let now = std::time::Instant::now();
+        let start = self.end.filter(|e| *e > now).unwrap_or(now);
+        self.end = Some(start + std::time::Duration::from_secs_f64(secs));
+    }
+
+    fn playback_latency(&self) -> std::time::Duration {
+        self.end.map(|e| e.saturating_duration_since(std::time::Instant::now())).unwrap_or_default()
+    }
+
+    fn set_volume(&mut self, v: ironrdp_rdpsnd::pdu::VolumePdu) {
+        let mut m = vec![VOLUME_FRAME];
+        m.extend_from_slice(&v.volume_left.to_le_bytes());
+        m.extend_from_slice(&v.volume_right.to_le_bytes());
+        let _ = self.tx.send(m);
+    }
+
+    fn set_pitch(&mut self, _pitch: ironrdp_rdpsnd::pdu::PitchPdu) {}
+
+    fn close(&mut self) {
+        self.end = None;
+    }
+}
+
+/// Sound channel playing in the tab, and the receiver of its frames.
+pub fn audio() -> (ironrdp_rdpsnd::client::Rdpsnd, mpsc::UnboundedReceiver<Vec<u8>>) {
+    let (tx, rx) = mpsc::unbounded_channel();
+    let formats = vec![pcm(44_100, 2), pcm(48_000, 2), pcm(22_050, 2)];
+    (ironrdp_rdpsnd::client::Rdpsnd::new(Box::new(AudioOut { tx, formats, end: None })), rx)
+}

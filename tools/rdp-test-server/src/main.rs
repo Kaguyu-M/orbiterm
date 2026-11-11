@@ -4,6 +4,7 @@
 //! - 1024x768 desktop: four colour bars on top; the key `a` paints the bottom half yellow,
 //!   `b` cyan; a left click draws a white square where it happened
 //! - logs `auth:ok`-like events on stdout: `key:0x1e`, `click:x,y`, `wheel:n`
+//! - sound: a 1.5 s 440 Hz tone once the client accepts audio (`son:<bytes>` logged)
 //!
 //! `cargo run --example rdp_test_server -- [port]` (default 3390).
 
@@ -18,7 +19,8 @@ use ironrdp_server::tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKey
 use ironrdp_server::tokio_rustls::TlsAcceptor;
 use ironrdp_server::{
     BitmapUpdate, Credentials, DesktopSize, DisplayUpdate, KeyboardEvent, MouseEvent, PixelFormat, RdpServer,
-    RdpServerDisplay, RdpServerDisplayUpdates, RdpServerInputHandler,
+    RdpServerDisplay, RdpServerDisplayUpdates, RdpServerInputHandler, RdpsndServerHandler, RdpsndServerMessage, ServerEvent,
+    ServerEventSender, SoundServerFactory,
 };
 use tokio::sync::mpsc;
 
@@ -139,6 +141,7 @@ pub async fn serve(addr: SocketAddr, log: mpsc::UnboundedSender<String>) -> anyh
             .with_hybrid(acceptor.clone(), pub_key.clone())
             .with_input_handler(Input { tx, log: log.clone(), pos: (0, 0) })
             .with_display_handler(Display { rx: Some(rx) })
+            .with_sound_factory(Some(Box::new(Sound { sender: None, log: Some(log.clone()) })))
             .build();
         server.set_credentials(Some(Credentials { username: "test".into(), password: "test".into(), domain: None }));
         let _ = log.send("connexion".into());
@@ -164,4 +167,91 @@ async fn main() -> anyhow::Result<()> {
         }
     });
     serve(SocketAddr::from(([127, 0, 0, 1], port)), log).await
+}
+
+// ------------------------------------------------------------------ sound
+
+/// Plays a 1.5 s 440 Hz tone (PCM 44.1 kHz stereo) as soon as the client accepts the
+/// sound channel; logs `son:<octets>` when done.
+#[derive(Debug, Default)]
+struct Sound {
+    sender: Option<mpsc::UnboundedSender<ServerEvent>>,
+    log: Option<mpsc::UnboundedSender<String>>,
+}
+
+impl ServerEventSender for Sound {
+    fn set_sender(&mut self, sender: mpsc::UnboundedSender<ServerEvent>) {
+        self.sender = Some(sender);
+    }
+}
+
+impl SoundServerFactory for Sound {
+    fn build_backend(&self) -> Box<dyn RdpsndServerHandler> {
+        Box::new(Tone { sender: self.sender.clone(), log: self.log.clone(), formats: vec![pcm44()] })
+    }
+}
+
+fn pcm44() -> ironrdp_rdpsnd::pdu::AudioFormat {
+    ironrdp_rdpsnd::pdu::AudioFormat {
+        format: ironrdp_rdpsnd::pdu::WaveFormat::PCM,
+        n_channels: 2,
+        n_samples_per_sec: 44_100,
+        n_avg_bytes_per_sec: 44_100 * 4,
+        n_block_align: 4,
+        bits_per_sample: 16,
+        data: None,
+    }
+}
+
+#[derive(Debug)]
+struct Tone {
+    sender: Option<mpsc::UnboundedSender<ServerEvent>>,
+    log: Option<mpsc::UnboundedSender<String>>,
+    formats: Vec<ironrdp_rdpsnd::pdu::AudioFormat>,
+}
+
+impl RdpsndServerHandler for Tone {
+    fn get_formats(&self) -> &[ironrdp_rdpsnd::pdu::AudioFormat] {
+        &self.formats
+    }
+
+    fn choose_format<'a>(
+        &mut self,
+        common: &'a [ironrdp_rdpsnd::server::NegotiatedFormat],
+    ) -> Option<&'a ironrdp_rdpsnd::server::NegotiatedFormat> {
+        common.first()
+    }
+
+    fn start(
+        &mut self,
+        _format: &ironrdp_rdpsnd::server::NegotiatedFormat,
+    ) -> Result<(), Box<dyn ironrdp_rdpsnd::server::RdpsndError>> {
+        let (Some(tx), log) = (self.sender.clone(), self.log.clone()) else { return Ok(()) };
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            let (rate, block_ms) = (44_100u32, 50u32);
+            let frames = rate * block_ms / 1000;
+            let mut sent = 0usize;
+            for b in 0..30u32 {
+                let mut data = Vec::with_capacity(frames as usize * 4);
+                for i in 0..frames {
+                    let t = f64::from(b * frames + i) / f64::from(rate);
+                    let v = ((t * 440.0 * std::f64::consts::TAU).sin() * 8000.0) as i16;
+                    data.extend_from_slice(&v.to_le_bytes());
+                    data.extend_from_slice(&v.to_le_bytes());
+                }
+                sent += data.len();
+                if tx.send(ServerEvent::Rdpsnd(RdpsndServerMessage::Wave(data, b * block_ms))).is_err() {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(u64::from(block_ms))).await;
+            }
+            if let Some(l) = log {
+                let _ = l.send(format!("son:{sent}"));
+            }
+        });
+        Ok(())
+    }
+
+    fn stop(&mut self) {}
 }

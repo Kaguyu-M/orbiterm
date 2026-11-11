@@ -678,6 +678,7 @@ pub async fn term_open(app: AppHandle, state: State<'_, AppState>, args: OpenArg
                     known_hosts: state.config_dir.join("rdp_known_hosts"),
                     clipboard: opts.clipboard,
                     share_dir: opts.drives.then(|| rdp_share_dir(&session)),
+                    sound: opts.sound == "local",
                 };
                 let prompter = make_prompter(app.clone(), state.hostkey_waiters.clone());
                 match rdp_client::connect(params, prompter, on_close).await {

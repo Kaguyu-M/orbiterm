@@ -10,6 +10,7 @@ publish = false
 
 [dependencies]
 ironrdp-server = { version = "0.13", default-features = false, features = ["helper"] }
+ironrdp-rdpsnd = "0.9"
 tokio = { version = "1", features = ["full"] }
 anyhow = "1"
 async-trait = "0.1"

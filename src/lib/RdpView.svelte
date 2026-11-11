@@ -21,6 +21,7 @@
 </script>
 
 <script lang="ts">
+  import { PcmPlayer } from "./audio";
   // Embedded RDP session: the remote desktop drawn in a canvas, fed by the backend (IronRDP).
   import { clipRead, clipWrite } from "./clipboard";
   import { onMount } from "svelte";
@@ -81,6 +82,8 @@
     if (w >= 200 && h >= 200 && (w !== desk.w || h !== desk.h)) send({ t: "r", w, h });
   }
 
+  const sound = new PcmPlayer();
+
   function onMessage(ev: MessageEvent) {
     if (typeof ev.data === "string") {
       try {
@@ -100,6 +103,13 @@
     if (t === 1 && ctx) {
       const x = dv.getUint16(1, true), y = dv.getUint16(3, true), w = dv.getUint16(5, true), h = dv.getUint16(7, true);
       ctx.putImageData(new ImageData(new Uint8ClampedArray(buf, 9, w * h * 4), w, h), x, y);
+    } else if (t === 6) {
+      // counter read by the automated tests
+      const w = window as unknown as { __orbitermAudioBytes?: number };
+      w.__orbitermAudioBytes = (w.__orbitermAudioBytes ?? 0) + buf.byteLength - 6;
+      sound.play(dv.getUint8(1), dv.getUint32(2, true), new DataView(buf, 6));
+    } else if (t === 7) {
+      sound.volume(dv.getUint16(1, true), dv.getUint16(3, true));
     } else if (t === 2) {
       desk = { w: dv.getUint16(1, true), h: dv.getUint16(3, true) };
       canvas.width = desk.w;
@@ -186,9 +196,16 @@
       requestFit(); // the backend waits until the size stops changing
     });
     ro.observe(box);
+    // browsers start audio suspended until the user interacts with the page
+    const wake = () => sound.resume();
+    box.addEventListener("pointerdown", wake);
+    box.addEventListener("keydown", wake);
     return () => {
       ro.disconnect();
       ws?.close();
+      sound.close();
+      box.removeEventListener("pointerdown", wake);
+      box.removeEventListener("keydown", wake);
     };
   });
 

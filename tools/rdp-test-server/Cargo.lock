@@ -2221,6 +2221,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "ironrdp-rdpsnd",
  "ironrdp-server",
  "rcgen",
  "tokio",
