@@ -186,12 +186,13 @@ jobs:
           v=${TAG#v}
           zip="Orbiterm_${v}_x64_portable.zip"
           hash=$(sha256sum "dist/$zip" | cut -d' ' -f1)
+          mkdir -p bucket
           sed -e "s/@VERSION@/$v/g" -e "s/@HASH@/$hash/g" packaging/scoop/orbiterm.json.in > bucket/orbiterm.json
           cat bucket/orbiterm.json
-          if ! git diff --quiet bucket/; then
+          git add bucket/orbiterm.json
+          if ! git diff --cached --quiet; then
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add bucket/orbiterm.json
             git commit -m "Scoop : Orbiterm $v"
             git push origin HEAD:main
           fi
