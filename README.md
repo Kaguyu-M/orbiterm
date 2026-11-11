@@ -74,6 +74,10 @@ Mises à jour : `winget upgrade`, `scoop update`, `apt upgrade`, `dnf upgrade`, 
 > via Secret Service). S'il est verrouillé, le système demande de le déverrouiller ; sans réponse, Orbiterm
 > continue et redemande simplement le mot de passe.
 
+> **Paramètres → Gestion des mots de passe…** liste les mots de passe qu'Orbiterm garde dans le trousseau
+> (sessions, passerelles, VNC, serveurs intégrés) et permet de les remplacer ou de les supprimer ; leur valeur
+> n'est jamais affichée.
+
 ### 2. Serveur de test (aucun serveur Linux nécessaire)
 `livrables\serveur-de-test.exe` démarre un serveur SSH/SFTP sur `127.0.0.1:2222` (utilisateur `test`, mot de passe `test`)
 avec un mini-shell (`help`, `echo`, `whoami`, `size`, `colors`, `xtest`, `exit`). Il accepte aussi les redirections de

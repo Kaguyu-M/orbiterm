@@ -70,6 +70,11 @@
     app.showSettings = false;
   }
 
+  function openPasswords() {
+    app.showSettings = false;
+    app.showPasswords = true;
+  }
+
   function reset() {
     const keep = { sidebarWidth: p.sidebarWidth };
     p = { ...structuredClone(DEFAULT_PREFS), ...keep };
@@ -109,6 +114,13 @@
             <option value="">(premier détecté{app.shells[0] ? ` : ${app.shells[0].label}` : ""})</option>
             {#each app.shells as sh (sh.id)}<option value={sh.id}>{sh.label}</option>{/each}
           </select>
+        </div>
+      </fieldset>
+      <fieldset>
+        <legend>Mots de passe</legend>
+        <p class="muted">Les mots de passe enregistrés sont conservés dans le trousseau du système.</p>
+        <div class="row">
+          <button type="button" onclick={openPasswords} data-open-passwords><Icon name="key" size={14} /> Gestion des mots de passe…</button>
         </div>
       </fieldset>
       <fieldset>

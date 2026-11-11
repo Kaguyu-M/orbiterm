@@ -18,6 +18,7 @@
   import TermBar from "$lib/TermBar.svelte";
   import { app, HOME, SPLIT_LABELS, type SplitMode, type Tab } from "$lib/app.svelte";
   import ImportDialog from "$lib/ImportDialog.svelte";
+  import PasswordsDialog from "$lib/PasswordsDialog.svelte";
   import SettingsDialog from "$lib/SettingsDialog.svelte";
   import { startBus, onConnectionClosed } from "$lib/bus";
   import ContextMenu from "$lib/ContextMenu.svelte";
@@ -197,6 +198,7 @@
       label: "Paramètres",
       items: () => [
         { label: "Configuration…", icon: "settings", action: () => (app.showSettings = true) },
+        { label: "Gestion des mots de passe…", icon: "key", action: () => (app.showPasswords = true) },
         { label: "Importer des sessions…", icon: "download", action: () => (app.showImport = true) },
         { sep: true },
         { label: "Exporter la configuration…", icon: "upload", action: () => app.exportConfig() },
@@ -695,6 +697,9 @@
   <KeyGenerator />
 {/if}
 
+{#if app.showPasswords}
+  <PasswordsDialog />
+{/if}
 {#if app.showSettings}
   <SettingsDialog />
 {/if}

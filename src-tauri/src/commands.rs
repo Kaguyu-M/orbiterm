@@ -124,9 +124,7 @@ pub async fn session_delete(state: State<'_, AppState>, id: String) -> AppResult
     let mut store = state.store.lock().await;
     store.delete_session(&id);
     store.save(&state.config_dir)?;
-    let _ = secrets::delete_password(&id);
-    let _ = secrets::delete_password(&jump_account(&id));
-    let _ = secrets::delete_password(&vnc_account(&id));
+    forget_session_secrets(&id);
     Ok(())
 }
 
@@ -142,7 +140,7 @@ pub async fn folder_save(state: State<'_, AppState>, folder: Folder) -> AppResul
 pub async fn folder_delete(state: State<'_, AppState>, id: String) -> AppResult<()> {
     let mut store = state.store.lock().await;
     for sid in store.delete_folder(&id) {
-        let _ = secrets::delete_password(&sid);
+        forget_session_secrets(&sid);
     }
     store.save(&state.config_dir)?;
     Ok(())
@@ -151,6 +149,109 @@ pub async fn folder_delete(state: State<'_, AppState>, id: String) -> AppResult<
 #[tauri::command]
 pub async fn password_forget(id: String) -> AppResult<()> {
     secrets::delete_password(&id)
+}
+
+/// Removes every password a session may own in the keyring.
+fn forget_session_secrets(id: &str) {
+    for account in [id.to_string(), jump_account(id), vnc_account(id), rd_gateway_account(id)] {
+        let _ = secrets::delete_password(&account);
+    }
+}
+
+/// A password kept in the system keyring — never its value.
+#[derive(Debug, Clone, Serialize)]
+pub struct SavedSecret {
+    /// keyring account
+    pub account: String,
+    /// "session", "jump" (SSH gateway), "vnc", "gateway" (RD Gateway) or "server"
+    pub role: String,
+    /// session or built-in server name
+    pub name: String,
+    /// session kind ("ssh", "rdp"…), empty for servers
+    pub kind: String,
+    pub user: String,
+    pub host: String,
+}
+
+/// Every keyring account Orbiterm may use, whether a password is stored there or not.
+fn secret_candidates(store: &Store) -> Vec<SavedSecret> {
+    let mut out = Vec::new();
+    for s in &store.sessions {
+        let mut push = |account: String, role: &str, user: &str, host: String| {
+            out.push(SavedSecret { account, role: role.into(), name: s.name.clone(), kind: s.kind.clone(), user: user.into(), host })
+        };
+        push(s.id.clone(), "session", &s.username, format!("{}:{}", s.host, s.port));
+        let jump = s.opt("jump_host").trim().to_string();
+        if !jump.is_empty() {
+            let user = s.opt("jump_user").trim();
+            push(jump_account(&s.id), "jump", if user.is_empty() { &s.username } else { user }, jump);
+        }
+        if s.kind == "vnc" {
+            push(vnc_account(&s.id), "vnc", "", format!("{}:{}", s.host, s.port));
+        }
+        let gw = s.opt("rdp_gateway").trim().to_string();
+        if s.kind == "rdp" && !gw.is_empty() {
+            let user = s.opt("rdp_gateway_user").trim();
+            push(rd_gateway_account(&s.id), "gateway", if user.is_empty() { &s.username } else { user }, gw);
+        }
+    }
+    for kind in crate::servers::ALL {
+        out.push(SavedSecret {
+            account: kind.secret_key(),
+            role: "server".into(),
+            name: format!("Serveur {}", kind.label()),
+            kind: String::new(),
+            user: String::new(),
+            host: "ce poste".into(),
+        });
+    }
+    out
+}
+
+/// Passwords currently stored in the keyring (the values stay there).
+#[tauri::command]
+pub async fn passwords_list(state: State<'_, AppState>) -> AppResult<Vec<SavedSecret>> {
+    let candidates = secret_candidates(&*state.store.lock().await);
+    let mut out = Vec::new();
+    for c in candidates {
+        if secrets::get_password(&c.account)?.is_some() {
+            out.push(c);
+        }
+    }
+    Ok(out)
+}
+
+fn known_secret(store: &Store, account: &str) -> AppResult<()> {
+    if secret_candidates(store).iter().any(|c| c.account == account) {
+        Ok(())
+    } else {
+        Err(AppError::Config("mot de passe inconnu d'Orbiterm".into()))
+    }
+}
+
+/// Replaces a stored password (only for an account Orbiterm owns).
+#[tauri::command]
+pub async fn password_replace(state: State<'_, AppState>, account: String, password: String) -> AppResult<()> {
+    known_secret(&*state.store.lock().await, &account)?;
+    if password.is_empty() {
+        return Err(AppError::Config("mot de passe vide".into()));
+    }
+    secrets::set_password(&account, &password)
+}
+
+/// Removes stored passwords (only accounts Orbiterm owns). Returns how many were removed.
+#[tauri::command]
+pub async fn passwords_remove(state: State<'_, AppState>, accounts: Vec<String>) -> AppResult<usize> {
+    let store = state.store.lock().await;
+    let mut n = 0;
+    for a in &accounts {
+        known_secret(&store, a)?;
+        if secrets::get_password(a)?.is_some() {
+            secrets::delete_password(a)?;
+            n += 1;
+        }
+    }
+    Ok(n)
 }
 
 /// Copies the remembered passwords (session + jump host) of a saved session

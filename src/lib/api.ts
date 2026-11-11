@@ -278,6 +278,9 @@ export const api = {
   folderSave: (folder: Folder) => invoke<Folder>("folder_save", { folder }),
   folderDelete: (id: string) => invoke<void>("folder_delete", { id }),
   passwordForget: (id: string) => invoke<void>("password_forget", { id }),
+  passwordsList: () => invoke<SavedSecret[]>("passwords_list"),
+  passwordReplace: (account: string, password: string) => invoke<void>("password_replace", { account, password }),
+  passwordsRemove: (accounts: string[]) => invoke<number>("passwords_remove", { accounts }),
   /** System information of the remote host of a tab (over SSH). */
   monitorSample: (connId: string) => invoke<RemoteStats>("monitor_sample", { connId }),
   /** Copies the remembered passwords of a saved session to another one (keyring only). */
@@ -405,6 +408,16 @@ export interface AgentState {
   keys: AgentKey[];
   /** running system agent ("" when none) */
   system: string;
+}
+
+/** A password kept in the system keyring (its value never leaves the keyring). */
+export interface SavedSecret {
+  account: string;
+  role: "session" | "jump" | "vnc" | "gateway" | "server";
+  name: string;
+  kind: string;
+  user: string;
+  host: string;
 }
 
 /** Result of a folder download / upload. */

@@ -82,6 +82,7 @@ Base : rapport d'analyse de MobaXterm (`Documents\MobaXterm-Analyse`) et code d'
 | MobaXterm | Orbiterm |
 |---|---|
 | Mots de passe chiffrés (master password) | ✅ autrement : trousseau du système |
+| Gestion des mots de passe enregistrés (liste, suppression) | ✅ 0.7.16 (Paramètres → Gestion des mots de passe : liste, remplacement, suppression ; les valeurs ne sont jamais affichées) |
 | Export de configuration chiffré | ✅ 0.7.9 autrement : export sans aucun mot de passe (rien à chiffrer) |
 | Vérification des mises à jour | ✅ 0.7.9 (Aide → Rechercher les mises à jour, sur demande uniquement ; publications GitHub) |
 
@@ -94,3 +95,4 @@ Base : rapport d'analyse de MobaXterm (`Documents\MobaXterm-Analyse`) et code d'
 5. ✅ (0.7.11 – 0.7.13) **Bureau à distance et partage** : son RDP, serveur VNC (partage de l'écran de ce poste), RDP multi-écran et passerelle RD Gateway.
 6. ✅ (0.7.14) **Clés SSH** : générateur de clés, clés PuTTY, clés publiques sur le serveur SSH intégré (0.7.14) ; agent SSH (agent du système / Pageant, transfert d'agent).
 7. ✅ (0.7.15) **Navigateur SFTP complet** : menu contextuel, droits d'accès, nouveau fichier, copie du chemin, dossiers entiers, ouverture avec le programme par défaut.
+8. ✅ (0.7.16) **Gestion des mots de passe** : fenêtre listant les mots de passe du trousseau (sessions, passerelles, VNC, serveurs intégrés), remplacement et suppression.

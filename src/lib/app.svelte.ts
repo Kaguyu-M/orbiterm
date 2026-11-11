@@ -189,6 +189,7 @@ class App {
   private pendingSecrets = new Map<string, Secrets>();
   prefs: Prefs = $state(migratePrefs(loadJson(PREFS_KEY, DEFAULT_PREFS)));
   showSettings = $state(false);
+  showPasswords = $state(false);
   menuOpen = $state(false);
   showImport = $state(false);
 
@@ -225,7 +226,7 @@ class App {
   /** Something is drawn above the tab area (native browser webviews must hide). */
   overlay = $derived(
     !!this.ctx || !!this.editing || !!this.textAsk || !!this.confirmAsk || !!this.alertText || !!this.infoText ||
-      this.showSettings || this.showImport || this.showTunnels || this.showServers || !!this.netTool || this.menuOpen || this.hostKeys.length > 0,
+      this.showSettings || this.showPasswords || this.showImport || this.showTunnels || this.showServers || !!this.netTool || this.menuOpen || this.hostKeys.length > 0,
   );
   /** SFTP side tab exists only while the active terminal is a live SSH connection. */
   hasSftp = $derived(
