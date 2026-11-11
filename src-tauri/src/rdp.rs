@@ -25,6 +25,10 @@ pub struct RdpOptions {
     pub sound: String,
     pub admin: bool,
     pub domain: String,
+    /// Remote Desktop Gateway host[:port] (empty: direct connection)
+    pub gateway: String,
+    /// gateway account (empty: the session's account)
+    pub gateway_user: String,
 }
 
 impl RdpOptions {
@@ -57,6 +61,8 @@ impl RdpOptions {
             },
             admin: flag("rdp_admin", false),
             domain: s.opt("rdp_domain").trim().to_string(),
+            gateway: s.opt("rdp_gateway").trim().to_string(),
+            gateway_user: s.opt("rdp_gateway_user").trim().to_string(),
         }
     }
 }
@@ -90,6 +96,17 @@ pub fn rdp_file(host: &str, port: u16, user: &str, o: &RdpOptions) -> String {
     if !user.is_empty() {
         let u = if o.domain.is_empty() || user.contains('\\') { user.to_string() } else { format!("{}\\{user}", o.domain) };
         l.push(format!("username:s:{u}"));
+    }
+    if !o.gateway.is_empty() {
+        l.push(format!("gatewayhostname:s:{}", o.gateway));
+        l.push("gatewayusagemethod:i:1".into());
+        l.push("gatewayprofileusagemethod:i:1".into());
+        // 0 = ask for the password; the session's credentials are reused when no account of its own
+        l.push("gatewaycredentialssource:i:0".into());
+        l.push(format!("promptcredentialonce:i:{}", o.gateway_user.is_empty() as u8));
+        if !o.gateway_user.is_empty() {
+            l.push(format!("gatewayusername:s:{}", o.gateway_user));
+        }
     }
     l.join("\r\n") + "\r\n"
 }
@@ -128,6 +145,20 @@ pub fn freerdp_args(host: &str, port: u16, user: &str, o: &RdpOptions) -> Vec<St
     }
     if o.admin {
         a.push("/admin".into());
+    }
+    if !o.gateway.is_empty() {
+        let (h, port) = match o.gateway.rsplit_once(':') {
+            Some((h, p)) if p.parse::<u16>().is_ok() => (h, Some(p)),
+            _ => (o.gateway.as_str(), None),
+        };
+        let mut g = format!("/gateway:g:{h}");
+        if let Some(p) = port {
+            g.push_str(&format!(",port:{p}"));
+        }
+        if !o.gateway_user.is_empty() {
+            g.push_str(&format!(",u:{}", o.gateway_user));
+        }
+        a.push(g);
     }
     a
 }
@@ -230,6 +261,19 @@ mod tests {
         let a = freerdp_args("h", 3389, "u", &o);
         assert!(a.contains(&"/multimon".to_string()) && a.contains(&"/f".to_string()));
         assert!(rdp_file("h", 3389, "u", &RdpOptions::from_session(&sess(&[]))).contains("use multimon:i:0"));
+    }
+
+    #[test]
+    fn gateway_external_clients() {
+        let o = RdpOptions::from_session(&sess(&[("rdp_gateway", "gw.corp:8443"), ("rdp_gateway_user", "CORP\\gwuser")]));
+        let f = rdp_file("h", 3389, "u", &o);
+        assert!(f.contains("gatewayhostname:s:gw.corp:8443\r\n") && f.contains("gatewayusagemethod:i:1"));
+        assert!(f.contains("gatewayusername:s:CORP\\gwuser") && f.contains("promptcredentialonce:i:0"));
+        assert!(freerdp_args("h", 3389, "u", &o).contains(&"/gateway:g:gw.corp,port:8443,u:CORP\\gwuser".to_string()));
+        let same = RdpOptions::from_session(&sess(&[("rdp_gateway", "gw.corp")]));
+        assert!(rdp_file("h", 3389, "u", &same).contains("promptcredentialonce:i:1"));
+        assert!(freerdp_args("h", 3389, "u", &same).contains(&"/gateway:g:gw.corp".to_string()));
+        assert!(!rdp_file("h", 3389, "u", &RdpOptions::from_session(&sess(&[]))).contains("gateway"));
     }
 
     #[test]

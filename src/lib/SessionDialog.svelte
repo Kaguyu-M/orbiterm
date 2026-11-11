@@ -251,6 +251,16 @@
               <option value="remote">Lire sur l'ordinateur distant</option>
               <option value="none">Ne pas lire</option>
             </select>
+            <label class="lbl" for="rgw">Passerelle RD</label>
+            <input id="rgw" class="host" value={x("rdp_gateway")} oninput={(e) => setX("rdp_gateway", e.currentTarget.value)} placeholder="(aucune) — hôte[:port], HTTPS 443 par défaut" spellcheck="false" />
+            {#if x("rdp_gateway")}
+              <label class="lbl" for="rgwu">Compte passerelle</label>
+              <input id="rgwu" value={x("rdp_gateway_user")} oninput={(e) => setX("rdp_gateway_user", e.currentTarget.value)} placeholder="(même compte que la session)" spellcheck="false" />
+              {#if !ext}
+                <span class="lbl">Certificat</span>
+                <label class="chk" title="À n'utiliser que pour une passerelle de test au certificat auto-signé : la connexion n'est alors plus protégée contre l'interception"><input type="checkbox" checked={x("rdp_gateway_insecure") === "1"} onchange={(e) => setX("rdp_gateway_insecure", e.currentTarget.checked ? "1" : "")} /> Accepter le certificat de la passerelle même s'il n'est pas reconnu (déconseillé)</label>
+              {/if}
+            {/if}
             {#if !ext}
               <span class="lbl">Mot de passe</span>
               <label class="chk"><input type="checkbox" bind:checked={s.remember_password} /> Mémoriser le mot de passe (trousseau du système)</label>

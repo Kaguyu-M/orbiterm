@@ -1,6 +1,6 @@
 [package]
 name = "orbiterm"
-version = "0.7.12"
+version = "0.7.13"
 description = "Orbiterm - SSH terminal & SFTP browser"
 authors = ["Kaguyu-M"]
 license = "MIT"
@@ -67,6 +67,8 @@ ironrdp-rdpdr-native = "0.9"
 env_logger = { version = "0.11", default-features = false }
 ironrdp-svc = "0.10"
 ironrdp-rdpsnd = "0.11"
+# RD Gateway (MS-TSGU over HTTPS)
+ironrdp-mstsgu = { version = "0.1", features = ["native-tls"] }
 tempfile = "3"
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 # VNC server

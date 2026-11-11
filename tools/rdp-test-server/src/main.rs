@@ -5,10 +5,13 @@
 //!   `b` cyan; a left click draws a white square where it happened
 //! - logs `auth:ok`-like events on stdout: `key:0x1e`, `click:x,y`, `wheel:n`
 //! - sound: a 1.5 s 440 Hz tone once the client accepts audio (`son:<bytes>` logged)
+//! - optional Remote Desktop Gateway on another port (`--gateway <port>`, `gw` / `gwpass`)
 //!
 //! `cargo run --example rdp_test_server -- [port]` (default 3390).
 
 #![allow(dead_code)]
+
+mod gateway;
 
 use std::net::SocketAddr;
 use std::num::{NonZeroU16, NonZeroUsize};
@@ -166,6 +169,16 @@ async fn main() -> anyhow::Result<()> {
             println!("{l}");
         }
     });
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(gw) = args.iter().position(|a| a == "--gateway").and_then(|i| args.get(i + 1)).and_then(|p| p.parse::<u16>().ok()) {
+        println!("Passerelle RD de test sur 127.0.0.1:{gw}  (utilisateur {}, mot de passe {})", gateway::USER, gateway::PASSWORD);
+        let log = log.clone();
+        tokio::spawn(async move {
+            if let Err(e) = gateway::serve(SocketAddr::from(([127, 0, 0, 1], gw)), log.clone()).await {
+                let _ = log.send(format!("gw:erreur {e:#}"));
+            }
+        });
+    }
     serve(SocketAddr::from(([127, 0, 0, 1], port)), log).await
 }
 

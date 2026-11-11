@@ -437,8 +437,10 @@ class App {
           return this.withSecrets(s, run, { ...sec, password: r.value, remember: r.checked });
         }
         case "need_jump_password": {
-          const ju = s.extra?.jump_user || s.username;
-          const r = await this.ask(`${note}Mot de passe du rebond SSH ${ju ? ju + "@" : ""}${s.extra?.jump_host}`, "", true, check, canStore);
+          const rdgw = s.kind === "rdp" && !!s.extra?.rdp_gateway;
+          const ju = rdgw ? s.extra?.rdp_gateway_user : s.extra?.jump_user || s.username;
+          const what = rdgw ? `de la passerelle RD ${ju ? ju + "@" : ""}${s.extra?.rdp_gateway}` : `du rebond SSH ${ju ? ju + "@" : ""}${s.extra?.jump_host}`;
+          const r = await this.ask(`${note}Mot de passe ${what}`, "", true, check, canStore);
           if (!r) throw cancelled;
           return this.withSecrets(s, run, { ...sec, jump_password: r.value, remember: r.checked });
         }
@@ -453,7 +455,7 @@ class App {
           break;
         case "jump_auth_failed":
           if (sec.jump_password !== undefined)
-            return this.withSecrets(s, run, { ...sec, jump_password: undefined }, "⚠ Mot de passe du rebond refusé — ");
+            return this.withSecrets(s, run, { ...sec, jump_password: undefined }, s.kind === "rdp" ? "⚠ Mot de passe de la passerelle refusé — " : "⚠ Mot de passe du rebond refusé — ");
           break;
         case "ssh":
           if (sec.passphrase !== undefined && /decrypt|passphrase|crypto/i.test(err.message))

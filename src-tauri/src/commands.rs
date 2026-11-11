@@ -557,6 +557,42 @@ async fn via_gateway(
 }
 
 /// Password of a non-SSH session (FTP): typed, or from the keyring.
+fn rd_gateway_account(session_id: &str) -> String {
+    format!("{session_id}#rdgw")
+}
+
+/// Remote Desktop Gateway of an RDP session (extra rdp_gateway = host[:port]). Without a
+/// gateway account of its own, the session's account and password are used.
+fn rd_gateway(
+    session: &Session,
+    user: &str,
+    domain: &str,
+    password: &str,
+    args: &OpenArgs,
+) -> AppResult<Option<rdp_client::RdGateway>> {
+    let endpoint = session.opt("rdp_gateway").trim().to_string();
+    if endpoint.is_empty() {
+        return Ok(None);
+    }
+    if !session.opt("jump_host").trim().is_empty() {
+        return Err(AppError::Config("RDP : choisis soit un rebond SSH, soit une passerelle RD, pas les deux".into()));
+    }
+    let own = session.opt("rdp_gateway_user").trim();
+    let (username, password) = if own.is_empty() {
+        (if domain.is_empty() { user.to_string() } else { format!("{domain}\\{user}") }, password.to_string())
+    } else {
+        let pw = match &args.jump_password {
+            Some(p) => p.clone(),
+            None if !session.id.is_empty() && session.remember_password => {
+                secrets::saved_password(&rd_gateway_account(&session.id)).ok_or(AppError::NeedJumpPassword)?
+            }
+            None => return Err(AppError::NeedJumpPassword),
+        };
+        (own.to_string(), pw)
+    };
+    Ok(Some(rdp_client::RdGateway { endpoint, username, password, insecure: session.opt_bool("rdp_gateway_insecure") }))
+}
+
 fn session_password(session: &Session, typed: &Option<String>) -> AppResult<String> {
     match typed {
         Some(p) => Ok(p.clone()),
@@ -665,6 +701,8 @@ pub async fn term_open(app: AppHandle, state: State<'_, AppState>, args: OpenArg
                 if let Some((d, u)) = user.clone().split_once('\\') {
                     (domain, user) = (d.to_string(), u.to_string());
                 }
+                let rd_gateway = rd_gateway(&session, &user, &domain, &password, &args)?;
+                let gw_secret = rd_gateway.as_ref().filter(|_| args.jump_password.is_some()).map(|g| g.password.clone());
                 let params = RdpParams {
                     host: host.clone(),
                     port,
@@ -680,12 +718,16 @@ pub async fn term_open(app: AppHandle, state: State<'_, AppState>, args: OpenArg
                     share_dir: opts.drives.then(|| rdp_share_dir(&session)),
                     sound: opts.sound == "local",
                     monitors: if opts.size == "multimon" { local_monitors(&app) } else { Vec::new() },
+                    gateway: rd_gateway,
                 };
                 let prompter = make_prompter(app.clone(), state.hostkey_waiters.clone());
                 match rdp_client::connect(params, prompter, on_close).await {
                     Ok(s) => {
                         if args.remember && session.remember_password && !session.id.is_empty() && args.password.is_some() {
                             let _ = secrets::set_password(&session.id, &password);
+                        }
+                        if let Some(p) = gw_secret.filter(|_| args.remember && session.remember_password && !session.id.is_empty()) {
+                            let _ = secrets::set_password(&rd_gateway_account(&session.id), &p);
                         }
                         // system information: SSH to the same host with the same account (on demand)
                         let slot = if session.opt("rdp_monitor") == "0" {
@@ -707,6 +749,11 @@ pub async fn term_open(app: AppHandle, state: State<'_, AppState>, args: OpenArg
                         // a stored password that no longer works must be asked again
                         return Err(match e {
                             AppError::AuthFailed if args.password.is_none() => AppError::NeedPassword,
+                            // gateway refused the session's own account: ask the password again
+                            AppError::JumpAuthFailed if session.opt("rdp_gateway_user").trim().is_empty() => {
+                                if args.password.is_none() { AppError::NeedPassword } else { AppError::AuthFailed }
+                            }
+                            AppError::JumpAuthFailed if args.jump_password.is_none() => AppError::NeedJumpPassword,
                             e => e,
                         });
                     }

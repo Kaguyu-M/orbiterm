@@ -73,6 +73,85 @@ pub struct RdpParams {
     pub sound: bool,
     /// monitors of this computer (multi-monitor session): x, y, width, height, primary
     pub monitors: Vec<(i32, i32, u32, u32, bool)>,
+    /// Remote Desktop Gateway the connection goes through (HTTPS)
+    pub gateway: Option<RdGateway>,
+}
+
+/// Remote Desktop Gateway (MS-TSGU): the RDP connection is carried over HTTPS.
+#[derive(Clone)]
+pub struct RdGateway {
+    /// host[:port] (443 by default)
+    pub endpoint: String,
+    pub username: String,
+    pub password: String,
+    /// accept a certificate that does not validate (self-signed gateway)
+    pub insecure: bool,
+}
+
+type Stream = Box<dyn AsyncReadWrite + Unpin + Send + Sync>;
+
+/// Opens the transport to the RDP server: a TCP connection, or a tunnel through the gateway.
+async fn open_transport(p: &RdpParams) -> AppResult<(Stream, SocketAddr)> {
+    let Some(gw) = &p.gateway else {
+        let stream = tokio::time::timeout(Duration::from_secs(15), TcpStream::connect((p.host.as_str(), p.port)))
+            .await
+            .map_err(|_| AppError::Conn(format!("{}:{} ne répond pas", p.host, p.port)))?
+            .map_err(|e| AppError::Conn(format!("{}:{} : {e}", p.host, p.port)))?;
+        let _ = stream.set_nodelay(true);
+        let addr = stream.local_addr()?;
+        return Ok((Box::new(stream), addr));
+    };
+    use ironrdp_mstsgu::{GwClient, GwConnectTarget, GwErrorKind};
+    let target = GwConnectTarget {
+        gw_endpoint: gw.endpoint.clone(),
+        gw_user: gw.username.clone(),
+        gw_pass: gw.password.clone(),
+        smart_card: None,
+        server: p.host.clone(),
+    };
+    let validation = if gw.insecure {
+        ironrdp_tls::CertificateValidation::DangerouslyAcceptInvalidCertificate
+    } else {
+        ironrdp_tls::CertificateValidation::Strict
+    };
+    let name = hostname_for_gateway();
+    let r = tokio::time::timeout(
+        Duration::from_secs(30),
+        GwClient::connect_with_port_and_certificate_validation(&target, &name, p.port, validation, None),
+    )
+    .await
+    .map_err(|_| AppError::Conn(format!("passerelle {} : délai dépassé", gw.endpoint)))?;
+    match r {
+        Ok((client, addr)) => Ok((Box::new(client), addr)),
+        Err(e) => Err(match e.kind() {
+            GwErrorKind::HttpStatus(401) | GwErrorKind::HttpStatus(403) => AppError::JumpAuthFailed,
+            kind => {
+                // the root cause is at the end of the source chain
+                let mut detail = e.to_string();
+                let mut src = std::error::Error::source(&e);
+                while let Some(x) = src {
+                    detail = x.to_string();
+                    src = x.source();
+                }
+                let cert = !gw.insecure
+                    && ["certif", "trust", "verif", "untrusted"].iter().any(|w| format!("{e} {detail}").to_lowercase().contains(w));
+                AppError::Conn(if cert {
+                    format!(
+                        "passerelle {} : certificat non reconnu ({detail}) — option « Accepter le certificat de la passerelle » si tu lui fais confiance",
+                        gw.endpoint
+                    )
+                } else if matches!(kind, GwErrorKind::Custom) {
+                    format!("passerelle {} : {detail}", gw.endpoint)
+                } else {
+                    format!("passerelle {} : {kind} ({detail})", gw.endpoint)
+                })
+            }
+        }),
+    }
+}
+
+fn hostname_for_gateway() -> String {
+    std::env::var(if cfg!(windows) { "COMPUTERNAME" } else { "HOSTNAME" }).unwrap_or_else(|_| "orbiterm".into())
 }
 
 /// Remote desktop spanning `monitors` (physical pixels of this computer): its size and the
@@ -398,12 +477,7 @@ async fn establish(
     if p.username.trim().is_empty() {
         return Err(AppError::Config("RDP : indique le nom d'utilisateur dans les paramètres de la session".into()));
     }
-    let stream = tokio::time::timeout(Duration::from_secs(15), TcpStream::connect((p.host.as_str(), p.port)))
-        .await
-        .map_err(|_| AppError::Conn(format!("{}:{} ne répond pas", p.host, p.port)))?
-        .map_err(|e| AppError::Conn(format!("{}:{} : {e}", p.host, p.port)))?;
-    let _ = stream.set_nodelay(true);
-    let client_addr: SocketAddr = stream.local_addr()?;
+    let (stream, client_addr) = open_transport(&p).await?;
     let mut framed = ironrdp_tokio::TokioFramed::new(stream);
     let mut connector = ClientConnector::new(connector_config(&p)?, client_addr).with_static_channel(
         DrdynvcClient::new().with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new()))),

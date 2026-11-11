@@ -51,6 +51,7 @@ fn params(port: u16, password: &str, known: &std::path::Path) -> RdpParams {
         share_dir: known.parent().map(|p| p.to_path_buf()),
         sound: true,
         monitors: Vec::new(),
+        gateway: None,
     }
 }
 
@@ -248,4 +249,67 @@ async fn real_rdp_server() {
     s.close();
     tokio::time::sleep(Duration::from_secs(2)).await;
     eprintln!("fermeture : {}", reason.lock().unwrap());
+}
+/// Through the test RD Gateway (MS-TSGU over WebSocket, Basic gw / gwpass, self-signed).
+#[tokio::test]
+async fn rdp_through_gateway() {
+    use orbiterm_lib::rdp_client::RdGateway;
+    let Some(exe) = server_exe() else {
+        eprintln!("rdp-test-server introuvable : test ignoré");
+        return;
+    };
+    let (port, gw_port) = (3392u16, 8444u16);
+    let log = Arc::new(Mutex::new(String::new()));
+    let mut child = Command::new(&exe)
+        .args([port.to_string(), "--gateway".into(), gw_port.to_string()])
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("server");
+    let out = child.stdout.take().unwrap();
+    let log2 = log.clone();
+    std::thread::spawn(move || {
+        use std::io::BufRead;
+        for l in std::io::BufReader::new(out).lines().map_while(Result::ok) {
+            log2.lock().unwrap().push_str(&(l + "\n"));
+        }
+    });
+    let _server = Server(child);
+    tokio::time::sleep(Duration::from_millis(800)).await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let known = dir.path().join("rdp_known_hosts");
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let gw = |password: &str, insecure: bool| {
+        Some(RdGateway { endpoint: format!("127.0.0.1:{gw_port}"), username: "gw".into(), password: password.into(), insecure })
+    };
+
+    // strict certificate check: the self-signed gateway is refused
+    let mut p = params(port, "test", &known);
+    p.gateway = gw("gwpass", false);
+    let e = connect(p, prompter(seen.clone()), Arc::new(|_| {})).await.err().expect("self-signed gateway refused");
+    eprintln!("certificat strict → {e}");
+    assert!(matches!(e, AppError::Conn(_)), "{e:?}");
+
+    // wrong gateway password
+    let mut p = params(port, "test", &known);
+    p.gateway = gw("faux", true);
+    let e = connect(p, prompter(seen.clone()), Arc::new(|_| {})).await.err().expect("wrong gateway password");
+    assert!(matches!(e, AppError::JumpAuthFailed), "{e:?}");
+
+    // through the gateway: the RDP session works as usual
+    let mut p = params(port, "test", &known);
+    p.gateway = gw("gwpass", true);
+    let s = connect(p, prompter(seen.clone()), Arc::new(|_| {})).await.expect("connect through the gateway");
+    let (ws, _) = tokio_tungstenite::connect_async(s.url()).await.expect("viewer");
+    let (mut tx, mut rx) = ws.split();
+    wait_msg(&mut rx, "red bar via gateway", |m| pixel(m, 50, 50).is_some_and(|px| px[0] > 200 && px[1] < 60)).await;
+    for up in [false, true] {
+        tx.send(Message::text(format!(r#"{{"t":"k","sc":30,"up":{up}}}"#))).await.unwrap();
+    }
+    wait_msg(&mut rx, "yellow via gateway", |m| pixel(m, 500, 600).is_some_and(|px| px[0] > 200 && px[1] > 170 && px[2] < 60)).await;
+    drop(s);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let l = log.lock().unwrap().clone();
+    assert!(l.contains("gw:refusé") && l.contains("gw:auth-ok"), "server log: {l}");
+    assert!(l.contains(&format!("gw:canal 127.0.0.1:{port}")) && l.contains("key:0x1e"), "server log: {l}");
 }
