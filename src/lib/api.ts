@@ -376,7 +376,7 @@ export const api = {
   openPorts: () => invoke<SocketInfo[]>("open_ports"),
 };
 
-export type ServerKind = "http" | "tftp" | "ftp" | "ssh" | "telnet" | "iperf";
+export type ServerKind = "http" | "tftp" | "ftp" | "ssh" | "telnet" | "iperf" | "vnc";
 export interface ServerConfig {
   kind: ServerKind;
   port: number;

@@ -13,8 +13,9 @@
     ssh: { name: "Serveur SSH/SFTP", icon: "ssh", desc: "Shell de ce poste à distance, et fichiers par SFTP", scheme: "ssh" },
     telnet: { name: "Serveur Telnet", icon: "telnet", desc: "Shell de ce poste par Telnet (non chiffré : réseau local uniquement)", scheme: "telnet" },
     iperf: { name: "Serveur Iperf", icon: "scan", desc: "Mesure du débit réseau avec un client iperf3 (TCP)", scheme: "iperf3" },
+    vnc: { name: "Serveur VNC", icon: "vnc", desc: "Partage l'écran de ce poste avec une visionneuse VNC (affichage seul ou prise de contrôle)", scheme: "vnc" },
   };
-  const ORDER: ServerKind[] = ["http", "tftp", "ftp", "ssh", "telnet", "iperf"];
+  const ORDER: ServerKind[] = ["http", "tftp", "ftp", "ssh", "telnet", "iperf", "vnc"];
 
   let edit: ServerConfig | null = $state(null);
   let password = $state("");
@@ -83,11 +84,12 @@
   function urls(s: ServerStatus): string[] {
     const m = META[s.config.kind];
     const user = s.config.kind === "ssh" || (s.config.kind === "ftp" && !s.config.anonymous) ? `${s.config.user}@` : "";
-    const def: Record<ServerKind, number> = { http: 80, tftp: 69, ftp: 21, ssh: 22, telnet: 23, iperf: 5201 };
+    const def: Record<ServerKind, number> = { http: 80, tftp: 69, ftp: 21, ssh: 22, telnet: 23, iperf: 5201, vnc: 5900 };
     return s.addresses.map((a) => {
       const port = s.port === def[s.config.kind] ? "" : `:${s.port}`;
       if (s.config.kind === "telnet") return `telnet ${a}${port ? " " + s.port : ""}`;
       if (s.config.kind === "iperf") return `iperf3 -c ${a}${port ? " -p " + s.port : ""}`;
+      if (s.config.kind === "vnc") return `vnc://${a}${port}`;
       return s.config.kind === "ssh" ? `ssh ${user}${a}${port ? " -p " + s.port : ""}` : `${m.scheme}://${user}${a}${port}/`;
     });
   }
@@ -173,7 +175,7 @@
           <label for="sp">Port</label>
           <input id="sp" type="number" min="1" max="65535" bind:value={edit.port} />
 
-          {#if edit.kind !== "iperf"}
+          {#if edit.kind !== "iperf" && edit.kind !== "vnc"}
             <label for="sr">{edit.kind === "telnet" ? "Dossier de départ" : "Dossier partagé"}</label>
             <span class="row">
               <input id="sr" bind:value={edit.root} placeholder={sel.root} spellcheck="false" />
@@ -201,6 +203,16 @@
             <span class="row">
               <input id="spw" type="password" bind:value={password} autocomplete="new-password"
                 placeholder={sel.has_password ? "•••••••• (enregistré — laisser vide pour le garder)" : "à définir"} />
+            </span>
+          {/if}
+
+          {#if edit.kind === "vnc"}
+            <span></span>
+            <label class="chk"><input type="checkbox" bind:checked={edit.writable} /> Autoriser la prise de contrôle (clavier et souris)</label>
+            <label for="vpw">Mot de passe</label>
+            <span class="row">
+              <input id="vpw" type="password" bind:value={password} autocomplete="new-password" maxlength="8"
+                placeholder={sel.has_password ? "•••••••• (enregistré — laisser vide pour le garder)" : "à définir (8 caractères au plus)"} />
             </span>
           {/if}
 

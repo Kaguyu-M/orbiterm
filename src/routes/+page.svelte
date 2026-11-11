@@ -236,6 +236,7 @@
     ["ssh", "Serveur SSH/SFTP", "ssh"],
     ["telnet", "Serveur Telnet", "telnet"],
     ["iperf", "Serveur Iperf", "scan"],
+    ["vnc", "Serveur VNC", "vnc"],
   ];
   function serverItems(): MenuItem[] {
     return [

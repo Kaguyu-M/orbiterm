@@ -1,4 +1,4 @@
-//! Built-in servers (HTTP, TFTP, FTP, SSH/SFTP, Telnet, Iperf): configuration, start/stop and
+//! Built-in servers (HTTP, TFTP, FTP, SSH/SFTP, Telnet, Iperf, VNC): configuration, start/stop and
 //! activity log. Each server shares one directory of this computer.
 //!
 //! A server runs in a tokio task; stopping it drops the listener and every client
@@ -7,9 +7,11 @@
 mod ftpd;
 mod httpd;
 mod iperfd;
+mod screen;
 mod sshd;
 mod telnetd;
 mod tftpd;
+mod vncd;
 
 use std::collections::{HashMap, VecDeque};
 use std::net::{IpAddr, SocketAddr};
@@ -32,10 +34,18 @@ pub enum ServerKind {
     Ssh,
     Telnet,
     Iperf,
+    Vnc,
 }
 
-pub const ALL: [ServerKind; 6] =
-    [ServerKind::Http, ServerKind::Tftp, ServerKind::Ftp, ServerKind::Ssh, ServerKind::Telnet, ServerKind::Iperf];
+pub const ALL: [ServerKind; 7] = [
+    ServerKind::Http,
+    ServerKind::Tftp,
+    ServerKind::Ftp,
+    ServerKind::Ssh,
+    ServerKind::Telnet,
+    ServerKind::Iperf,
+    ServerKind::Vnc,
+];
 
 impl ServerKind {
     /// Usual port (unprivileged alternative on Unix, where ports < 1024 need root).
@@ -47,6 +57,7 @@ impl ServerKind {
             ServerKind::Ssh => (22, 2222),
             ServerKind::Telnet => (23, 2323),
             ServerKind::Iperf => (5201, 5201),
+            ServerKind::Vnc => (5900, 5900),
         };
         if cfg!(windows) { std } else { alt }
     }
@@ -59,10 +70,11 @@ impl ServerKind {
             ServerKind::Ssh => "SSH/SFTP",
             ServerKind::Telnet => "Telnet",
             ServerKind::Iperf => "Iperf",
+            ServerKind::Vnc => "VNC",
         }
     }
 
-    /// Keyring entry of the server password (FTP, SSH and Telnet).
+    /// Keyring entry of the server password (FTP, SSH, Telnet and VNC).
     pub fn secret_key(self) -> String {
         format!("server:{}", serde_json::to_value(self).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default())
     }
@@ -77,7 +89,7 @@ pub struct ServerConfig {
     pub root: String,
     /// listen on 127.0.0.1 only (otherwise every network interface)
     pub local_only: bool,
-    /// clients may upload / modify files (TFTP, FTP, SFTP)
+    /// clients may upload / modify files (TFTP, FTP, SFTP); VNC: keyboard and mouse allowed
     pub writable: bool,
     /// FTP: accept "anonymous" without password
     pub anonymous: bool,
@@ -103,7 +115,7 @@ impl ServerConfig {
             port: kind.default_port(),
             root: String::new(),
             local_only: false,
-            writable: !matches!(kind, ServerKind::Http | ServerKind::Iperf),
+            writable: !matches!(kind, ServerKind::Http | ServerKind::Iperf | ServerKind::Vnc),
             anonymous: false,
             user: whoami(),
             listing: true,
@@ -306,7 +318,7 @@ impl ServerManager {
         let root = cfg.root_dir();
         std::fs::create_dir_all(&root)
             .map_err(|e| AppError::Config(format!("dossier partagé {} : {e}", root.display())))?;
-        if matches!(kind, ServerKind::Ssh | ServerKind::Telnet) && password.is_empty() {
+        if matches!(kind, ServerKind::Ssh | ServerKind::Telnet | ServerKind::Vnc) && password.is_empty() {
             return Err(AppError::Config(format!("définis d'abord le mot de passe du serveur {}", kind.label())));
         }
         if matches!(kind, ServerKind::Ftp) && password.is_empty() && !cfg.anonymous {
@@ -323,6 +335,7 @@ impl ServerManager {
             ServerKind::Ssh => sshd::start(addr, ctx, stop_rx).await,
             ServerKind::Telnet => telnetd::start(addr, ctx, stop_rx).await,
             ServerKind::Iperf => iperfd::start(addr, ctx, stop_rx).await,
+            ServerKind::Vnc => vncd::start(addr, ctx, stop_rx).await,
         }
         .map_err(|e| bind_error(kind, addr, e))?;
         log.log(format!("Serveur {} démarré sur le port {port}", kind.label()));

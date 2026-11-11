@@ -51,7 +51,7 @@ Base : rapport d'analyse de MobaXterm (`Documents\MobaXterm-Analyse`) et code d'
 | HTTP, TFTP, FTP, SSH/SFTP | ✅ |
 | Telnet | ✅ 0.7.9 (identifiant + mot de passe, shell du poste) |
 | Iperf (test de débit) | ✅ 0.7.9 (compatible clients iperf3, TCP, -P, -R ; pas d'UDP) |
-| VNC (partage de l'écran local) | ❌ → lot 5 (capture d'écran par OS) |
+| VNC (partage de l'écran local) | ✅ 0.7.12 (Windows ; Linux sous X11 — pas Wayland) : affichage seul ou prise de contrôle, mot de passe obligatoire |
 | NFS, Cron | ⛔ démons Cygwin, rôle couvert par le système |
 
 ## Outils

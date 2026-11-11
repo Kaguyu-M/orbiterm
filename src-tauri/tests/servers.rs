@@ -535,3 +535,176 @@ async fn iperf_server() {
     assert!(log.iter().any(|l| l.contains("Mbit/s reçus")) && log.iter().any(|l| l.contains("Mbit/s envoyés")), "{log:?}");
     m.stop(ServerKind::Iperf).await;
 }
+
+// ------------------------------------------------------------------ VNC (screen sharing)
+
+fn vnc_key(password: &str, challenge: &[u8]) -> Vec<u8> {
+    use des::cipher::generic_array::GenericArray;
+    use des::cipher::{BlockEncrypt, KeyInit};
+    let mut key = [0u8; 8];
+    for (i, b) in password.bytes().take(8).enumerate() {
+        key[i] = b.reverse_bits();
+    }
+    let d = des::Des::new_from_slice(&key).unwrap();
+    let mut out = challenge.to_vec();
+    for c in out.chunks_mut(8) {
+        d.encrypt_block(GenericArray::from_mut_slice(c));
+    }
+    out
+}
+
+/// RFB handshake; returns the stream after ServerInit with (width, height), or None if refused.
+async fn vnc_login(port: u16, version: &[u8; 12], password: &str) -> Option<(TcpStream, u16, u16)> {
+    let mut s = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    let mut v = [0u8; 12];
+    s.read_exact(&mut v).await.unwrap();
+    assert_eq!(&v, b"RFB 003.008\n");
+    s.write_all(version).await.unwrap();
+    if version == b"RFB 003.003\n" {
+        assert_eq!(s.read_u32().await.unwrap(), 2, "3.3: VNC authentication imposed");
+    } else {
+        let mut types = [0u8; 2];
+        s.read_exact(&mut types).await.unwrap();
+        assert_eq!(types, [1, 2]);
+        s.write_all(&[2]).await.unwrap();
+    }
+    let mut ch = [0u8; 16];
+    s.read_exact(&mut ch).await.unwrap();
+    s.write_all(&vnc_key(password, &ch)).await.unwrap();
+    if s.read_u32().await.unwrap() != 0 {
+        return None;
+    }
+    s.write_all(&[1]).await.unwrap(); // shared
+    let (w, h) = (s.read_u16().await.unwrap(), s.read_u16().await.unwrap());
+    let mut pf = [0u8; 16];
+    s.read_exact(&mut pf).await.unwrap();
+    assert_eq!(pf[..4], [32, 24, 0, 1]);
+    let n = s.read_u32().await.unwrap();
+    let mut name = vec![0u8; n as usize];
+    s.read_exact(&mut name).await.unwrap();
+    assert!(String::from_utf8(name).unwrap().starts_with("Orbiterm"));
+    Some((s, w, h))
+}
+
+async fn vnc_request(s: &mut TcpStream, incremental: bool, w: u16, h: u16) {
+    let mut m = vec![3u8, incremental as u8, 0, 0, 0, 0];
+    m.extend_from_slice(&w.to_be_bytes());
+    m.extend_from_slice(&h.to_be_bytes());
+    s.write_all(&m).await.unwrap();
+}
+
+/// Reads one FramebufferUpdate; decodes ZRLE (32 bpp, compact pixels) or raw (bpp bytes)
+/// into `img` (0x00RRGGBB for 32 bpp). Returns the number of rectangles.
+async fn vnc_update(s: &mut TcpStream, z: &mut flate2::Decompress, img: &mut [u32], fw: usize, bpp: usize) -> usize {
+    let t = tokio::time::timeout(Duration::from_secs(10), s.read_u8()).await.expect("update timeout").unwrap();
+    assert_eq!(t, 0, "FramebufferUpdate");
+    s.read_u8().await.unwrap();
+    let n = s.read_u16().await.unwrap() as usize;
+    for _ in 0..n {
+        let (x, y, w, h) = (
+            s.read_u16().await.unwrap() as usize,
+            s.read_u16().await.unwrap() as usize,
+            s.read_u16().await.unwrap() as usize,
+            s.read_u16().await.unwrap() as usize,
+        );
+        match s.read_i32().await.unwrap() {
+            0 => {
+                let mut raw = vec![0u8; w * h * bpp];
+                s.read_exact(&mut raw).await.unwrap();
+                if bpp == 4 {
+                    for (i, p) in raw.chunks_exact(4).enumerate() {
+                        img[(y + i / w) * fw + x + i % w] = u32::from_le_bytes([p[0], p[1], p[2], 0]);
+                    }
+                }
+            }
+            16 => {
+                let len = s.read_u32().await.unwrap() as usize;
+                let mut comp = vec![0u8; len];
+                s.read_exact(&mut comp).await.unwrap();
+                let mut data = Vec::with_capacity(w * h * 3 + 64 * 64);
+                z.decompress_vec(&comp, &mut data, flate2::FlushDecompress::Sync).unwrap();
+                let mut i = 0;
+                let px = |i: usize| u32::from_le_bytes([data[i], data[i + 1], data[i + 2], 0]);
+                for ty in (y..y + h).step_by(64) {
+                    for tx in (x..x + w).step_by(64) {
+                        let (tw, th) = (64.min(x + w - tx), 64.min(y + h - ty));
+                        let sub = data[i];
+                        assert!(sub <= 1, "subencoding {sub}");
+                        i += 1;
+                        for r in 0..th {
+                            for c in 0..tw {
+                                img[(ty + r) * fw + tx + c] = if sub == 1 { px(i) } else { px(i + (r * tw + c) * 3) };
+                            }
+                        }
+                        i += if sub == 1 { 3 } else { tw * th * 3 };
+                    }
+                }
+                assert_eq!(i, data.len(), "ZRLE data fully used");
+            }
+            e => panic!("encoding {e}"),
+        }
+    }
+    n
+}
+
+#[tokio::test]
+async fn vnc_server() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let m = ServerManager::new(dir.path().to_path_buf());
+    let c = cfg(ServerKind::Vnc, root.path());
+    assert!(!c.writable, "view only by default");
+    assert!(m.start_with(c.clone(), String::new()).await.is_err(), "a password is mandatory");
+    let port = match m.start_with(c, "vnc-pw".into()).await {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("pas d'écran à partager ici : test ignoré ({e})");
+            return;
+        }
+    };
+
+    assert!(vnc_login(port, b"RFB 003.008\n", "faux").await.is_none(), "wrong password refused");
+
+    // RFB 3.8, ZRLE: a full picture, then incremental updates of the changes only
+    let (mut s, w, h) = vnc_login(port, b"RFB 003.008\n", "vnc-pw").await.expect("login");
+    assert!(w > 100 && h > 100);
+    let mut enc = vec![2u8, 0, 0, 2];
+    for e in [16i32, 0] {
+        enc.extend_from_slice(&e.to_be_bytes());
+    }
+    s.write_all(&enc).await.unwrap();
+    let (fw, fh) = (w as usize, h as usize);
+    let mut img = vec![0xDEAD_BEEFu32; fw * fh];
+    let mut z = flate2::Decompress::new(true);
+    vnc_request(&mut s, false, w, h).await;
+    let t0 = std::time::Instant::now();
+    assert!(vnc_update(&mut s, &mut z, &mut img, fw, 4).await >= 1);
+    eprintln!("écran {w}×{h} reçu en {:?}", t0.elapsed());
+    assert!(img.iter().all(|p| *p <= 0xFF_FFFF), "every pixel received");
+    let distinct = img.iter().step_by(97).collect::<std::collections::HashSet<_>>().len();
+    assert!(distinct > 4, "a real picture ({distinct} colours)");
+    // the next incremental request is answered now or when something changes (e.g. a clock)
+    vnc_request(&mut s, true, w, h).await;
+    let _ = tokio::time::timeout(Duration::from_secs(3), vnc_update(&mut s, &mut z, &mut img, fw, 4)).await;
+    // view only: pointer and clipboard messages are accepted and ignored, the session goes on
+    s.write_all(&[5, 0, 0, 10, 0, 10]).await.unwrap();
+    s.write_all(&[6, 0, 0, 0, 0, 0, 0, 3, b'a', b'b', b'c']).await.unwrap();
+    vnc_request(&mut s, false, 64, 64).await;
+    assert!(vnc_update(&mut s, &mut z, &mut img, fw, 4).await >= 1);
+    drop(s);
+
+    // RFB 3.3, raw pixels in 16 bits (RGB565)
+    let (mut s, w, h) = vnc_login(port, b"RFB 003.003\n", "vnc-pw").await.expect("login 3.3");
+    s.write_all(&[0u8, 0, 0, 0, 16, 16, 0, 1, 0, 31, 0, 63, 0, 31, 11, 5, 0, 0, 0, 0]).await.unwrap();
+    vnc_request(&mut s, false, w.min(200), h.min(100)).await;
+    let mut tmp = vec![0u32; fw * fh];
+    assert_eq!(vnc_update(&mut s, &mut z, &mut tmp, fw, 2).await, 1);
+    drop(s);
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let st = m.status().await;
+    let log: Vec<String> = st.iter().find(|s| s.config.kind == ServerKind::Vnc).unwrap().log.iter().map(|l| l.msg.clone()).collect();
+    assert!(log.iter().any(|l| l.contains("mot de passe refusé")), "{log:?}");
+    assert!(log.iter().any(|l| l.contains("affichage seul")), "{log:?}");
+    m.stop_all().await;
+}

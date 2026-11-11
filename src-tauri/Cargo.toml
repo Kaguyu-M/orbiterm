@@ -1,6 +1,6 @@
 [package]
 name = "orbiterm"
-version = "0.7.11"
+version = "0.7.12"
 description = "Orbiterm - SSH terminal & SFTP browser"
 authors = ["Kaguyu-M"]
 license = "MIT"
@@ -69,12 +69,18 @@ ironrdp-svc = "0.10"
 ironrdp-rdpsnd = "0.11"
 tempfile = "3"
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
+# VNC server
+des = "0.8"
+flate2 = "1"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+x11rb = { version = "0.13", features = ["xtest"] }
 
 [dev-dependencies]
-des = "0.8"
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect"] }
 
 

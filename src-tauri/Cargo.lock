@@ -4286,7 +4286,7 @@ checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 
 [[package]]
 name = "orbiterm"
-version = "0.7.11"
+version = "0.7.12"
 dependencies = [
  "anyhow",
  "async-native-tls",
@@ -4296,6 +4296,7 @@ dependencies = [
  "des 0.8.1",
  "directories",
  "env_logger",
+ "flate2",
  "futures-util",
  "ironrdp-cliprdr",
  "ironrdp-connector",
@@ -4337,7 +4338,9 @@ dependencies = [
  "unftp-sbe-fs",
  "uuid",
  "which",
+ "windows-sys 0.61.2",
  "winreg 0.55.0",
+ "x11rb",
 ]
 
 [[package]]
