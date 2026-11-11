@@ -88,6 +88,12 @@ export interface Prefs {
   sshSftp: boolean;
   /** information bar (CPU, RAM…) under SSH terminals */
   sshMonitor: boolean;
+  /** log in with the keys of the SSH agents before asking for a password */
+  sshAgent: boolean;
+  /** forward the SSH agent to the servers */
+  agentForward: boolean;
+  /** private keys loaded into Orbiterm's agent at start-up */
+  agentKeys: string[];
   /** bar above remote terminals (copy / paste, SFTP, close…) */
   termBar: boolean;
   // X11
@@ -122,6 +128,9 @@ export const DEFAULT_PREFS: Prefs = {
   sshCompression: false,
   sshSftp: true,
   sshMonitor: true,
+  sshAgent: true,
+  agentForward: false,
+  agentKeys: [],
   termBar: true,
   xAutoStart: true,
   uiTheme: "system",
@@ -334,9 +343,34 @@ class App {
     await this.refreshX();
     await this.refreshTunnels();
     await this.refreshServers();
+    // keys loaded into Orbiterm's SSH agent at start-up (passphrase asked once)
+    for (const k of this.prefs.agentKeys ?? []) await this.loadAgentKey(k, true);
     // tunnels marked "start automatically"
     for (const t of this.tunnels.filter((x) => x.autostart && !x.running)) {
       await this.startTunnel(t, true);
+    }
+  }
+
+  /** Loads a private key into Orbiterm's SSH agent, asking for its passphrase if needed. */
+  async loadAgentKey(path: string, quiet = false): Promise<boolean> {
+    let pass: string | undefined;
+    for (;;) {
+      try {
+        await api.agentAdd(path, pass);
+        return true;
+      } catch (e) {
+        const err = asApiError(e);
+        const wrong = /phrase secrète incorrecte/.test(err.message);
+        if (err.kind !== "need_passphrase" && !wrong) {
+          if (!quiet) this.alert(err.message);
+          else this.info(`Agent SSH : ${path} — ${err.message}`);
+          return false;
+        }
+        const name = path.split(/[\\/]/).pop();
+        const r = await this.ask(`${wrong ? "⚠ Phrase secrète incorrecte — " : ""}Agent SSH : phrase secrète de ${name}`, "", true);
+        if (!r) return false;
+        pass = r.value;
+      }
     }
   }
 
@@ -812,6 +846,9 @@ class App {
         if (r) snap.extra = { ...snap.extra, rdp_w: String(Math.round(r.width * k)), rdp_h: String(Math.round((r.height - bar) * k)) };
       }
       if (this.prefs.termLog) snap.extra = { ...snap.extra, log_dir: this.prefs.termLogDir };
+      if (snap.kind === "ssh" || snap.kind === "sftp") {
+        snap.extra = { ...snap.extra, ssh_agent: this.prefs.sshAgent ? "1" : "", agent_forward: this.prefs.agentForward ? "1" : "" };
+      }
       if (snap.kind === "ssh") {
         snap.extra = { ...snap.extra, keepalive: String(this.prefs.keepalive) };
         // like the original: the X server is started on demand for X11 sessions

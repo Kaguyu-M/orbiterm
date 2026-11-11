@@ -32,7 +32,7 @@ Base : rapport d'analyse de MobaXterm (`Documents\MobaXterm-Analyse`) et code d'
 |---|---|
 | Clés privées OpenSSH et PuTTY (.ppk) | ✅ 0.7.14 (.ppk v2 / v3, chiffrées ou non) |
 | Générateur de clés (MobaKeyGen) | ✅ 0.7.14 (Outils → Générateur de clés SSH : Ed25519, ECDSA, RSA ; OpenSSH ou .ppk ; conversion et changement de phrase secrète) |
-| Agent SSH (MobAgent, Pageant), transfert d'agent | ❌ → lot 6 |
+| Agent SSH (MobAgent, Pageant), transfert d'agent | ✅ 0.7.14 (agent Orbiterm : clés chargées en mémoire, au démarrage si voulu ; agent du système : OpenSSH / Pageant / SSH_AUTH_SOCK ; transfert d'agent en option) |
 
 ## Navigateur SFTP
 
@@ -87,4 +87,4 @@ Base : rapport d'analyse de MobaXterm (`Documents\MobaXterm-Analyse`) et code d'
 3. ✅ (0.7.9) **Échanges / outils** : export-import des sessions et de la configuration, comparaison de fichiers et dossiers, serveurs Telnet et Iperf.
 4. ✅ (0.7.10) **Protocoles** : ZMODEM, repli SCP.
 5. ✅ (0.7.11 – 0.7.13) **Bureau à distance et partage** : son RDP, serveur VNC (partage de l'écran de ce poste), RDP multi-écran et passerelle RD Gateway.
-6. **Clés SSH** : générateur de clés, clés PuTTY, clés publiques sur le serveur SSH intégré (0.7.14) ; agent SSH (agent du système / Pageant, transfert d'agent).
+6. ✅ (0.7.14) **Clés SSH** : générateur de clés, clés PuTTY, clés publiques sur le serveur SSH intégré (0.7.14) ; agent SSH (agent du système / Pageant, transfert d'agent).

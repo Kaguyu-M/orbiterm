@@ -380,7 +380,24 @@ export const api = {
   keySavePrivate: (path: string, format: "openssh" | "ppk", passphrase: string) => invoke<void>("key_save_private", { path, format, passphrase }),
   keySavePublic: (path: string) => invoke<void>("key_save_public", { path }),
   keyForget: () => invoke<void>("key_forget"),
+  agentState: () => invoke<AgentState>("agent_state"),
+  agentAdd: (path: string, passphrase?: string) => invoke<AgentKey>("agent_add", { path, passphrase }),
+  agentRemove: (fingerprint: string) => invoke<void>("agent_remove", { fingerprint }),
 };
+
+/** Key of the internal agent (internal) or of the system agent. */
+export interface AgentKey {
+  fingerprint: string;
+  algorithm: string;
+  comment: string;
+  source: string;
+  internal: boolean;
+}
+export interface AgentState {
+  keys: AgentKey[];
+  /** running system agent ("" when none) */
+  system: string;
+}
 
 /** Key held by the SSH key generator (the private part stays in the backend). */
 export interface KeyInfo {

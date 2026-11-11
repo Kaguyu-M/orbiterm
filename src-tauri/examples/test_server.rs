@@ -60,11 +60,13 @@ struct SshHandler {
     shell: Option<ChannelId>,
     /// X11 cookie received with x11-req (hex)
     x11: Option<String>,
+    /// agent forwarding requested by the client
+    agent: bool,
 }
 
 impl SshHandler {
     fn new(root: PathBuf) -> Self {
-        Self { root, channels: Default::default(), line: vec![], size: (80, 24), shell: None, x11: None }
+        Self { root, channels: Default::default(), line: vec![], size: (80, 24), shell: None, x11: None, agent: false }
     }
 
     fn run_command(&mut self, cmd: &str) -> (String, bool) {
@@ -73,7 +75,7 @@ impl SshHandler {
         let arg = parts.next().unwrap_or("");
         let out = match name {
             "" => String::new(),
-            "help" => "commandes : help pwd whoami size echo colors xtest exit\r\n".into(),
+            "help" => "commandes : help pwd whoami size echo colors xtest agenttest exit\r\n".into(),
             "pwd" => "/\r\n".into(),
             "whoami" => format!("{USER}\r\n"),
             "size" => format!("{}x{}\r\n", self.size.0, self.size.1),
@@ -169,6 +171,15 @@ impl russh::server::Handler for SshHandler {
                 b'\r' | b'\n' => {
                     let cmd = String::from_utf8_lossy(&self.line).to_string();
                     self.line.clear();
+                    if cmd.trim() == "agenttest" {
+                        let handle = session.handle();
+                        let agent = self.agent;
+                        tokio::spawn(async move {
+                            let msg = agent_test(&handle, agent).await;
+                            let _ = handle.data(channel, format!("\r\n{msg}\r\n$ ").into_bytes()).await;
+                        });
+                        continue;
+                    }
                     if cmd.trim() == "xtest" {
                         let handle = session.handle();
                         let cookie = self.x11.clone();
@@ -204,6 +215,12 @@ impl russh::server::Handler for SshHandler {
             }
         }
         Ok(())
+    }
+
+    async fn agent_request(&mut self, channel: ChannelId, session: &mut Session) -> Result<bool, Self::Error> {
+        self.agent = true;
+        session.channel_success(channel)?;
+        Ok(true)
     }
 
     async fn x11_request(
@@ -295,6 +312,44 @@ impl russh::server::Handler for SshHandler {
 
 /// Opens an X11 channel to the client, sends an X connection setup carrying the
 /// cookie, then "PING", and reports what the client's X server answered.
+/// Lists the keys of the forwarded agent and has the first one sign a challenge.
+async fn agent_test(handle: &russh::server::Handle, requested: bool) -> String {
+    use russh::keys::agent::{AgentIdentity, client::AgentClient};
+    if !requested {
+        return "agenttest: pas de transfert d'agent".into();
+    }
+    let Ok(ch) = handle.channel_open_agent().await else { return "agenttest: canal d'agent refusé".into() };
+    let mut client = AgentClient::connect(ch.into_stream());
+    let ids = match client.request_identities().await {
+        Ok(ids) => ids,
+        Err(e) => return format!("agenttest: {e}"),
+    };
+    let comments: Vec<String> = ids
+        .iter()
+        .filter_map(|i| match i {
+            AgentIdentity::PublicKey { comment, .. } => Some(comment.clone()),
+            _ => None,
+        })
+        .collect();
+    let signed = match ids.first() {
+        Some(id @ AgentIdentity::PublicKey { key, .. }) => {
+            let data = b"defi agenttest".to_vec();
+            match client.sign_request(id, None, data.clone()).await {
+                Ok(out) => {
+                    let blob = &out[data.len() + 4..];
+                    let ok = russh::keys::ssh_key::Signature::try_from(blob)
+                        .ok()
+                        .is_some_and(|sig| russh::keys::signature::Verifier::verify(key, &data, &sig).is_ok());
+                    if ok { "signature valide" } else { "signature invalide" }
+                }
+                Err(_) => "signature refusée",
+            }
+        }
+        _ => "aucune clé",
+    };
+    format!("agenttest: {} clé(s) [{}] {signed}", ids.len(), comments.join(", "))
+}
+
 async fn x11_test(handle: &russh::server::Handle, cookie: Option<String>) -> String {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let Some(cookie) = cookie else { return "xtest: pas de redirection X11".into() };

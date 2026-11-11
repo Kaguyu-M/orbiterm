@@ -1,5 +1,6 @@
 //! Orbiterm backend entry point.
 
+pub mod agent;
 pub mod browser;
 pub mod bundle;
 pub mod commands;
@@ -130,6 +131,9 @@ pub fn run() {
             keygen::key_save_private,
             keygen::key_save_public,
             keygen::key_forget,
+            agent::agent_state,
+            agent::agent_add,
+            agent::agent_remove,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

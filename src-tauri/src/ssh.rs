@@ -54,6 +54,8 @@ pub type CloseSink = Arc<dyn Fn(String) + Send + Sync>;
 pub enum Credentials {
     Password(String),
     Key { path: PathBuf, passphrase: Option<String> },
+    /// only the keys of the SSH agents (no password known yet: NeedPassword when refused)
+    Agent,
 }
 
 /// What to run on the main channel.
@@ -88,6 +90,10 @@ pub struct ConnectParams {
     pub compression: bool,
     /// keepalive interval in seconds (0 = disabled)
     pub keepalive: u32,
+    /// try the keys of the SSH agents (internal + system) first
+    pub agent: bool,
+    /// forward the agent to the server
+    pub agent_forward: bool,
 }
 
 impl ConnectParams {
@@ -106,6 +112,8 @@ impl ConnectParams {
             x11_display: None,
             compression: false,
             keepalive: 30,
+            agent: false,
+            agent_forward: false,
         }
     }
 }
@@ -123,6 +131,8 @@ struct Shared {
     /// remote forwardings: port on the server -> local destination
     remote: StdMutex<HashMap<u32, (String, u16)>>,
     x11: StdMutex<Option<X11Fwd>>,
+    /// agent forwarding requested for this connection
+    agent_forward: std::sync::atomic::AtomicBool,
 }
 
 pub struct ClientHandler {
@@ -199,6 +209,21 @@ impl client::Handler for ClientHandler {
                 }
             },
             None => reply.reject(ChannelOpenFailure::AdministrativelyProhibited).await,
+        }
+        Ok(())
+    }
+
+    async fn server_channel_open_agent_forward(
+        &mut self,
+        channel: Channel<Msg>,
+        reply: ChannelOpenHandle,
+        _session: &mut client::Session,
+    ) -> Result<(), Self::Error> {
+        if self.shared.agent_forward.load(std::sync::atomic::Ordering::Relaxed) {
+            reply.accept().await;
+            tokio::spawn(crate::agent::serve(channel.into_stream()));
+        } else {
+            reply.reject(ChannelOpenFailure::AdministrativelyProhibited).await;
         }
         Ok(())
     }
@@ -379,9 +404,10 @@ impl SshConnection {
                     None,
                 )
                 .await?;
-                match authenticate(&mut jh, &j.username, j.credentials).await {
+                match authenticate(&mut jh, &j.username, j.credentials, p.agent).await {
                     Ok(()) => {}
                     Err(AppError::AuthFailed) => return Err(AppError::JumpAuthFailed),
+                    Err(AppError::NeedPassword) => return Err(AppError::NeedJumpPassword),
                     Err(AppError::NeedPassphrase) => {
                         return Err(AppError::Config("la clé du rebond SSH est protégée par une passphrase (non prise en charge)".into()));
                     }
@@ -394,12 +420,16 @@ impl SshConnection {
 
         let mut handle =
             open_transport(config, &p.host, p.port, &p.known_hosts, prompter, shared.clone(), jump.as_ref()).await?;
-        authenticate(&mut handle, &p.username, p.credentials).await?;
+        authenticate(&mut handle, &p.username, p.credentials, p.agent).await?;
 
         let writer = match p.mode {
             ShellMode::None => None,
             mode => {
                 let channel = handle.channel_open_session().await?;
+                if p.agent_forward {
+                    shared.agent_forward.store(true, std::sync::atomic::Ordering::Relaxed);
+                    let _ = channel.agent_forward(false).await;
+                }
                 if let Some(display) = &p.x11_display {
                     if let Some((target, screen)) = x11::parse_display(display) {
                         let (fake, fake_hex) = x11::fake_cookie();
@@ -615,8 +645,12 @@ impl SshConnection {
     }
 }
 
-async fn authenticate(handle: &mut Handle<ClientHandler>, user: &str, creds: Credentials) -> AppResult<()> {
+async fn authenticate(handle: &mut Handle<ClientHandler>, user: &str, creds: Credentials, agent: bool) -> AppResult<()> {
+    if agent && crate::agent::authenticate(handle, user).await? {
+        return Ok(());
+    }
     match creds {
+        Credentials::Agent => Err(AppError::NeedPassword),
         Credentials::Password(password) => {
             if handle.authenticate_password(user, password.clone()).await?.success() {
                 return Ok(());

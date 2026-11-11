@@ -3,7 +3,7 @@
   import { onMount } from "svelte";
   import Modal from "./Modal.svelte";
   import Icon from "./Icon.svelte";
-  import { api } from "./api";
+  import { api, type AgentState } from "./api";
   import { open } from "@tauri-apps/plugin-dialog";
   import { app, DEFAULT_PREFS, type Prefs } from "./app.svelte";
 
@@ -31,6 +31,33 @@
   onMount(async () => {
     cfgDir = await api.configPath().catch(() => "");
   });
+
+  // ---- SSH agent (keys are loaded / removed immediately; "at start-up" is saved with the settings)
+  let agent: AgentState | null = $state(null);
+  async function refreshAgent() {
+    agent = await api.agentState().catch(() => null);
+  }
+  $effect(() => {
+    if (tab === "ssh" && !agent) refreshAgent();
+  });
+  async function addAgentKey() {
+    // automated GUI tests replace the native dialog (window.__orbitermKeyPick.open)
+    const pick = (window as unknown as { __orbitermKeyPick?: { open?: string } }).__orbitermKeyPick?.open;
+    const f = pick ?? (await open({ multiple: false, directory: false, title: "Clé privée à charger dans l'agent (OpenSSH ou PuTTY .ppk)" }));
+    if (typeof f !== "string") return;
+    if (await app.loadAgentKey(f)) {
+      if (!p.agentKeys.includes(f)) p.agentKeys = [...p.agentKeys, f];
+      await refreshAgent();
+    }
+  }
+  async function removeAgentKey(fp: string, source: string) {
+    await api.agentRemove(fp).catch(() => {});
+    p.agentKeys = p.agentKeys.filter((k) => k !== source);
+    await refreshAgent();
+  }
+  function toggleStartup(source: string, on: boolean) {
+    p.agentKeys = on ? [...p.agentKeys.filter((k) => k !== source), source] : p.agentKeys.filter((k) => k !== source);
+  }
 
   async function pickLogDir() {
     const d = await open({ directory: true, title: "Dossier des journaux de session" });
@@ -153,6 +180,33 @@
         </div>
         <label class="chk"><input type="checkbox" bind:checked={p.sshMonitor} /> Afficher les informations du serveur sous le terminal (CPU, mémoire, disque, réseau…)</label>
       </fieldset>
+      <fieldset data-agent>
+        <legend>Agent SSH</legend>
+        <label class="chk"><input type="checkbox" bind:checked={p.sshAgent} /> Se connecter avec les clés des agents avant de demander un mot de passe</label>
+        <label class="chk" title="Le serveur pourra utiliser tes clés pendant la session (rebonds vers d'autres machines) : à réserver aux serveurs de confiance"><input type="checkbox" bind:checked={p.agentForward} /> Transférer l'agent aux serveurs (agent forwarding — serveurs de confiance uniquement)</label>
+        <p class="muted">Agent du système : {agent ? agent.system || "aucun détecté" : "…"}</p>
+        {#if agent?.keys.length}
+          <table class="agent">
+            <thead><tr><th>Clé</th><th>Origine</th><th title="Charger la clé à chaque démarrage d'Orbiterm">Au démarrage</th><th></th></tr></thead>
+            <tbody>
+              {#each agent.keys as k (k.fingerprint)}
+                <tr data-agent-key={k.comment}>
+                  <td title={k.fingerprint}><b>{k.comment || "(sans commentaire)"}</b><br /><span class="mono">{k.algorithm} · {k.fingerprint.slice(0, 22)}…</span></td>
+                  <td class="src" title={k.source}>{k.internal ? k.source.split(/[\\/]/).pop() : "agent du système"}</td>
+                  <td class="c">{#if k.internal}<input type="checkbox" checked={p.agentKeys.includes(k.source)} onchange={(e) => toggleStartup(k.source, e.currentTarget.checked)} />{/if}</td>
+                  <td class="c">{#if k.internal}<button type="button" class="small" title="Retirer de l'agent" aria-label="Retirer" onclick={() => removeAgentKey(k.fingerprint, k.source)}><Icon name="trash" size={14} /></button>{/if}</td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        {:else if agent}
+          <p class="muted">Aucune clé chargée.</p>
+        {/if}
+        <div class="row">
+          <button type="button" onclick={addAgentKey} data-agent-add><Icon name="key" size={14} /> Charger une clé dans l'agent Orbiterm…</button>
+        </div>
+        <p class="muted">Les clés de l'agent Orbiterm restent en mémoire jusqu'à la fermeture d'Orbiterm ; leur phrase secrète n'est demandée qu'une fois.</p>
+      </fieldset>
       <fieldset>
         <legend>Valeurs par défaut des nouvelles sessions SSH</legend>
         <label class="chk"><input type="checkbox" bind:checked={p.sshSftp} /> Ouvrir le navigateur SFTP avec la session</label>
@@ -211,6 +265,37 @@
 </Modal>
 
 <style>
+  table.agent {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+    margin: 4px 0;
+  }
+  table.agent th {
+    text-align: left;
+    font-weight: 600;
+    border-bottom: 1px solid var(--chrome-border);
+    padding: 2px 4px;
+  }
+  table.agent td {
+    padding: 3px 4px;
+    border-bottom: 1px solid var(--row-border);
+    vertical-align: middle;
+  }
+  table.agent .mono {
+    font-family: var(--mono, monospace);
+    font-size: 11px;
+    color: var(--muted);
+  }
+  table.agent .src {
+    max-width: 160px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  table.agent .c {
+    text-align: center;
+  }
   .tabs {
     display: flex;
     gap: 2px;

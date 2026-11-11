@@ -366,3 +366,31 @@ async fn x11_forwarding_reaches_local_display() {
     assert!(got.ends_with(b"PING"));
     conn.disconnect().await;
 }
+/// Agent forwarding: the server lists the keys of Orbiterm's internal agent and has one sign.
+#[tokio::test]
+async fn agent_forwarding() {
+    let f = fixture().await;
+    let key = orbiterm_lib::keygen::generate("ed25519", "transfert@orbiterm").unwrap();
+    let fp = key.public_key().fingerprint(Default::default()).to_string();
+    orbiterm_lib::agent::add(key, "test");
+    for forward in [false, true] {
+        let mut p = params(&f, server::PASSWORD);
+        p.agent_forward = forward;
+        let out: Output = Default::default();
+        let o = out.clone();
+        let conn = SshConnection::connect(p, prompter(true, Arc::new(AtomicUsize::new(0))), Arc::new(move |b| o.lock().unwrap().extend(b)), Arc::new(|_| {}))
+            .await
+            .unwrap();
+        wait_for(&out, "Bienvenue").await;
+        conn.write(b"agenttest\r").await.unwrap();
+        if forward {
+            wait_for(&out, "signature valide").await;
+            let text = String::from_utf8_lossy(&out.lock().unwrap()).to_string();
+            assert!(text.contains("transfert@orbiterm"), "{text}");
+        } else {
+            wait_for(&out, "pas de transfert").await;
+        }
+        conn.disconnect().await;
+    }
+    orbiterm_lib::agent::remove(&fp);
+}

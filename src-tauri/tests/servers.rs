@@ -761,3 +761,35 @@ async fn ssh_server_public_key() {
     assert!(log.iter().any(|l| l.msg.contains("connecté en tant que orbi (clé SHA256:")), "{log:?}");
     m.stop(ServerKind::Ssh).await;
 }
+
+/// Login with the keys of Orbiterm's internal agent (no password known).
+#[tokio::test]
+async fn ssh_login_with_agent() {
+    use orbiterm_lib::{agent, keygen};
+    let root = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let key = keygen::generate("ecdsa256", "agent@orbiterm").unwrap();
+    let fp = key.public_key().fingerprint(Default::default()).to_string();
+    let m = ServerManager::new(dir.path().to_path_buf());
+    let mut c = cfg(ServerKind::Ssh, root.path());
+    c.authorized_keys = keygen::info(&key).public_openssh;
+    let port = m.start_with(c, "mdp".into()).await.unwrap();
+    let known = dir.path().join("known_hosts");
+    let attempt = |agent: bool| {
+        let mut p = ConnectParams::simple("127.0.0.1", port, "orbi", Credentials::Agent, known.clone());
+        p.agent = agent;
+        p.mode = orbiterm_lib::ssh::ShellMode::None;
+        SshConnection::connect(p, Arc::new(|_| Box::pin(async { true })), Arc::new(|_| {}), Arc::new(|_| {}))
+    };
+    // key not loaded yet: the password is needed
+    assert!(matches!(attempt(true).await, Err(AppError::NeedPassword)));
+    agent::add(key, "test");
+    let conn = attempt(true).await.expect("login with the agent key");
+    conn.disconnect().await;
+    // agent disabled: password needed again
+    assert!(matches!(attempt(false).await, Err(AppError::NeedPassword)));
+    agent::remove(&fp);
+    let log = m.status().await.into_iter().find(|s| s.config.kind == ServerKind::Ssh).unwrap().log;
+    assert!(log.iter().any(|l| l.msg.contains(&format!("(clé {fp})"))), "{log:?}");
+    m.stop(ServerKind::Ssh).await;
+}

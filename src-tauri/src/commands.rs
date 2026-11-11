@@ -403,17 +403,18 @@ async fn open_ssh(
     on_close: CloseSink,
 ) -> AppResult<Arc<SshConnection>> {
     let saved = !session.id.is_empty();
+    // global settings injected by the UI
+    let use_agent = session.opt_bool("ssh_agent");
     let credentials = match session.auth {
-        AuthMethod::Password => {
-            let pw = match secrets_in.password.clone() {
-                Some(p) => p,
-                None if saved && session.remember_password => {
-                    secrets::saved_password(&session.id).ok_or(AppError::NeedPassword)?
-                }
+        AuthMethod::Password => match secrets_in.password.clone() {
+            Some(p) => Credentials::Password(p),
+            None => match (saved && session.remember_password).then(|| secrets::saved_password(&session.id)).flatten() {
+                Some(p) => Credentials::Password(p),
+                // no password yet: the keys of the SSH agents may be enough
+                None if use_agent && crate::agent::has_keys().await => Credentials::Agent,
                 None => return Err(AppError::NeedPassword),
-            };
-            Credentials::Password(pw)
-        }
+            },
+        },
         AuthMethod::Key => {
             if session.key_path.trim().is_empty() {
                 return Err(AppError::Config("aucune clé privée sélectionnée".into()));
@@ -431,14 +432,15 @@ async fn open_ssh(
         let credentials = if !key.is_empty() {
             Credentials::Key { path: PathBuf::from(key), passphrase: None }
         } else {
-            let pw = match secrets_in.jump_password.clone() {
-                Some(p) => p,
-                None if saved && session.remember_password => {
-                    secrets::saved_password(&jump_account(&session.id)).ok_or(AppError::NeedJumpPassword)?
-                }
-                None => return Err(AppError::NeedJumpPassword),
-            };
-            Credentials::Password(pw)
+            match secrets_in.jump_password.clone() {
+                Some(p) => Credentials::Password(p),
+                None => match (saved && session.remember_password).then(|| secrets::saved_password(&jump_account(&session.id))).flatten() {
+                    Some(p) => Credentials::Password(p),
+                    // the keys of the SSH agents may be enough (NeedJumpPassword otherwise)
+                    None if use_agent && crate::agent::has_keys().await => Credentials::Agent,
+                    None => return Err(AppError::NeedJumpPassword),
+                },
+            }
         };
         let user = session.opt("jump_user").trim();
         Some(JumpParams {
@@ -464,6 +466,8 @@ async fn open_ssh(
         compression: session.opt_bool("compression"),
         // global setting injected by the UI ("0" disables it)
         keepalive: session.opt("keepalive").trim().parse().unwrap_or(30),
+        agent: use_agent,
+        agent_forward: session.opt_bool("agent_forward"),
     };
     let prompter = make_prompter(app.clone(), state.hostkey_waiters.clone());
     match SshConnection::connect(params, prompter, on_data, on_close).await {
@@ -612,8 +616,10 @@ pub async fn term_open(app: AppHandle, state: State<'_, AppState>, args: OpenArg
         state.store.lock().await.session(&args.session.id).cloned().unwrap_or(args.session.clone())
     };
     // global settings injected by the UI
-    if let Some(k) = args.session.extra.get("keepalive") {
-        session.extra.insert("keepalive".into(), k.clone());
+    for k in ["keepalive", "ssh_agent", "agent_forward"] {
+        if let Some(v) = args.session.extra.get(k) {
+            session.extra.insert(k.into(), v.clone());
+        }
     }
     let conn_id = crate::config::new_id("c");
     // session log (global setting injected by the UI): terminals only
