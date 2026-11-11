@@ -10,6 +10,7 @@
   import { app } from "./app.svelte";
   import { clipWrite } from "./clipboard";
   import type { MenuItem } from "./MenuBar.svelte";
+  import { clickSelect, countLabel } from "./selection";
 
   let {
     connId,
@@ -42,7 +43,7 @@
     /** a download changed the local folder */
     onlocalchange?: () => void;
     /** start of a drag towards the local explorer */
-    onitemdrag?: (ev: PointerEvent, e: Entry) => void;
+    onitemdrag?: (ev: PointerEvent, items: Entry[]) => void;
     /** a local file is being dragged over this pane */
     dropActive?: boolean;
   } = $props();
@@ -60,8 +61,23 @@
   type Transfer = { id: string; label: string; done: number; total: number; state: "run" | "ok" | "err"; msg?: string };
   let transfers: Transfer[] = $state([]);
 
-  const selectedEntry = $derived(entries.find((e) => e.path === selected) ?? null);
+  /** every selected path (`selected` is the row a Shift+click extends from) */
+  let multi: string[] = $state([]);
   const shown = $derived(entries.filter((e) => showHidden || !e.name.startsWith(".")));
+  const picked = $derived(shown.filter((e) => multi.includes(e.path)));
+  /** the selection when it is a single entry (edit, rename…) */
+  const selectedEntry = $derived(picked.length === 1 ? picked[0] : null);
+  function pick(ev: MouseEvent, e: Entry) {
+    const s = clickSelect(shown.map((x) => x.path), { ids: multi, anchor: selected }, e.path, ev);
+    multi = s.ids;
+    selected = s.anchor;
+  }
+  function selectOnly(p: string | null) {
+    selected = p;
+    multi = p ? [p] : [];
+  }
+  /** entries an action started on `e` applies to: the whole selection when `e` is part of it */
+  const group = (e: Entry) => (picked.length > 1 && multi.includes(e.path) ? picked : [e]);
 
   async function load(p: string) {
     loading = true;
@@ -70,7 +86,7 @@
       entries = await api.sftpList(connId, p);
       path = p;
       pathInput = p;
-      selected = null;
+      selectOnly(null);
     } catch (e) {
       error = asApiError(e).message;
     } finally {
@@ -157,9 +173,14 @@
   type Pick = { dir?: string; files?: string[]; folder?: string };
   const testPick = () => (window as unknown as { __orbitermSftpPick?: Pick }).__orbitermSftpPick;
 
-  export async function download(e: Entry) {
+  export async function download(what: Entry | Entry[]) {
+    const items = Array.isArray(what) ? what : [what];
+    if (!items.length) return;
     const dir = testPick()?.dir ?? localDir?.() ?? (await open({ directory: true, title: "Télécharger dans…" }));
     if (typeof dir !== "string") return;
+    for (const e of items) await downloadOne(e, dir);
+  }
+  async function downloadOne(e: Entry, dir: string) {
     const t = newTransfer(`⬇ ${e.name}${e.kind === "dir" ? "/" : ""}`);
     try {
       if (e.kind === "dir") {
@@ -211,7 +232,7 @@
     try {
       await api.sftpTouch(connId, remoteJoin(path, name));
       await load(path);
-      selected = remoteJoin(path, name);
+      selectOnly(remoteJoin(path, name));
     } catch (e) {
       error = asApiError(e).message;
     }
@@ -276,10 +297,18 @@
   function menu(ev: MouseEvent, e: Entry | null) {
     ev.preventDefault();
     ev.stopPropagation();
-    if (e) selected = e.path;
+    if (e && !multi.includes(e.path)) selectOnly(e.path);
     const isFile = !!e && e.kind !== "dir";
     const items: MenuItem[] = [];
-    if (e) {
+    if (e && picked.length > 1) {
+      const all = picked;
+      const n = countLabel(all.map((x) => x.name));
+      items.push(
+        { label: `Télécharger ${n}` + (localDir?.() ? " dans le dossier local affiché" : "…"), icon: "download", action: () => download(all) },
+        { label: `Supprimer ${n}`, icon: "trash", shortcut: "Suppr", action: () => remove(all) },
+        { sep: true },
+      );
+    } else if (e) {
       items.push(
         { label: e.kind === "dir" ? "Ouvrir" : "Modifier dans l'éditeur", icon: e.kind === "dir" ? "folder" : "edit", action: () => activate(e) },
         { label: "Ouvrir avec le programme par défaut", icon: "file", disabled: !isFile, action: () => openExternal(e) },
@@ -326,15 +355,24 @@
     }
   }
 
-  async function remove(e: Entry) {
-    const what = e.kind === "dir" ? `le dossier « ${e.name} » et tout son contenu` : `« ${e.name} »`;
-    if (!(await confirm(`Supprimer définitivement ${what} ?`))) return;
+  async function remove(what: Entry | Entry[]) {
+    const items = Array.isArray(what) ? what : [what];
+    if (!items.length) return;
+    const e = items[0];
+    const dirs = items.filter((x) => x.kind === "dir").length;
+    const label =
+      items.length > 1
+        ? `${items.length} éléments${dirs ? ` (dont ${dirs} dossier(s) avec tout leur contenu)` : ""}`
+        : e.kind === "dir"
+          ? `le dossier « ${e.name} » et tout son contenu`
+          : `« ${e.name} »`;
+    if (!(await confirm(`Supprimer définitivement ${label} ?`))) return;
     try {
-      await api.sftpRemove(connId, e.path);
-      load(path);
+      for (const x of items) await api.sftpRemove(connId, x.path);
     } catch (err) {
       error = asApiError(err).message;
     }
+    load(path);
   }
 
   async function activate(e: Entry) {
@@ -400,8 +438,8 @@
     <button title="Nouveau dossier" aria-label="Nouveau dossier" onclick={mkdir}><Icon name="newfolder" size={16} /></button>
     <button title="Envoyer des fichiers dans ce dossier" aria-label="Envoyer des fichiers" onclick={pickUpload}><Icon name="upload" size={16} /></button>
     <button title="Modifier le fichier sélectionné dans l'éditeur (double-clic)" aria-label="Modifier" disabled={!selectedEntry || selectedEntry.kind === "dir"} onclick={() => selectedEntry && edit(selectedEntry)}><Icon name="edit" size={16} /></button>
-    <button title="Télécharger la sélection (fichier ou dossier)" aria-label="Télécharger" disabled={!selectedEntry} onclick={() => selectedEntry && download(selectedEntry)}><Icon name="download" size={16} /></button>
-    <button title="Supprimer la sélection" aria-label="Supprimer" disabled={!selectedEntry} onclick={() => selectedEntry && remove(selectedEntry)}><Icon name="trash" size={16} /></button>
+    <button title="Télécharger la sélection (fichier ou dossier)" aria-label="Télécharger" disabled={!picked.length} onclick={() => download(picked)}><Icon name="download" size={16} /></button>
+    <button title="Supprimer la sélection" aria-label="Supprimer" disabled={!picked.length} onclick={() => remove(picked)}><Icon name="trash" size={16} /></button>
     {#if onseparate}
       <button title="Ouvrir dans une session SFTP séparée (enregistrée, mot de passe mémorisé)" aria-label="Session SFTP séparée" data-sftp-separate onclick={onseparate}><Icon name="sftp" size={16} /></button>
     {/if}
@@ -427,18 +465,23 @@
     {#each shown as e (e.path)}
       <div
         class="item"
-        class:sel={selected === e.path}
+        class:sel={multi.includes(e.path)}
         role="button"
         tabindex="0"
-        onclick={() => (selected = e.path)}
+        aria-pressed={multi.includes(e.path)}
+        onclick={(ev) => pick(ev, e)}
         ondblclick={() => activate(e)}
         oncontextmenu={(ev) => menu(ev, e)}
-        onpointerdown={(ev) => onitemdrag?.(ev, e)}
+        onpointerdown={(ev) => onitemdrag?.(ev, group(e))}
         data-sftp-entry={e.name}
         onkeydown={(k) => {
           if (k.key === "Enter") activate(e);
-          if (k.key === "Delete") remove(e);
+          if (k.key === "Delete") remove(group(e));
           if (k.key === "F2") rename(e);
+          if ((k.ctrlKey || k.metaKey) && k.key.toLowerCase() === "a") {
+            k.preventDefault();
+            multi = shown.map((x) => x.path);
+          }
         }}
         title="{e.perms}  {fmtDate(e.mtime)}"
       >
@@ -473,6 +516,7 @@
       {/each}
     </div>
   {/if}
+  {#if picked.length > 1}<div class="count" data-sftp-count>{picked.length} éléments sélectionnés</div>{/if}
   <div class="hint">{localDir?.() ? "Glisse un fichier vers le volet local pour le télécharger — les fichiers glissés ici sont envoyés" : "Glisse des fichiers ici pour les envoyer"}</div>
 </div>
 
@@ -710,6 +754,12 @@
   }
   .ok {
     color: var(--ok);
+  }
+  .count {
+    padding: 2px 8px;
+    color: var(--muted);
+    font-size: 11.5px;
+    border-top: 1px solid var(--border);
   }
   .hint {
     color: var(--muted);

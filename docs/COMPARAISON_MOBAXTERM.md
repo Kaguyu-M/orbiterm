@@ -48,6 +48,7 @@ Base : rapport d'analyse de MobaXterm (`Documents\MobaXterm-Analyse`) et code d'
 | Téléchargement et envoi de dossiers entiers (bouton, menu, glisser-déposer) | ✅ 0.7.15 |
 | Ouvrir avec le programme par défaut du poste (renvoyé à chaque enregistrement) | ✅ 0.7.15 |
 | Onglet SFTP / FTP à deux volets : explorateur du poste local à côté des fichiers distants, glisser-déposer entre les deux | ✅ 0.8.0 |
+| Sélection multiple dans les listes de fichiers (Ctrl / Maj + clic, Ctrl + A) | ✅ 0.8.1 |
 
 ## Bureaux distants
 

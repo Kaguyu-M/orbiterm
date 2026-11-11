@@ -5,6 +5,7 @@
   import { app } from "./app.svelte";
   import { clipWrite } from "./clipboard";
   import type { MenuItem } from "./MenuBar.svelte";
+  import { clickSelect, countLabel } from "./selection";
 
   let {
     visible,
@@ -17,7 +18,7 @@
     /** sends local files / folders to the remote folder shown */
     onsend: (paths: string[]) => void;
     /** start of a drag towards the remote pane */
-    onitemdrag?: (ev: PointerEvent, e: LocalEntry) => void;
+    onitemdrag?: (ev: PointerEvent, items: LocalEntry[]) => void;
     onclose?: () => void;
     /** a remote file is being dragged over this pane */
     dropActive?: boolean;
@@ -33,8 +34,20 @@
   let loading = $state(false);
   let error = $state("");
 
+  /** every selected path (`selected` is the row a Shift+click extends from) */
+  let multi: string[] = $state([]);
   const shown = $derived(entries.filter((e) => showHidden || !e.hidden));
-  const selectedEntry = $derived(entries.find((e) => e.path === selected) ?? null);
+  const picked = $derived(shown.filter((e) => multi.includes(e.path)));
+  function pick(ev: MouseEvent, e: LocalEntry) {
+    const s = clickSelect(shown.map((x) => x.path), { ids: multi, anchor: selected }, e.path, ev);
+    multi = s.ids;
+    selected = s.anchor;
+  }
+  function selectOnly(p: string | null) {
+    selected = p;
+    multi = p ? [p] : [];
+  }
+  const group = (e: LocalEntry) => (picked.length > 1 && multi.includes(e.path) ? picked : [e]);
 
   /** Folder shown (target of the downloads). */
   export function dir(): string | null {
@@ -53,7 +66,11 @@
       path = l.path;
       parent = l.parent;
       pathInput = l.path;
-      if (!keepSelection || !entries.some((e) => e.path === selected)) selected = null;
+      if (!keepSelection) selectOnly(null);
+      else {
+        multi = multi.filter((p) => entries.some((e) => e.path === p));
+        if (!multi.includes(selected ?? "")) selected = multi[0] ?? null;
+      }
       if (app.prefs.localDir !== l.path) {
         app.prefs.localDir = l.path;
         app.savePrefs();
@@ -88,7 +105,7 @@
     const name = await app.askText("Nouveau dossier (poste local)", "");
     if (!name) return;
     try {
-      selected = await api.localMkdir(path, name);
+      selectOnly(await api.localMkdir(path, name));
       await load(path, true);
     } catch (e) {
       error = asApiError(e).message;
@@ -99,29 +116,39 @@
     const name = await app.askText("Renommer (poste local)", e.name);
     if (!name || name === e.name) return;
     try {
-      selected = await api.localRename(e.path, name);
+      selectOnly(await api.localRename(e.path, name));
       await load(path, true);
     } catch (err) {
       error = asApiError(err).message;
     }
   }
 
-  async function remove(e: LocalEntry) {
-    if (!(await app.confirm(`Mettre « ${e.name} » à la corbeille de ce poste ?`))) return;
+  async function remove(what: LocalEntry | LocalEntry[]) {
+    const items = Array.isArray(what) ? what : [what];
+    if (!items.length) return;
+    if (!(await app.confirm(`Mettre ${countLabel(items.map((x) => x.name))} à la corbeille de ce poste ?`))) return;
     try {
-      await api.localTrash(e.path);
-      await load(path);
+      for (const x of items) await api.localTrash(x.path);
     } catch (err) {
       error = asApiError(err).message;
     }
+    await load(path);
   }
 
   function menu(ev: MouseEvent, e: LocalEntry | null) {
     ev.preventDefault();
     ev.stopPropagation();
-    if (e) selected = e.path;
+    if (e && !multi.includes(e.path)) selectOnly(e.path);
     const items: MenuItem[] = [];
-    if (e) {
+    if (e && picked.length > 1) {
+      const all = picked;
+      const n = countLabel(all.map((x) => x.name));
+      items.push(
+        { label: `Envoyer ${n} vers le serveur`, icon: "upload", action: () => onsend(all.map((x) => x.path)) },
+        { label: `Mettre ${n} à la corbeille`, icon: "trash", shortcut: "Suppr", action: () => remove(all) },
+        { sep: true },
+      );
+    } else if (e) {
       items.push(
         { label: e.kind === "dir" ? "Ouvrir" : "Ouvrir avec le programme par défaut", icon: e.kind === "dir" ? "folder" : "file", action: () => activate(e) },
         { label: e.kind === "dir" ? "Envoyer le dossier vers le serveur" : "Envoyer vers le serveur", icon: "upload", action: () => onsend([e.path]) },
@@ -153,8 +180,8 @@
     <button title="Dossier personnel" aria-label="Dossier personnel" onclick={() => load("")}><Icon name="home" size={16} /></button>
     <button title="Rafraîchir" aria-label="Rafraîchir" onclick={() => load(path, true)}><Icon name="refresh" size={16} /></button>
     <button title="Nouveau dossier" aria-label="Nouveau dossier" onclick={mkdir}><Icon name="newfolder" size={16} /></button>
-    <button title="Mettre la sélection à la corbeille" aria-label="Corbeille" disabled={!selectedEntry} onclick={() => selectedEntry && remove(selectedEntry)}><Icon name="trash" size={16} /></button>
-    <button class="send" title="Envoyer la sélection vers le dossier distant affiché" aria-label="Envoyer vers le serveur" disabled={!selectedEntry} onclick={() => selectedEntry && onsend([selectedEntry.path])} data-local-send
+    <button title="Mettre la sélection à la corbeille" aria-label="Corbeille" disabled={!picked.length} onclick={() => remove(picked)}><Icon name="trash" size={16} /></button>
+    <button class="send" title="Envoyer la sélection vers le dossier distant affiché" aria-label="Envoyer vers le serveur" disabled={!picked.length} onclick={() => onsend(picked.map((x) => x.path))} data-local-send
       ><Icon name="upload" size={16} /> Envoyer</button
     >
     <select class="places" aria-label="Emplacements" title="Emplacements de ce poste" value="" onchange={(e) => { const v = e.currentTarget.value; e.currentTarget.value = ""; if (v) load(v); }} data-local-places>
@@ -174,19 +201,24 @@
     {#each shown as e (e.path)}
       <div
         class="item"
-        class:sel={selected === e.path}
+        class:sel={multi.includes(e.path)}
         class:dim={e.hidden}
         role="button"
         tabindex="0"
+        aria-pressed={multi.includes(e.path)}
         data-local-entry={e.name}
-        onclick={() => (selected = e.path)}
+        onclick={(ev) => pick(ev, e)}
         ondblclick={() => activate(e)}
         oncontextmenu={(ev) => menu(ev, e)}
-        onpointerdown={(ev) => onitemdrag?.(ev, e)}
+        onpointerdown={(ev) => onitemdrag?.(ev, group(e))}
         onkeydown={(k) => {
           if (k.key === "Enter") activate(e);
-          if (k.key === "Delete") remove(e);
+          if (k.key === "Delete") remove(group(e));
           if (k.key === "F2") rename(e);
+          if ((k.ctrlKey || k.metaKey) && k.key.toLowerCase() === "a") {
+            k.preventDefault();
+            multi = shown.map((x) => x.path);
+          }
         }}
         title={e.path}
       >
@@ -199,7 +231,8 @@
       {#if !loading && !error}<p class="muted">Dossier vide</p>{/if}
     {/each}
   </div>
-  <div class="hint">Glisse un fichier vers le volet distant pour l'envoyer, ou depuis le volet distant pour le télécharger ici</div>
+  {#if picked.length > 1}<div class="count" data-local-count>{picked.length} éléments sélectionnés</div>{/if}
+  <div class="hint">Ctrl / Maj + clic : sélection multiple. Glisse un fichier vers le volet distant pour l'envoyer, ou depuis le volet distant pour le télécharger ici</div>
 </div>
 
 <style>
@@ -353,6 +386,12 @@
   .muted {
     color: var(--muted);
     padding: 8px;
+  }
+  .count {
+    padding: 2px 8px;
+    color: var(--muted);
+    font-size: 11.5px;
+    border-top: 1px solid var(--border);
   }
   .hint {
     color: var(--muted);

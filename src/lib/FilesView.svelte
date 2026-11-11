@@ -52,8 +52,9 @@
     window.addEventListener("pointercancel", end);
   }
 
-  const dragLocal = (ev: PointerEvent, e: LocalEntry) => begin(ev, "local", `⬆ ${e.name}`, () => remote?.uploadFiles([e.path]));
-  const dragRemote = (ev: PointerEvent, e: Entry) => begin(ev, "remote", `⬇ ${e.name}`, () => remote?.download(e));
+  const what = (items: Array<{ name: string }>) => (items.length === 1 ? items[0].name : `${items.length} éléments`);
+  const dragLocal = (ev: PointerEvent, items: LocalEntry[]) => begin(ev, "local", `⬆ ${what(items)}`, () => remote?.uploadFiles(items.map((e) => e.path)));
+  const dragRemote = (ev: PointerEvent, items: Entry[]) => begin(ev, "remote", `⬇ ${what(items)}`, () => remote?.download(items));
 
   // ---- width of the local pane
   function resize(ev: PointerEvent) {
