@@ -8,7 +8,6 @@ Base : rapport d'analyse de MobaXterm (`Documents\MobaXterm-Analyse`) et code d'
 | MobaXterm | Orbiterm |
 |---|---|
 | SSH, Telnet, Rlogin, RDP, VNC, FTP, SFTP, Série, Shell local, Navigateur, Mosh, WSL | ✅ |
-| XDMCP (bureau X distant via le serveur X) | ❌ → lot 4 |
 | S3 (Amazon) | ⛔ service propriétaire, hors du cœur de l'outil |
 | Dossiers, recherche, connexion rapide, sessions récentes | ✅ |
 | Paramètres « signet » : macro de démarrage, commentaire | ✅ 0.7.7 |
@@ -41,8 +40,8 @@ Base : rapport d'analyse de MobaXterm (`Documents\MobaXterm-Analyse`) et code d'
 | MobaXterm | Orbiterm |
 |---|---|
 | RDP intégré, presse-papiers, lecteurs redirigés, rebond SSH | ✅ |
-| Passerelle RDP (RD Gateway), multi-écran | ❌ → plus tard |
-| Son RDP | 🟡 canal présent, muet → plus tard |
+| Passerelle RDP (RD Gateway), multi-écran | ❌ → lot 5 |
+| Son RDP | 🟡 canal présent, muet → lot 5 |
 | VNC intégré | ✅ |
 
 ## Serveurs intégrés
@@ -52,7 +51,7 @@ Base : rapport d'analyse de MobaXterm (`Documents\MobaXterm-Analyse`) et code d'
 | HTTP, TFTP, FTP, SSH/SFTP | ✅ |
 | Telnet | ✅ 0.7.9 (identifiant + mot de passe, shell du poste) |
 | Iperf (test de débit) | ✅ 0.7.9 (compatible clients iperf3, TCP, -P, -R ; pas d'UDP) |
-| VNC (partage de l'écran local) | ❌ → plus tard (capture d'écran par OS) |
+| VNC (partage de l'écran local) | ❌ → lot 5 (capture d'écran par OS) |
 | NFS, Cron | ⛔ démons Cygwin, rôle couvert par le système |
 
 ## Outils
@@ -78,4 +77,5 @@ Base : rapport d'analyse de MobaXterm (`Documents\MobaXterm-Analyse`) et code d'
 1. ✅ (0.7.7) **Terminal** : recherche, journalisation des sessions, surlignage de mots-clés, macro de démarrage et commentaire par session.
 2. ✅ (0.7.8) **Fichiers** : éditeur de texte intégré (onglet), édition des fichiers distants depuis le SFTP, suivi du dossier du terminal.
 3. ✅ (0.7.9) **Échanges / outils** : export-import des sessions et de la configuration, comparaison de fichiers et dossiers, serveurs Telnet et Iperf.
-4. 🟡 (0.7.10) **Protocoles** : ZMODEM ✅, repli SCP ✅, XDMCP à décider (il ouvrirait le serveur X dans sa propre fenêtre).
+4. ✅ (0.7.10) **Protocoles** : ZMODEM, repli SCP.
+5. **Bureau à distance et partage** : son RDP, serveur VNC (partage de l'écran de ce poste), RDP multi-écran et passerelle RD Gateway.
