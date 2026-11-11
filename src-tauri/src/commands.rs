@@ -1804,6 +1804,15 @@ pub async fn xserver_start() -> AppResult<x11::XServerStatus> {
     tokio::task::spawn_blocking(x11::start).await.map_err(|e| AppError::Conn(e.to_string()))?
 }
 
+/// Installs VcXsrv with winget (Windows); lines of progress are sent as "xserver-install".
+#[tauri::command]
+pub async fn xserver_install(app: AppHandle) -> AppResult<x11::XServerStatus> {
+    x11::install(move |line| {
+        let _ = app.emit("xserver-install", line);
+    })
+    .await
+}
+
 #[tauri::command]
 pub async fn xserver_stop() -> AppResult<x11::XServerStatus> {
     tokio::task::spawn_blocking(x11::stop).await.map_err(|e| AppError::Conn(e.to_string()))

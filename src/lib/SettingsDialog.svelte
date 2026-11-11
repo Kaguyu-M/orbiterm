@@ -70,6 +70,28 @@
     app.showSettings = false;
   }
 
+  // ---- one-click installation of VcXsrv (winget)
+  let xInstalling = $state(false);
+  let xProgress = $state("");
+  async function installX() {
+    if (!(await app.confirm("Installer VcXsrv (serveur X libre) avec winget ? Windows demandera une autorisation d'administrateur."))) return;
+    xInstalling = true;
+    xProgress = "Lancement de winget…";
+    const { listen } = await import("@tauri-apps/api/event");
+    const un = await listen<string>("xserver-install", (ev) => (xProgress = ev.payload));
+    try {
+      app.xserver = await api.xserverInstall();
+      xProgress = "";
+      app.info("VcXsrv est installé : Orbiterm le démarrera en mode multi-fenêtres.");
+    } catch (e) {
+      xProgress = "";
+      app.alert(e instanceof Error ? e.message : ((e as { message?: string })?.message ?? String(e)));
+    } finally {
+      un();
+      xInstalling = false;
+    }
+  }
+
   function openPasswords() {
     app.showSettings = false;
     app.showPasswords = true;
@@ -233,6 +255,10 @@
           <Icon name={app.xserver?.running ? "xserver" : "xserver_off"} size={18} />
           {#if !app.xserver?.kind}
             Aucun serveur X détecté. Installe <b>VcXsrv</b> (recommandé) ou Xming ; Orbiterm le lancera en mode multi-fenêtres.
+            {#if app.xserver?.installable}
+              <br /><button type="button" onclick={installX} disabled={xInstalling} data-x-install><Icon name="download" size={14} /> Installer VcXsrv…</button>
+              {#if xProgress}<br /><span class="muted" data-x-progress>{xProgress}</span>{/if}
+            {/if}
           {:else if app.xserver.kind === "native"}
             Serveur X du système : {app.xserver.display}
           {:else}

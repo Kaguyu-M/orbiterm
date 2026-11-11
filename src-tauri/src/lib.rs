@@ -100,6 +100,7 @@ pub fn run() {
             commands::xserver_status,
             commands::xserver_start,
             commands::xserver_stop,
+            commands::xserver_install,
             commands::sftp_home,
             commands::sftp_list,
             commands::sftp_mode,

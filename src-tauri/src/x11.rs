@@ -132,6 +132,69 @@ pub struct XServerStatus {
     pub display: String,
     /// started by Orbiterm (so it can be stopped)
     pub owned: bool,
+    /// Orbiterm can install VcXsrv itself (Windows with winget, no X server found)
+    pub installable: bool,
+}
+
+/// Package installed by [`install`].
+pub const WINGET_PACKAGE: &str = "marha.VcXsrv";
+
+fn winget() -> Option<std::path::PathBuf> {
+    if cfg!(windows) { which::which("winget").ok() } else { None }
+}
+
+/// Arguments given to winget to install VcXsrv (no question asked on the console; Windows
+/// still shows its own elevation prompt).
+pub fn install_args() -> [&'static str; 9] {
+    ["install", "--exact", "--id", WINGET_PACKAGE, "--source", "winget", "--accept-source-agreements", "--accept-package-agreements", "--disable-interactivity"]
+}
+
+/// Keeps the meaningful lines of winget's output (it redraws progress bars with \r).
+pub fn winget_lines(chunk: &str) -> Vec<String> {
+    chunk
+        .split(['\r', '\n'])
+        .map(str::trim)
+        .filter(|l| l.chars().any(char::is_alphanumeric) && !l.chars().all(|c| "-\\|/ ".contains(c)))
+        .map(String::from)
+        .collect()
+}
+
+/// Installs VcXsrv with winget; `progress` receives the lines winget prints.
+pub async fn install(progress: impl Fn(String) + Send + 'static) -> AppResult<XServerStatus> {
+    use tokio::io::AsyncReadExt;
+    if find_server().is_some() {
+        return Ok(status());
+    }
+    let Some(exe) = winget() else {
+        return Err(AppError::Unsupported("winget est introuvable : installe VcXsrv depuis son site (vcxsrv.com)".into()));
+    };
+    let mut cmd = tokio::process::Command::new(exe);
+    cmd.args(install_args()).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null());
+    #[cfg(windows)]
+    cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    let mut child = cmd.spawn().map_err(|e| AppError::Conn(format!("winget : {e}")))?;
+    let mut out = child.stdout.take().expect("piped stdout");
+    let mut buf = [0u8; 2048];
+    let mut last = String::new();
+    loop {
+        let n = out.read(&mut buf).await.unwrap_or(0);
+        if n == 0 {
+            break;
+        }
+        for line in winget_lines(&String::from_utf8_lossy(&buf[..n])) {
+            if line != last {
+                last = line.clone();
+                progress(line);
+            }
+        }
+    }
+    let code = child.wait().await.map_err(|e| AppError::Conn(format!("winget : {e}")))?;
+    let st = status();
+    if st.kind.is_empty() {
+        let detail = if last.is_empty() { String::new() } else { format!(" — {last}") };
+        return Err(AppError::Conn(format!("l'installation de VcXsrv n'a pas abouti (winget, code {}){detail}", code.code().unwrap_or(-1))));
+    }
+    Ok(st)
 }
 
 static CHILD: Mutex<Option<std::process::Child>> = Mutex::new(None);
@@ -172,7 +235,8 @@ pub fn status() -> XServerStatus {
     let (kind, path) = found.unwrap_or_default();
     let running = if kind == "native" { true } else { port_open(6000) };
     let display = if kind == "native" { std::env::var("DISPLAY").unwrap_or_default() } else { "127.0.0.1:0".into() };
-    XServerStatus { kind, path, running, display, owned }
+    let installable = kind.is_empty() && winget().is_some();
+    XServerStatus { kind, path, running, display, owned, installable }
 }
 
 pub fn start() -> AppResult<XServerStatus> {
@@ -182,7 +246,7 @@ pub fn start() -> AppResult<XServerStatus> {
     }
     let Some((kind, path)) = find_server() else {
         return Err(AppError::Unsupported(
-            "aucun serveur X trouvé. Installe VcXsrv (winget install marha.VcXsrv) puis réessaie.".into(),
+            "aucun serveur X trouvé. Installe VcXsrv depuis Paramètres → Configuration → Serveur X (ou : winget install marha.VcXsrv), puis réessaie.".into(),
         ));
     };
     let mut cmd = std::process::Command::new(&path);
@@ -213,6 +277,16 @@ pub fn stop() -> XServerStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn winget_output() {
+        let raw = "\r   - \r   \\ \rTrouvé VcXsrv [marha.VcXsrv] Version 21.1.10\r\n  ██████▒▒▒▒  12.0 MB / 40.0 MB\r  ██████████  40.0 MB / 40.0 MB\r\nInstallé correctement\r\n";
+        let l = winget_lines(raw);
+        assert_eq!(l.first().map(String::as_str), Some("Trouvé VcXsrv [marha.VcXsrv] Version 21.1.10"));
+        assert_eq!(l.last().map(String::as_str), Some("Installé correctement"));
+        assert!(l.iter().all(|x| !x.is_empty() && x != "-"));
+        assert!(install_args().contains(&WINGET_PACKAGE));
+    }
 
     #[test]
     fn displays() {

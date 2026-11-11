@@ -84,6 +84,8 @@ export interface XServerStatus {
   running: boolean;
   display: string;
   owned: boolean;
+  /** Orbiterm can install VcXsrv itself (Windows with winget) */
+  installable: boolean;
 }
 
 export function newForward(kind: ForwardKind = "local"): Forward {
@@ -326,6 +328,7 @@ export const api = {
   xserverStatus: () => invoke<XServerStatus>("xserver_status"),
   xserverStart: () => invoke<XServerStatus>("xserver_start"),
   xserverStop: () => invoke<XServerStatus>("xserver_stop"),
+  xserverInstall: () => invoke<XServerStatus>("xserver_install"),
 
   vncUrl: (connId: string) => invoke<string>("vnc_url", { connId }),
   rdpUrl: (connId: string) => invoke<{ url: string; width: number; height: number }>("rdp_url", { connId }),
