@@ -1,6 +1,7 @@
 # Vérifie le paquet Nix (flake) quand les dépendances changent.
-# Si le hash des dépendances npm (nix/package.nix) n'est plus bon, l'étape 1 échoue
-# et affiche la nouvelle valeur à reporter.
+# Le hash des dépendances npm (nix/package.nix) change avec package-lock.json (y compris
+# le numéro de version) : l'étape 1 le recalcule et, s'il a changé, enregistre la correction
+# sur main, puis le paquet est compilé avec.
 name: Nix
 
 on:
@@ -13,10 +14,15 @@ on:
       - flake.nix
       - flake.lock
       - nix/**
+      - .github/workflows/nix.yml
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
+
+concurrency:
+  group: nix
+  cancel-in-progress: true
 
 jobs:
   nix:
@@ -30,14 +36,22 @@ jobs:
           extra_nix_config: |
             experimental-features = nix-command flakes
 
-      - name: Hash des dépendances npm
+      - name: Hash des dépendances npm (corrigé automatiquement)
         run: |
-          if ! out=$(nix build "path:.#orbiterm.npmDeps" --no-link 2>&1); then
-            echo "$out" | tail -15
-            got=$(echo "$out" | grep -oE 'got: +sha256-[A-Za-z0-9+/=]+' | awk '{print $2}')
-            if [ -n "$got" ]; then echo "::error title=Hash npm::nix/package.nix doit contenir hash = \"$got\";"; fi
-            exit 1
+          if out=$(nix build "path:.#orbiterm.npmDeps" --no-link 2>&1); then
+            echo "hash à jour"
+            exit 0
           fi
+          got=$(echo "$out" | grep -oE 'got: +sha256-[A-Za-z0-9+/=]+' | awk '{print $2}')
+          if [ -z "$got" ]; then echo "$out" | tail -30; exit 1; fi
+          echo "nouveau hash : $got"
+          sed -i -E "s|hash = \"sha256-[A-Za-z0-9+/=]+\";|hash = \"$got\";|" nix/package.nix
+          grep -n "hash =" nix/package.nix
+          nix build "path:.#orbiterm.npmDeps" --no-link
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "Nix : hash des dépendances npm"
+          git push origin HEAD:main
 
       - name: Compilation complète
         run: nix build "path:.#default" -L
