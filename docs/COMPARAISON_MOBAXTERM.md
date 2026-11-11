@@ -97,3 +97,4 @@ Base : rapport d'analyse de MobaXterm (`Documents\MobaXterm-Analyse`) et code d'
 7. ✅ (0.7.15) **Navigateur SFTP complet** : menu contextuel, droits d'accès, nouveau fichier, copie du chemin, dossiers entiers, ouverture avec le programme par défaut.
 8. ✅ (0.7.16) **Gestion des mots de passe** : fenêtre listant les mots de passe du trousseau (sessions, passerelles, VNC, serveurs intégrés), remplacement et suppression.
 9. ✅ (0.7.17) **Serveur X** : installation de VcXsrv en un clic (winget) depuis Paramètres → Serveur X, avec suivi de la progression.
+10. ✅ (0.7.18) **Thèmes** : thèmes d'interface Cyberpunk néon, Gris sombre et Gris clair (en plus de crème et brun), thèmes de terminal assortis.

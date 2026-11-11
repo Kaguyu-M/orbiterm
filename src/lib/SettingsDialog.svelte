@@ -5,7 +5,7 @@
   import Icon from "./Icon.svelte";
   import { api, type AgentState } from "./api";
   import { open } from "@tauri-apps/plugin-dialog";
-  import { app, DEFAULT_PREFS, type Prefs } from "./app.svelte";
+  import { app, DEFAULT_PREFS, UI_THEMES, type Prefs } from "./app.svelte";
 
   type TabId = "general" | "terminal" | "ssh" | "x11" | "display";
   const TABS: Array<{ id: TabId; label: string; icon: string }> = [
@@ -172,6 +172,9 @@
             <option value="solarized">Solarized</option>
             <option value="orbiterm">Orbiterm brun</option>
             <option value="creme">Orbiterm crème</option>
+            <option value="cyber">Cyberpunk néon</option>
+            <option value="graphite">Gris sombre</option>
+            <option value="graphite-light">Gris clair</option>
           </select>
           <label for="tsb">Historique (lignes)</label>
           <input id="tsb" type="number" min="100" max="200000" step="1000" bind:value={p.termScrollback} />
@@ -273,9 +276,7 @@
         <div class="row">
           <label for="uit">Thème de l'interface</label>
           <select id="uit" bind:value={p.uiTheme} data-uitheme>
-            <option value="system">Suivre le système</option>
-            <option value="light">Clair (crème)</option>
-            <option value="dark">Sombre (brun)</option>
+            {#each UI_THEMES as t (t.id)}<option value={t.id}>{t.label}</option>{/each}
           </select>
         </div>
       </fieldset>

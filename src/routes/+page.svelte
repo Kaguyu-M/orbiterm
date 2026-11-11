@@ -16,7 +16,7 @@
   import RdpView from "$lib/RdpView.svelte";
   import RemoteInfo from "$lib/RemoteInfo.svelte";
   import TermBar from "$lib/TermBar.svelte";
-  import { app, HOME, SPLIT_LABELS, type SplitMode, type Tab } from "$lib/app.svelte";
+  import { app, HOME, SPLIT_LABELS, type SplitMode, type Tab, UI_THEMES, type UiTheme } from "$lib/app.svelte";
   import ImportDialog from "$lib/ImportDialog.svelte";
   import PasswordsDialog from "$lib/PasswordsDialog.svelte";
   import SettingsDialog from "$lib/SettingsDialog.svelte";
@@ -60,7 +60,15 @@
     await w.setFullscreen(!(await w.isFullscreen()));
   }
   function toggleDark() {
-    app.prefs.uiTheme = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+    // the grey themes switch between themselves, the others between crème and brun
+    const cur = app.prefs.uiTheme;
+    if (cur === "graphite") app.prefs.uiTheme = "graphite-light";
+    else if (cur === "graphite-light") app.prefs.uiTheme = "graphite";
+    else app.prefs.uiTheme = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+    app.savePrefs();
+  }
+  function setUiTheme(id: UiTheme) {
+    app.prefs.uiTheme = id;
     app.savePrefs();
   }
   function togglePref(k: "sidebar" | "toolbar" | "menubar" | "statusbar") {
@@ -114,6 +122,8 @@
       { label: "Barre d'état", checked: app.prefs.statusbar, action: () => togglePref("statusbar") },
       { sep: true },
       { label: "Mode sombre", checked: document.documentElement.dataset.theme === "dark", action: toggleDark },
+      ...UI_THEMES.map((t) => ({ label: `Thème : ${t.label}`, checked: (app.prefs.uiTheme ?? "system") === t.id, action: () => setUiTheme(t.id) })),
+      { sep: true as const },
       { label: "Plein écran", icon: "view", shortcut: "F11", action: toggleFullscreen },
       { sep: true },
       { label: "Agrandir le texte", shortcut: "Ctrl+Maj+=", disabled: !app.active, action: () => term()?.zoom(1) },
@@ -454,10 +464,15 @@
   });
   $effect(() => {
     const pref = app.prefs.uiTheme ?? "system";
-    const dark = pref === "dark" || (pref === "system" && systemDark);
-    document.documentElement.dataset.theme = dark ? "dark" : "light";
+    const known = UI_THEMES.find((t) => t.id === pref) ?? UI_THEMES[0];
+    const dark = known.dark ?? systemDark;
+    const root = document.documentElement;
+    // data-theme keeps the light / dark family; data-skin selects a palette on top of it
+    root.dataset.theme = dark ? "dark" : "light";
+    if (known.id === "cyber" || known.id === "graphite" || known.id === "graphite-light") root.dataset.skin = known.id;
+    else delete root.dataset.skin;
     theme.dark = dark;
-    getCurrentWindow().setTheme(pref === "system" ? null : pref).catch(() => {});
+    getCurrentWindow().setTheme(known.dark === null ? null : dark ? "dark" : "light").catch(() => {});
   });
 
   const stateLabel: Record<string, string> = { connecting: "connexion…", open: "connecté", closed: "terminé", error: "erreur" };
@@ -938,6 +953,164 @@
     --pane-head-on: #4a3a28;
     --terms-bg: #1a1814;
     color-scheme: dark;
+  }
+  /* Cyberpunk: night blue-violet, neon cyan / magenta / yellow */
+  :global(:root[data-skin="cyber"]) {
+    --chrome: #0d0e1f;
+    --chrome-border: #2a2d5c;
+    --chrome-border-dark: #3d4188;
+    --panel: #121430;
+    --hover: #1c1f47;
+    --hover-border: #00e5ff;
+    --selected: #2b1458;
+    --text: #e6f7ff;
+    --text-disabled: #5b6190;
+    --muted: #8f9ad0;
+    --accent: #00e5ff;
+    --accent-text: #06071a;
+    --accent-2: #ff2a8a;
+    --brand: #fcee0a;
+    --danger: #ff3b6b;
+    --ok: #3dffa2;
+    --warn: #fcee0a;
+    --input-bg: #080916;
+    --input-border: #3d4188;
+    --btn-bg: #181a3d;
+    --btn-border: #3d4188;
+    --toolbar-top: #14163a;
+    --toolbar-bottom: #0d0e1f;
+    --titlebar: #121430;
+    --titlebar-text: #e6f7ff;
+    --home-bg: #090a18;
+    --tab-bg: #101229;
+    --row-border: #1d2048;
+    --ok-bg: #0c2a2a;
+    --ok-border: #1f8f6a;
+    --warn-bg: #2c2a0c;
+    --warn-border: #a89f1a;
+    --log-bg: #05060f;
+    --log-text: #c8f6ff;
+    --log-time: #ff2a8a;
+    --scroll-thumb: #3d4188;
+    --scroll-thumb-hover: #00e5ff;
+    --switch-off: #2a2d5c;
+    --shadow: rgba(0, 229, 255, 0.18);
+    --backdrop: rgba(4, 4, 16, 0.65);
+    --pane-head: #181a3d;
+    --pane-head-on: #2b1458;
+    --terms-bg: #05060f;
+    color-scheme: dark;
+  }
+  :global(:root[data-skin="cyber"] button.primary) {
+    box-shadow: 0 0 8px rgba(0, 229, 255, 0.55);
+  }
+  :global(:root[data-skin="cyber"] .modal) {
+    border-color: #00e5ff;
+    box-shadow:
+      0 0 0 1px rgba(255, 42, 138, 0.35),
+      0 0 24px rgba(0, 229, 255, 0.25);
+  }
+  :global(:root[data-skin="cyber"] :is(input, select, textarea):focus) {
+    outline: 1px solid #ff2a8a;
+    box-shadow: 0 0 6px rgba(255, 42, 138, 0.5);
+  }
+  /* the amber icons turn cyan / violet */
+  :global(:root[data-skin="cyber"] svg.ico) {
+    filter: hue-rotate(150deg) saturate(1.8) brightness(1.1);
+  }
+  /* Grey, dark: the classic dark look of MobaXterm (neutral greys, blue highlights) */
+  :global(:root[data-skin="graphite"]) {
+    --chrome: #3c3f41;
+    --chrome-border: #2b2b2b;
+    --chrome-border-dark: #5a5d5f;
+    --panel: #2b2b2b;
+    --hover: #4c5052;
+    --hover-border: #6e7275;
+    --selected: #2f65ca;
+    --text: #dcdcdc;
+    --text-disabled: #777b7e;
+    --muted: #a3a7aa;
+    --accent: #4a88c7;
+    --accent-text: #ffffff;
+    --accent-2: #6a9955;
+    --brand: #8ab4e8;
+    --danger: #e0605a;
+    --ok: #7bb662;
+    --warn: #d9a441;
+    --input-bg: #45494a;
+    --input-border: #646769;
+    --btn-bg: #4c5052;
+    --btn-border: #5e6163;
+    --toolbar-top: #45484a;
+    --toolbar-bottom: #3c3f41;
+    --titlebar: #313335;
+    --titlebar-text: #dcdcdc;
+    --home-bg: #2b2b2b;
+    --tab-bg: #35383a;
+    --row-border: #35383a;
+    --ok-bg: #2f3b2c;
+    --ok-border: #5c7a4f;
+    --warn-bg: #45391f;
+    --warn-border: #8f7334;
+    --log-bg: #1e1e1e;
+    --log-text: #dcdcdc;
+    --log-time: #8ab4e8;
+    --scroll-thumb: #5e6163;
+    --scroll-thumb-hover: #777b7e;
+    --switch-off: #5e6163;
+    --shadow: rgba(0, 0, 0, 0.5);
+    --backdrop: rgba(0, 0, 0, 0.5);
+    --pane-head: #45484a;
+    --pane-head-on: #2f65ca;
+    --terms-bg: #1e1e1e;
+    color-scheme: dark;
+  }
+  /* Grey, light: the classic Windows-grey look */
+  :global(:root[data-skin="graphite-light"]) {
+    --chrome: #f0f0f0;
+    --chrome-border: #d0d0d0;
+    --chrome-border-dark: #a8a8a8;
+    --panel: #ffffff;
+    --hover: #e5f1fb;
+    --hover-border: #7ab4e6;
+    --selected: #cce4f7;
+    --text: #1e1e1e;
+    --text-disabled: #9a9a9a;
+    --muted: #5f6368;
+    --accent: #0067c0;
+    --accent-text: #ffffff;
+    --accent-2: #3f7f3f;
+    --brand: #1f4e79;
+    --danger: #c42b1c;
+    --ok: #2e7d32;
+    --warn: #b7791f;
+    --input-bg: #ffffff;
+    --input-border: #b4b4b4;
+    --btn-bg: #fdfdfd;
+    --btn-border: #bdbdbd;
+    --toolbar-top: #f7f7f7;
+    --toolbar-bottom: #e6e6e6;
+    --titlebar: #ffffff;
+    --titlebar-text: #1e1e1e;
+    --home-bg: #e8e8e8;
+    --tab-bg: #e2e2e2;
+    --row-border: #ececec;
+    --ok-bg: #e6f2e6;
+    --ok-border: #9cc59c;
+    --warn-bg: #fbf0d9;
+    --warn-border: #dcb766;
+    --log-bg: #1e1e1e;
+    --log-text: #e6e6e6;
+    --log-time: #8ab4e8;
+    --scroll-thumb: #c2c2c2;
+    --scroll-thumb-hover: #a0a0a0;
+    --switch-off: #cfcfcf;
+    --shadow: rgba(0, 0, 0, 0.2);
+    --backdrop: rgba(0, 0, 0, 0.3);
+    --pane-head: #e2e2e2;
+    --pane-head-on: #cce4f7;
+    --terms-bg: #1e1e1e;
+    color-scheme: light;
   }
   :global(html, body) {
     margin: 0;

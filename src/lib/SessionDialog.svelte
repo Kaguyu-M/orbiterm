@@ -371,6 +371,9 @@
             <option value="solarized">Solarized sombre</option>
             <option value="orbiterm">Orbiterm brun</option>
             <option value="creme">Orbiterm crème</option>
+            <option value="cyber">Cyberpunk néon</option>
+            <option value="graphite">Gris sombre</option>
+            <option value="graphite-light">Gris clair</option>
           </select>
           <label class="lbl" for="sbk">Lignes d'historique</label>
           <input id="sbk" class="port" type="number" min="100" max="200000" step="1000" bind:value={s.terminal.scrollback} />

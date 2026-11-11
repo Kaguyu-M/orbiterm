@@ -62,6 +62,17 @@
     creme: { background: "#f3ede0", foreground: "#28251f", cursor: "#9c6f3e", cursorAccent: "#f3ede0", selectionBackground: "#e0cfae",
       black: "#28251f", red: "#a8432f", green: "#5a6b2e", yellow: "#9c6f3e", blue: "#3f5d78", magenta: "#7e4a5a", cyan: "#3f7466", white: "#cfc5b0",
       brightBlack: "#62553b", brightRed: "#c0583f", brightGreen: "#696b4d", brightYellow: "#b9853f", brightBlue: "#557a9b", brightMagenta: "#9b6276", brightCyan: "#4f8f7e", brightWhite: "#ffffff" },
+    // néon : nuit bleu-violet, cyan / magenta / jaune
+    cyber: { background: "#05060f", foreground: "#c8f6ff", cursor: "#ff2a8a", cursorAccent: "#05060f", selectionBackground: "#3a1a6e",
+      black: "#0d0e1f", red: "#ff3b6b", green: "#3dffa2", yellow: "#fcee0a", blue: "#3d8bff", magenta: "#ff2a8a", cyan: "#00e5ff", white: "#c8d3ff",
+      brightBlack: "#5b6190", brightRed: "#ff6e93", brightGreen: "#7dffc2", brightYellow: "#fff566", brightBlue: "#7fb2ff", brightMagenta: "#ff6fb5", brightCyan: "#7df3ff", brightWhite: "#ffffff" },
+    // gris classique
+    graphite: { background: "#2b2b2b", foreground: "#dcdcdc", cursor: "#dcdcdc", cursorAccent: "#2b2b2b", selectionBackground: "#214283",
+      black: "#1e1e1e", red: "#e0605a", green: "#7bb662", yellow: "#d9a441", blue: "#5c9ad6", magenta: "#b07cc6", cyan: "#56b6c2", white: "#c8c8c8",
+      brightBlack: "#777b7e", brightRed: "#f0817b", brightGreen: "#9bd17f", brightYellow: "#ebc06b", brightBlue: "#8ab4e8", brightMagenta: "#cba0dd", brightCyan: "#7fd2dc", brightWhite: "#ffffff" },
+    "graphite-light": { background: "#ffffff", foreground: "#1e1e1e", cursor: "#1e1e1e", cursorAccent: "#ffffff", selectionBackground: "#cce4f7",
+      black: "#1e1e1e", red: "#c42b1c", green: "#2e7d32", yellow: "#8f6a00", blue: "#0067c0", magenta: "#8e3a9d", cyan: "#00798c", white: "#c8c8c8",
+      brightBlack: "#6b6b6b", brightRed: "#d9534a", brightGreen: "#3f9443", brightYellow: "#a67c00", brightBlue: "#2f86d6", brightMagenta: "#a857b6", brightCyan: "#1a93a6", brightWhite: "#ffffff" },
   };
 
   let host: HTMLDivElement;

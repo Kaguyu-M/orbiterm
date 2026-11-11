@@ -49,6 +49,17 @@ type TextAsk = {
 type ConfirmAsk = { message: string; resolve: (v: boolean) => void };
 
 export const HOME = "home";
+/** Interface themes: "system" follows the OS between light and dark. */
+export const UI_THEMES = [
+  { id: "system", label: "Suivre le système", dark: null },
+  { id: "light", label: "Clair (crème)", dark: false },
+  { id: "dark", label: "Sombre (brun)", dark: true },
+  { id: "cyber", label: "Cyberpunk néon", dark: true },
+  { id: "graphite", label: "Gris sombre (classique)", dark: true },
+  { id: "graphite-light", label: "Gris clair (classique)", dark: false },
+] as const;
+export type UiTheme = (typeof UI_THEMES)[number]["id"];
+
 export type SideTab = "sessions" | "tools" | "macros" | "sftp";
 
 const RECENT_KEY = "orbiterm.recent";
@@ -99,7 +110,7 @@ export interface Prefs {
   // X11
   xAutoStart: boolean;
   // apparence de l'interface
-  uiTheme: "light" | "dark" | "system";
+  uiTheme: UiTheme;
 }
 
 export const DEFAULT_PREFS: Prefs = {

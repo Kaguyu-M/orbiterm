@@ -67,7 +67,7 @@ const RULES: Array<{ re: RegExp; kind: "err" | "warn" | "ok" }> = [
 
 const DARK = { err: "#ff6b5b", warn: "#f0b45e", ok: "#9cc96b" };
 const LIGHT = { err: "#b3261e", warn: "#9a6200", ok: "#3f6f1f" };
-const LIGHT_THEMES = new Set(["light", "creme"]);
+const LIGHT_THEMES = new Set(["light", "creme", "graphite-light"]);
 
 /** Max decorations created per pass (very fast output: the rest is skipped, not queued). */
 const BUDGET = 400;
