@@ -1,13 +1,13 @@
 {
-    "version": "0.7.9",
+    "version": "0.7.13",
     "description": "Terminal et client d'accès distant tout-en-un (SSH, SFTP, RDP, VNC, Telnet, série, FTP, outils réseau)",
     "homepage": "https://github.com/Kaguyu-M/orbiterm",
     "license": "MIT",
     "notes": "Nécessite Microsoft Edge WebView2 (présent sur Windows 10/11 à jour).",
     "architecture": {
         "64bit": {
-            "url": "https://github.com/Kaguyu-M/orbiterm/releases/download/v0.7.9/Orbiterm_0.7.9_x64_portable.zip",
-            "hash": "441e60e54778fc64d5e63669c14669f9d91217a6e77d730f853b33fed3490341"
+            "url": "https://github.com/Kaguyu-M/orbiterm/releases/download/v0.7.13/Orbiterm_0.7.13_x64_portable.zip",
+            "hash": "21411d5413b8c9aab8fc4dd5ad5399276bd01007b923f9848fc2d932d33dac1f"
         }
     },
     "bin": "orbiterm.exe",
