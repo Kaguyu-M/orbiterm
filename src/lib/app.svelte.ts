@@ -34,6 +34,8 @@ export interface Tab {
   connId: string | null;
   status: string;
   state: TabState;
+  /** editor tabs: unsaved changes */
+  dirty?: boolean;
 }
 
 type TextAsk = {
@@ -77,6 +79,8 @@ export interface Prefs {
   termLogDir: string;
   /** colours keywords (error, warning, ok…) in the terminals */
   termHighlight: boolean;
+  /** SSH side browser follows the folder of the terminal */
+  sftpFollow: boolean;
   // SSH
   keepalive: number;
   sshX11: boolean;
@@ -112,6 +116,7 @@ export const DEFAULT_PREFS: Prefs = {
   termLog: false,
   termLogDir: "",
   termHighlight: true,
+  sftpFollow: true,
   keepalive: 30,
   sshX11: false,
   sshCompression: false,
@@ -647,6 +652,27 @@ class App {
     this.connect(this.tabs[this.tabs.length - 1]);
   }
 
+  /**
+   * Opens a text file in an editor tab: local when `connId` is empty, else a remote file
+   * of that SSH / SFTP / FTP connection (`source` names it, e.g. "user@host").
+   * An empty path opens a new, unnamed file.
+   */
+  openEditor(path: string, connId = "", source = "") {
+    const open = this.tabs.find(
+      (t) => path && t.session.kind === "editor" && t.session.extra?.path === path && (t.session.extra?.conn ?? "") === connId,
+    );
+    if (open) {
+      this.activeKey = open.key;
+      return;
+    }
+    const s = this.blank("", "editor");
+    s.extra = { path, conn: connId, source };
+    s.name = path ? path.split(/[\\/]/).pop() || path : "Nouveau fichier";
+    const tab: Tab = { key: crypto.randomUUID(), session: s, title: s.name, connId: null, status: "", state: "open" };
+    this.tabs.push(tab);
+    this.activeKey = tab.key;
+  }
+
   /** Opens a local terminal with the given shell id (default shell when empty). */
   startLocalTerminal(shellId = "") {
     const sh = this.shells.find((x) => x.id === (shellId || this.prefs.defaultShell)) ?? this.shells[0];
@@ -708,8 +734,8 @@ class App {
   async connect(tab: Tab): Promise<void> {
     const s = tab.session;
     tab.state = "connecting";
-    if (s.kind === "browser") {
-      // no backend connection: the BrowserView owns its webview
+    if (s.kind === "browser" || s.kind === "editor") {
+      // no backend connection: the view owns its content
       tab.state = "open";
       tab.status = "";
       return;
@@ -777,6 +803,7 @@ class App {
   }
 
   async closeTab(tab: Tab) {
+    if (tab.dirty && !(await this.confirm(`« ${tab.title} » a des modifications non enregistrées. Fermer quand même ?`))) return;
     this.typedSecrets.delete(tab.key);
     if (tab.connId) await api.termClose(tab.connId).catch(() => {});
     if (tab.session.kind === "browser") await api.browserClose(`browser-${tab.key}`).catch(() => {});

@@ -188,6 +188,8 @@
                 askText={app.askText}
                 confirm={app.confirm}
                 onseparate={() => app.openSeparateSftp(t)}
+                source={`${t.session.username ? t.session.username + "@" : ""}${t.session.host}`}
+                follow
               />
             </div>
           {/if}

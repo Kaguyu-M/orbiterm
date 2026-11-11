@@ -1,0 +1,43 @@
+# Vérifie le paquet Nix (flake) quand les dépendances changent.
+# Si le hash des dépendances npm (nix/package.nix) n'est plus bon, l'étape 1 échoue
+# et affiche la nouvelle valeur à reporter.
+name: Nix
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - package.json
+      - package-lock.json
+      - src-tauri/Cargo.lock
+      - flake.nix
+      - flake.lock
+      - nix/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  nix:
+    name: Paquet Nix
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Hash des dépendances npm
+        run: |
+          if ! out=$(nix build "path:.#orbiterm.npmDeps" --no-link 2>&1); then
+            echo "$out" | tail -15
+            got=$(echo "$out" | grep -oE 'got: +sha256-[A-Za-z0-9+/=]+' | awk '{print $2}')
+            if [ -n "$got" ]; then echo "::error title=Hash npm::nix/package.nix doit contenir hash = \"$got\";"; fi
+            exit 1
+          fi
+
+      - name: Compilation complète
+        run: nix build "path:.#default" -L

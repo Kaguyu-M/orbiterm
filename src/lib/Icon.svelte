@@ -43,6 +43,7 @@
     up: `<path d="M12 19V6M6.5 11.5L12 6l5.5 5.5" stroke="#9c6f3e" stroke-width="2" fill="none" ${S}/>`,
     upload: `<path d="M12 16V5M7.5 9.5L12 5l4.5 4.5" stroke="#696b4d" stroke-width="2" fill="none" ${S}/><path d="M4 15v4.5h16V15" stroke="#62553b" stroke-width="1.8" fill="none" ${S}/>`,
     download: `<path d="M12 4v11M7.5 10.5L12 15l4.5-4.5" stroke="#9c6f3e" stroke-width="2" fill="none" ${S}/><path d="M4 15v4.5h16V15" stroke="#62553b" stroke-width="1.8" fill="none" ${S}/>`,
+    save: `<path d="M4 4.5A1.5 1.5 0 0 1 5.5 3h11l3.5 3.5v12A1.5 1.5 0 0 1 18.5 20h-13A1.5 1.5 0 0 1 4 18.5z" fill="#e2b26e" stroke="#9c6f3e" stroke-width="1"/><rect x="7.5" y="3.5" width="8" height="5" rx=".6" fill="#f8f4ea" stroke="#9c6f3e" stroke-width=".8"/><rect x="7" y="12" width="10" height="6.5" rx=".8" fill="#62553b"/>`,
     newfolder: `<path d="M2.5 6.5a1.5 1.5 0 0 1 1.5-1.5h5l2 2h9a1.5 1.5 0 0 1 1.5 1.5v10a1.5 1.5 0 0 1-1.5 1.5H4a1.5 1.5 0 0 1-1.5-1.5z" fill="#e2b26e" stroke="#9c6f3e" stroke-width="1"/><path d="M12 10.5v6M9 13.5h6" stroke="#696b4d" stroke-width="2" ${S}/>`,
     search: `<circle cx="10.5" cy="10.5" r="6" stroke="#58402b" stroke-width="2" fill="#f8f4ea"/><path d="M15 15l5.5 5.5" stroke="#58402b" stroke-width="2.4" ${S}/>`,
     edit: `<path d="M4 20l1-4.5L15.5 5l3.5 3.5L8.5 19z" fill="#d9a35f" stroke="#9c6f2f" stroke-width="1" ${S}/><path d="M4 20l1-4.5 3.5 3.5z" fill="#62553b"/>`,

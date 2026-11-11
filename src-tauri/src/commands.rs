@@ -11,6 +11,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::{Mutex, oneshot};
 
 use crate::config::{AuthMethod, Folder, Forward, ForwardKind, Macro, Session, Store, Tunnel};
+use crate::editor;
 use crate::importer;
 use crate::error::{AppError, AppResult};
 use crate::secrets;
@@ -1073,6 +1074,73 @@ pub async fn sftp_upload(
         Files::Ftp(f) => f.upload(&local_path, &remote, &progress).await?,
     }
     Ok(remote)
+}
+
+/// Current folder of the shell of an SSH tab (None when the server cannot tell).
+#[tauri::command]
+pub async fn ssh_cwd(state: State<'_, AppState>, conn_id: String) -> AppResult<Option<String>> {
+    state.ssh(&conn_id).await?.shell_cwd().await
+}
+
+// ---------------------------------------------------------------- text editor
+
+/// Temporary copy used to read / write a remote file through the file connection.
+fn edit_temp() -> AppResult<(tempfile::TempDir, PathBuf)> {
+    let dir = tempfile::Builder::new().prefix("orbiterm-edit").tempdir()?;
+    let p = dir.path().join("file");
+    Ok((dir, p))
+}
+
+/// Reads a text file: local when `conn_id` is empty, else through the SFTP / FTP connection.
+#[tauri::command]
+pub async fn text_read(state: State<'_, AppState>, conn_id: String, path: String) -> AppResult<editor::TextFile> {
+    let bytes = if conn_id.is_empty() {
+        let len = tokio::fs::metadata(&path).await?.len();
+        if len > editor::MAX_BYTES {
+            return Err(AppError::Unsupported("fichier trop volumineux pour l'éditeur (20 Mo au plus)".into()));
+        }
+        tokio::fs::read(&path).await?
+    } else {
+        let files = state.files(&conn_id).await?;
+        let (_dir, tmp) = edit_temp()?;
+        let too_big = AppError::Unsupported("fichier trop volumineux pour l'éditeur (20 Mo au plus)".into());
+        let check = |_: u64, _: u64| {};
+        match files {
+            Files::Sftp(s) => {
+                if s.metadata(path.as_str()).await?.size.unwrap_or(0) > editor::MAX_BYTES {
+                    return Err(too_big);
+                }
+                sftp::download(&s, &path, &tmp, &check).await?
+            }
+            Files::Ftp(f) => f.download(&path, &tmp, &check).await?,
+        }
+        let b = tokio::fs::read(&tmp).await?;
+        if b.len() as u64 > editor::MAX_BYTES {
+            return Err(too_big);
+        }
+        b
+    };
+    editor::decode(&bytes)
+}
+
+/// Writes a text file back with its original encoding and line endings.
+#[tauri::command]
+pub async fn text_write(state: State<'_, AppState>, conn_id: String, path: String, file: editor::TextFile) -> AppResult<()> {
+    let bytes = editor::encode(&file)?;
+    if conn_id.is_empty() {
+        let p = PathBuf::from(&path);
+        return tokio::task::spawn_blocking(move || editor::write_local(&p, &bytes))
+            .await
+            .map_err(|e| AppError::Conn(e.to_string()))?;
+    }
+    let files = state.files(&conn_id).await?;
+    let (_dir, tmp) = edit_temp()?;
+    tokio::fs::write(&tmp, &bytes).await?;
+    let none = |_: u64, _: u64| {};
+    match files {
+        Files::Sftp(s) => sftp::upload(&s, &tmp, &path, &none).await,
+        Files::Ftp(f) => f.upload(&tmp, &path, &none).await,
+    }
 }
 
 // ---------------------------------------------------------------- tunnels

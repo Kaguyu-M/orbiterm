@@ -6,6 +6,7 @@
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import { api, asApiError, formatSize, remoteJoin, remoteParent, type Entry } from "./api";
   import Icon from "./Icon.svelte";
+  import { app } from "./app.svelte";
 
   let {
     connId,
@@ -14,6 +15,8 @@
     confirm,
     wide = false,
     onseparate,
+    source = "",
+    follow = false,
   }: {
     connId: string;
     visible: boolean;
@@ -23,6 +26,10 @@
     confirm: (message: string) => Promise<boolean>;
     /** opens the same server in a separate, saved SFTP session */
     onseparate?: () => void;
+    /** "user@host", shown by the editor tabs of remote files */
+    source?: string;
+    /** browser of an SSH terminal: can follow the folder of its shell */
+    follow?: boolean;
   } = $props();
 
   let path = $state("");
@@ -71,6 +78,53 @@
       init();
     }
   });
+
+  // Follows the current folder of the terminal's shell (polled while shown).
+  let followNote = $state("");
+  $effect(() => {
+    if (!follow || !visible || !app.prefs.sftpFollow || !connId) return;
+    let stop = false;
+    let misses = 0;
+    let last = "";
+    const tick = async () => {
+      if (stop) return;
+      try {
+        const cwd = await api.sshCwd(connId);
+        if (cwd === null) {
+          if (++misses === 2) followNote = "Ce serveur ne permet pas de suivre le dossier du terminal.";
+        } else {
+          misses = 0;
+          followNote = "";
+          // only when the shell moved: the user may browse elsewhere meanwhile
+          if (cwd !== last && cwd !== path && !loading) await load(cwd);
+          last = cwd;
+        }
+      } catch {
+        /* connection closing */
+      }
+      if (!stop && misses < 4) setTimeout(tick, 1500);
+    };
+    tick();
+    return () => {
+      stop = true;
+    };
+  });
+
+  function toggleFollow() {
+    app.prefs.sftpFollow = !app.prefs.sftpFollow;
+    app.savePrefs();
+    followNote = "";
+  }
+
+  const EDIT_MAX = 20 * 1024 * 1024;
+  function edit(e: Entry) {
+    if (e.kind === "dir") return;
+    if (e.size > EDIT_MAX) {
+      error = `« ${e.name} » est trop volumineux pour l'éditeur (20 Mo au plus) : utilise Télécharger.`;
+      return;
+    }
+    app.openEditor(e.path, connId, source);
+  }
 
   function fmtDate(t: number) {
     return t ? new Date(t * 1000).toLocaleString() : "";
@@ -158,9 +212,9 @@
         await api.sftpList(connId, e.path);
         load(e.path);
       } catch {
-        download(e);
+        edit(e);
       }
-    } else download(e);
+    } else edit(e);
   }
 
   onMount(() => {
@@ -204,10 +258,14 @@
     <button title="Rafraîchir" aria-label="Rafraîchir" onclick={() => load(path)}><Icon name="refresh" size={16} /></button>
     <button title="Nouveau dossier" aria-label="Nouveau dossier" onclick={mkdir}><Icon name="newfolder" size={16} /></button>
     <button title="Envoyer des fichiers dans ce dossier" aria-label="Envoyer des fichiers" onclick={pickUpload}><Icon name="upload" size={16} /></button>
+    <button title="Modifier le fichier sélectionné dans l'éditeur (double-clic)" aria-label="Modifier" disabled={!selectedEntry || selectedEntry.kind === "dir"} onclick={() => selectedEntry && edit(selectedEntry)}><Icon name="edit" size={16} /></button>
     <button title="Télécharger le fichier sélectionné" aria-label="Télécharger" disabled={!selectedEntry || selectedEntry.kind === "dir"} onclick={() => selectedEntry && download(selectedEntry)}><Icon name="download" size={16} /></button>
     <button title="Supprimer la sélection" aria-label="Supprimer" disabled={!selectedEntry} onclick={() => selectedEntry && remove(selectedEntry)}><Icon name="trash" size={16} /></button>
     {#if onseparate}
       <button title="Ouvrir dans une session SFTP séparée (enregistrée, mot de passe mémorisé)" aria-label="Session SFTP séparée" data-sftp-separate onclick={onseparate}><Icon name="sftp" size={16} /></button>
+    {/if}
+    {#if follow}
+      <button class="follow" class:on={app.prefs.sftpFollow} title="Suivre le dossier du terminal" aria-label="Suivre le dossier du terminal" aria-pressed={app.prefs.sftpFollow} onclick={toggleFollow}><Icon name="link" size={16} /></button>
     {/if}
     <label class="hidden-toggle" title="Afficher les fichiers cachés">
       <input type="checkbox" bind:checked={showHidden} /> .*
@@ -218,6 +276,7 @@
   </form>
 
   {#if error}<div class="error">{error}</div>{/if}
+  {#if followNote && app.prefs.sftpFollow}<div class="note">{followNote}</div>{/if}
 
   {#if wide}
     <div class="cols"><span></span><span>Nom</span><span class="r">Taille</span><span>Modifié</span><span>Droits</span><span></span></div>
@@ -243,8 +302,8 @@
         <span class="sz">{e.kind === "dir" ? "" : formatSize(e.size)}</span>
         {#if wide}<span class="dt">{fmtDate(e.mtime)}</span><span class="pm">{e.perms}</span>{/if}
         <span class="acts">
-          {#if e.kind !== "dir"}<button title="Télécharger" onclick={(ev) => { ev.stopPropagation(); download(e); }}>⬇</button>{/if}
-          <button title="Renommer (F2)" onclick={(ev) => { ev.stopPropagation(); rename(e); }}>✎</button>
+          {#if e.kind !== "dir"}<button title="Modifier dans l'éditeur" onclick={(ev) => { ev.stopPropagation(); edit(e); }}>✎</button><button title="Télécharger" onclick={(ev) => { ev.stopPropagation(); download(e); }}>⬇</button>{/if}
+          <button title="Renommer (F2)" onclick={(ev) => { ev.stopPropagation(); rename(e); }}>Aa</button>
           <button title="Supprimer (Suppr)" onclick={(ev) => { ev.stopPropagation(); remove(e); }}>✕</button>
         </span>
       </div>
@@ -284,6 +343,15 @@
   .sftp.drop {
     border-color: var(--accent);
     background: color-mix(in srgb, var(--accent) 8%, transparent);
+  }
+  .note {
+    padding: 4px 8px;
+    color: var(--muted);
+    font-size: 11.5px;
+  }
+  .toolbar button.follow.on {
+    background: var(--selected);
+    border-color: var(--hover-border);
   }
   .toolbar {
     display: flex;

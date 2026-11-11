@@ -305,6 +305,9 @@ pub struct SshConnection {
     shared: Arc<Shared>,
     tasks: StdMutex<Vec<JoinHandle<()>>>,
     forwards: StdMutex<Vec<ActiveForward>>,
+    /// value of LC_ORBITERM_ID given to the interactive shell: finds it again on the server
+    /// (current folder followed by the file browser)
+    shell_tag: String,
 }
 
 async fn open_transport(
@@ -359,6 +362,7 @@ impl SshConnection {
     ) -> AppResult<Arc<SshConnection>> {
         let config = client_config(p.compression, p.keepalive);
         let shared = Arc::new(Shared::default());
+        let shell_tag = uuid::Uuid::new_v4().simple().to_string();
 
         // optional jump host (ProxyJump), authenticated with its own credentials
         let jump = match p.jump {
@@ -404,6 +408,8 @@ impl SshConnection {
                         log::warn!("X11: invalid display {display}");
                     }
                 }
+                // LC_* variables are accepted by default by OpenSSH servers (AcceptEnv LANG LC_*)
+                let _ = channel.set_env(false, "LC_ORBITERM_ID", shell_tag.as_str()).await;
                 channel.request_pty(true, "xterm-256color", p.cols.max(1), p.rows.max(1), 0, 0, &[]).await?;
                 match mode {
                     ShellMode::Command(cmd) => channel.exec(true, cmd).await?,
@@ -438,6 +444,7 @@ impl SshConnection {
             shared,
             tasks: StdMutex::new(vec![]),
             forwards: StdMutex::new(vec![]),
+            shell_tag,
         }))
     }
 
@@ -470,6 +477,13 @@ impl SshConnection {
         let s = Arc::new(SftpSession::new(ch.into_stream()).await?);
         *guard = Some(s.clone());
         Ok(s)
+    }
+
+    /// Current folder of the interactive shell (Linux servers: /proc), or None.
+    pub async fn shell_cwd(&self) -> AppResult<Option<String>> {
+        let out = self.exec_capture(&cwd_command(&self.shell_tag), Duration::from_secs(5)).await?;
+        let line = out.lines().next().unwrap_or("").trim();
+        Ok(line.starts_with('/').then(|| line.to_string()))
     }
 
     /// Runs a command on a separate channel (no PTY) and returns its standard output.
@@ -603,4 +617,13 @@ async fn keyboard_interactive(handle: &mut Handle<ClientHandler>, user: &str, pa
         }
     }
     Err(AppError::AuthFailed)
+}
+
+/// Shell command printing the current folder of the process started with
+/// LC_ORBITERM_ID=<tag> whose parent does not have it (the session's shell).
+fn cwd_command(tag: &str) -> String {
+    let tag: String = tag.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
+    format!(
+        "p=$(grep -lsxz 'LC_ORBITERM_ID={tag}' /proc/[0-9]*/environ 2>/dev/null | cut -d/ -f3);          for i in $p; do pp=$(sed -e 's/.*) //' /proc/$i/stat 2>/dev/null | cut -d' ' -f2);          case \" $p \" in *\" $pp \"*) ;; *) readlink /proc/$i/cwd; exit 0;; esac; done"
+    )
 }

@@ -224,13 +224,25 @@ export const PROTOCOLS: Protocol[] = [
 ];
 
 /** How a tab of this kind is displayed. */
-export type TabView = "terminal" | "files" | "vnc" | "rdp" | "external" | "browser";
+export type TabView = "terminal" | "files" | "vnc" | "rdp" | "external" | "browser" | "editor";
+
+/** Text file opened in the editor: `text` uses "
+", written back with the same format. */
+export interface TextFile {
+  text: string;
+  encoding: "utf8" | "utf8-bom" | "utf16le" | "latin1";
+  crlf: boolean;
+}
+
+/** Pseudo-protocol of the editor tabs (not a session type of the dialog). */
+export const EDITOR: Protocol = { kind: "editor", label: "Éditeur", icon: "edit", port: 0, ready: true, remote: false };
 export const IS_WINDOWS = typeof navigator !== "undefined" && /windows/i.test(navigator.userAgent);
 export function viewOf(s: Pick<Session, "kind" | "extra">): TabView {
   const kind = s.kind;
   if (kind === "sftp" || kind === "ftp") return "files";
   if (kind === "vnc") return "vnc";
   if (kind === "browser") return "browser";
+  if (kind === "editor") return "editor";
   if (kind === "rdp") {
     // embedded client by default; optional external client: mstsc window (Windows) / FreeRDP (elsewhere)
     if (s.extra?.rdp_client !== "mstsc") return "rdp";
@@ -240,6 +252,7 @@ export function viewOf(s: Pick<Session, "kind" | "extra">): TabView {
 }
 
 export function protocol(kind: string): Protocol {
+  if (kind === "editor") return EDITOR;
   return PROTOCOLS.find((p) => p.kind === kind) ?? PROTOCOLS[0];
 }
 
@@ -250,6 +263,7 @@ export function describe(s: Session): string {
   if (s.kind === "wsl") return `WSL ${s.extra?.distro || "(par défaut)"}`;
   if (s.kind === "serial") return `Série ${s.extra?.serial_port || s.host} @ ${s.extra?.baud || "115200"}`;
   if (s.kind === "browser") return s.host;
+  if (s.kind === "editor") return s.extra?.path ? `${s.extra.source ? s.extra.source + " : " : ""}${s.extra.path}` : "Nouveau fichier";
   return `${p.label} ${s.username ? s.username + "@" : ""}${s.host}${s.port && s.port !== p.port ? ":" + s.port : ""}`;
 }
 
@@ -314,6 +328,9 @@ export const api = {
   browserAction: (label: string, action: "back" | "forward" | "reload" | "stop") => invoke<void>("browser_action", { label, action }),
   browserClose: (label: string) => invoke<void>("browser_close", { label }),
 
+  textRead: (connId: string, path: string) => invoke<TextFile>("text_read", { connId, path }),
+  textWrite: (connId: string, path: string, file: TextFile) => invoke<void>("text_write", { connId, path, file }),
+  sshCwd: (connId: string) => invoke<string | null>("ssh_cwd", { connId }),
   sftpHome: (connId: string) => invoke<string>("sftp_home", { connId }),
   sftpList: (connId: string, path: string) => invoke<Entry[]>("sftp_list", { connId, path }),
   sftpMkdir: (connId: string, path: string) => invoke<void>("sftp_mkdir", { connId, path }),

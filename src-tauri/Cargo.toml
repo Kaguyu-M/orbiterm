@@ -67,13 +67,13 @@ ironrdp-rdpdr-native = "0.9"
 env_logger = { version = "0.11", default-features = false }
 ironrdp-svc = "0.10"
 ironrdp-rdpsnd = "0.11"
+tempfile = "3"
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"
 
 [dev-dependencies]
-tempfile = "3"
 des = "0.8"
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect"] }
 

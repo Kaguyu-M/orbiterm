@@ -2,6 +2,7 @@
 
 pub mod browser;
 pub mod commands;
+pub mod editor;
 pub mod config;
 pub mod error;
 pub mod forward;
@@ -98,6 +99,9 @@ pub fn run() {
             commands::sftp_remove,
             commands::sftp_download,
             commands::sftp_upload,
+            commands::text_read,
+            commands::ssh_cwd,
+            commands::text_write,
             tools_commands::servers_status,
             tools_commands::server_save,
             tools_commands::server_start,

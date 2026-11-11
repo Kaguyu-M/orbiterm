@@ -5,6 +5,8 @@
   import { theme } from "$lib/theme.svelte";
   import { api, describe, forwardLabel, protocol, viewOf, type HostKeyPrompt, type ServerKind } from "$lib/api";
   import BrowserView from "$lib/BrowserView.svelte";
+  import EditorView from "$lib/EditorView.svelte";
+  import { open as openDialog } from "@tauri-apps/plugin-dialog";
   import ExternalView from "$lib/ExternalView.svelte";
   import SftpPanel from "$lib/SftpPanel.svelte";
   import VncView from "$lib/VncView.svelte";
@@ -164,6 +166,9 @@
           action: () => app.startLocalTerminal(sh.id),
         })),
         { sep: true },
+        { label: "Éditeur de texte (nouveau fichier)", icon: "edit", action: () => app.openEditor("") },
+        { label: "Ouvrir un fichier dans l'éditeur…", icon: "file", shortcut: "Ctrl+Maj+O", action: openInEditor },
+        { sep: true },
         ...netItems(),
         { sep: true },
         ...serverItems(),
@@ -188,6 +193,11 @@
       ],
     },
   ];
+
+  async function openInEditor() {
+    const picked = await openDialog({ multiple: true, directory: false, title: "Ouvrir dans l'éditeur" });
+    for (const f of Array.isArray(picked) ? picked : picked ? [picked] : []) app.openEditor(f);
+  }
 
   function netItems(): MenuItem[] {
     return [
@@ -283,7 +293,13 @@
   }
 
   async function quit() {
-    const open = app.tabs.filter((t) => t.state === "open").length;
+    const unsaved = app.tabs.filter((t) => t.dirty);
+    if (unsaved.length) {
+      const names = unsaved.map((t) => `« ${t.title} »`).join(", ");
+      if (!(await app.confirm(`Modifications non enregistrées : ${names}. Quitter sans enregistrer ?`))) return;
+      for (const t of unsaved) t.dirty = false;
+    }
+    const open = app.tabs.filter((t) => t.state === "open" && t.session.kind !== "editor").length;
     if (open && app.prefs.confirmQuit && !(await app.confirm(`${open} session(s) ouverte(s). Quitter quand même ?`))) return;
     await app.closeAllTabs();
     await getCurrentWindow().close();
@@ -303,8 +319,8 @@
       y: e.clientY,
       items: [
         { label: "Renommer l'onglet", icon: "edit", action: () => app.renameTab(t) },
-        { label: "Dupliquer l'onglet", icon: "copy", action: () => app.duplicateTab(t) },
-        { label: "Reconnecter", icon: "refresh", action: () => app.reconnect(t) },
+        { label: "Dupliquer l'onglet", icon: "copy", disabled: t.session.kind === "editor", action: () => app.duplicateTab(t) },
+        { label: "Reconnecter", icon: "refresh", disabled: t.session.kind === "editor", action: () => app.reconnect(t) },
         {
           label: "Redirections de ports actives…",
           icon: "tunnel",
@@ -353,6 +369,9 @@
     } else if (cs && e.code === "KeyT") {
       e.preventDefault();
       app.startLocalTerminal();
+    } else if (cs && e.code === "KeyO") {
+      e.preventDefault();
+      openInEditor();
     } else if (cs && e.code === "KeyN") {
       e.preventDefault();
       app.newSession();
@@ -473,7 +492,7 @@
           >
             <span class="dot {t.state}"></span>
             <Icon name={protocol(t.session.kind).icon} size={15} />
-            <span class="tname">{i + 1}. {t.title}</span>
+            <span class="tname">{i + 1}. {t.title}{#if t.dirty}<span class="dirty" title="Modifications non enregistrées"> ●</span>{/if}</span>
             <button
               class="x"
               title="Fermer (Ctrl+Maj+W)"
@@ -556,7 +575,7 @@
                 {/if}
               {:else if view === "files"}
                 {#if t.connId && t.state === "open"}
-                  <SftpPanel wide connId={t.connId} visible={shown} askText={app.askText} confirm={app.confirm} />
+                  <SftpPanel wide connId={t.connId} visible={shown} askText={app.askText} confirm={app.confirm} source={`${t.session.username ? t.session.username + "@" : ""}${t.session.host}`} />
                 {:else if t.state === "connecting"}
                   <div class="viewmsg">{t.status || "Connexion…"}</div>
                 {/if}
@@ -572,8 +591,10 @@
                 <ExternalView tab={t} />
               {:else if view === "browser"}
                 <BrowserView tab={t} visible={shown} />
+              {:else if view === "editor"}
+                <EditorView tab={t} visible={shown} />
               {/if}
-              {#if (t.state === "closed" || t.state === "error") && view !== "external" && view !== "browser"}
+              {#if (t.state === "closed" || t.state === "error") && view !== "external" && view !== "browser" && view !== "editor"}
                 <div class="overlay">
                   <button class="primary" onclick={() => app.reconnect(t)}><Icon name="refresh" size={14} /> Redémarrer la session</button>
                   <button onclick={() => app.closeTab(t)}>Fermer l'onglet</button>
@@ -592,7 +613,7 @@
       <span class="cell grow">
         {#if app.active}
           <Icon name={protocol(app.active.session.kind).icon} size={13} />
-          {describe(app.active.session)} — {stateLabel[app.active.state]}
+          {describe(app.active.session)} — {app.active.session.kind === "editor" ? (app.active.dirty ? "modifié" : "enregistré") : stateLabel[app.active.state]}
         {:else}
           Accueil
         {/if}
@@ -750,6 +771,8 @@
       <tbody>
         <tr><td>Ctrl+Maj+T</td><td>Nouveau terminal local</td></tr>
         <tr><td>Ctrl+Maj+N</td><td>Nouvelle session</td></tr>
+        <tr><td>Ctrl+Maj+O</td><td>Ouvrir un fichier dans l’éditeur</td></tr>
+        <tr><td>Ctrl+S / Ctrl+F / Ctrl+G</td><td>Éditeur : enregistrer / rechercher / aller à la ligne</td></tr>
         <tr><td>Ctrl+Maj+W</td><td>Fermer l'onglet</td></tr>
         <tr><td>Ctrl+Tab / Ctrl+Maj+Tab</td><td>Onglet suivant / précédent</td></tr>
         <tr><td>Ctrl+Maj+C / Ctrl+Maj+V</td><td>Copier / coller</td></tr>
@@ -1032,6 +1055,9 @@
     max-width: 200px;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+  .tname .dirty {
+    color: var(--accent);
   }
   .x {
     border: none;
