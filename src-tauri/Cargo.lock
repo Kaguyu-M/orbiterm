@@ -4329,6 +4329,7 @@ name = "orbiterm"
 version = "0.7.13"
 dependencies = [
  "anyhow",
+ "argon2",
  "async-native-tls",
  "async-trait",
  "base64 0.22.1",
@@ -4338,6 +4339,7 @@ dependencies = [
  "env_logger",
  "flate2",
  "futures-util",
+ "hmac 0.13.0",
  "ironrdp-cliprdr",
  "ironrdp-connector",
  "ironrdp-core",
@@ -4364,6 +4366,8 @@ dependencies = [
  "serde_json",
  "serialport",
  "sha2 0.10.9",
+ "sha2 0.11.1",
+ "ssh-cipher",
  "suppaftp",
  "tauri",
  "tauri-build",
@@ -4525,6 +4529,7 @@ version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "aab41826031698d6ffcd9cff78ef56ef998e39dc7e5067cdfebe373842d4723b"
 dependencies = [
+ "getrandom 0.4.3",
  "phc",
 ]
 
@@ -4572,6 +4577,7 @@ checksum = "44dc769b75f93afdddd8c7fa12d685292ddeff1e66f7f0f3a234cf1818afe892"
 dependencies = [
  "base64ct",
  "ctutils",
+ "getrandom 0.4.3",
 ]
 
 [[package]]

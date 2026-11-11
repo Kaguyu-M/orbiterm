@@ -221,6 +221,12 @@
             <label class="chk"><input type="checkbox" bind:checked={edit.anonymous} /> Accès anonyme (utilisateur « anonymous »)</label>
           {/if}
 
+          {#if edit.kind === "ssh"}
+            <label for="sak">Clés publiques autorisées</label>
+            <textarea id="sak" class="keys" rows="3" bind:value={edit.authorized_keys} spellcheck="false"
+              placeholder="Une clé par ligne (format authorized_keys : ssh-ed25519 AAAA… commentaire). Avec une clé, le mot de passe devient facultatif."></textarea>
+          {/if}
+
           {#if edit.kind === "ssh" || edit.kind === "telnet"}
             <label for="ssh-shell">Shell proposé</label>
             <select id="ssh-shell" bind:value={edit.shell}>
@@ -463,5 +469,11 @@
   .dlg {
     min-width: 90px;
     justify-content: center;
+  }
+  .keys {
+    font-family: var(--mono, monospace);
+    font-size: 11px;
+    resize: vertical;
+    word-break: break-all;
   }
 </style>

@@ -5,7 +5,7 @@
 //!
 //! The password of FTP / SSH / Telnet / VNC is read from the environment variable
 //! ORB_SERVER_PW (user: ORB_SERVER_USER, default "orbi"). VNC: ORB_SERVER_CONTROL=1 allows
-//! keyboard and mouse. Stops with Ctrl+C.
+//! keyboard and mouse. SSH: ORB_SERVER_KEYS = authorized_keys file. Stops with Ctrl+C.
 
 use orbiterm_lib::servers::{ServerConfig, ServerKind, ServerManager};
 
@@ -21,6 +21,9 @@ async fn main() {
     cfg.root = root;
     if kind == ServerKind::Vnc {
         cfg.writable = std::env::var("ORB_SERVER_CONTROL").as_deref() == Ok("1");
+    }
+    if let Ok(p) = std::env::var("ORB_SERVER_KEYS") {
+        cfg.authorized_keys = std::fs::read_to_string(p).expect("fichier de clés autorisées");
     }
     cfg.user = std::env::var("ORB_SERVER_USER").unwrap_or_else(|_| "orbi".into());
     let dir = tempfile::tempdir().unwrap();

@@ -14,6 +14,7 @@ pub mod rdp_channels;
 pub mod rdp_client;
 pub mod vnc;
 pub mod importer;
+pub mod keygen;
 pub mod monitor;
 pub mod known_hosts;
 pub mod nettools;
@@ -123,6 +124,12 @@ pub fn run() {
             tools_commands::scan_cancel,
             tools_commands::wol_send,
             tools_commands::open_ports,
+            keygen::key_generate,
+            keygen::key_load,
+            keygen::key_set_comment,
+            keygen::key_save_private,
+            keygen::key_save_public,
+            keygen::key_forget,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

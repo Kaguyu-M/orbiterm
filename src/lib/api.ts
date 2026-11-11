@@ -374,7 +374,23 @@ export const api = {
   scanCancel: (id: string) => invoke<void>("scan_cancel", { id }),
   wolSend: (mac: string, broadcast: string, port: number) => invoke<void>("wol_send", { mac, broadcast, port }),
   openPorts: () => invoke<SocketInfo[]>("open_ports"),
+  keyGenerate: (kind: string, comment: string) => invoke<KeyInfo>("key_generate", { kind, comment }),
+  keyLoad: (path: string, passphrase?: string) => invoke<KeyInfo>("key_load", { path, passphrase }),
+  keySetComment: (comment: string) => invoke<KeyInfo>("key_set_comment", { comment }),
+  keySavePrivate: (path: string, format: "openssh" | "ppk", passphrase: string) => invoke<void>("key_save_private", { path, format, passphrase }),
+  keySavePublic: (path: string) => invoke<void>("key_save_public", { path }),
+  keyForget: () => invoke<void>("key_forget"),
 };
+
+/** Key held by the SSH key generator (the private part stays in the backend). */
+export interface KeyInfo {
+  algorithm: string;
+  bits: number;
+  comment: string;
+  public_openssh: string;
+  fingerprint: string;
+  randomart: string;
+}
 
 export type ServerKind = "http" | "tftp" | "ftp" | "ssh" | "telnet" | "iperf" | "vnc";
 export interface ServerConfig {
@@ -388,6 +404,8 @@ export interface ServerConfig {
   listing: boolean;
   shell: string;
   autostart: boolean;
+  /** SSH: authorized_keys lines */
+  authorized_keys: string;
 }
 export interface ServerStatus {
   config: ServerConfig;

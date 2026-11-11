@@ -207,7 +207,7 @@ class App {
   showServers = $state(false);
   serverFocus: ServerKind = $state("http");
   /** network tool window: port scanner, open ports, Wake-on-LAN */
-  netTool: "scan" | "ports" | "wol" | null = $state(null);
+  netTool: "scan" | "ports" | "wol" | "keygen" | null = $state(null);
   xserver: XServerStatus | null = $state(null);
   /** Open context menu (right click), if any. */
   ctx: { x: number; y: number; items: MenuItem[] } | null = $state(null);

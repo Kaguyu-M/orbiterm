@@ -1,6 +1,6 @@
 # Orbiterm face à MobaXterm — fonctionnalités
 
-Base : rapport d'analyse de MobaXterm (`Documents\MobaXterm-Analyse`) et code d'Orbiterm (v0.7.6, mis à jour jusqu'à la v0.7.10).
+Base : rapport d'analyse de MobaXterm (`Documents\MobaXterm-Analyse`) et code d'Orbiterm (v0.7.6, mis à jour jusqu’à la v0.7.14).
 ✅ présent · 🟡 partiel · ❌ absent · ⛔ écarté volontairement
 
 ## Sessions
@@ -26,6 +26,14 @@ Base : rapport d'analyse de MobaXterm (`Documents\MobaXterm-Analyse`) et code d'
 | ZMODEM (lrz / lsz) | ✅ 0.7.10 (`rz` / `sz` dans le terminal, Ctrl+C interrompt, jamais d'écrasement) |
 | Détacher un onglet en fenêtre | ⛔ tout reste dans les onglets (choix validé) |
 
+## SSH
+
+| MobaXterm | Orbiterm |
+|---|---|
+| Clés privées OpenSSH et PuTTY (.ppk) | ✅ 0.7.14 (.ppk v2 / v3, chiffrées ou non) |
+| Générateur de clés (MobaKeyGen) | ✅ 0.7.14 (Outils → Générateur de clés SSH : Ed25519, ECDSA, RSA ; OpenSSH ou .ppk ; conversion et changement de phrase secrète) |
+| Agent SSH (MobAgent, Pageant), transfert d'agent | ❌ → lot 6 |
+
 ## Navigateur SFTP
 
 | MobaXterm | Orbiterm |
@@ -48,7 +56,7 @@ Base : rapport d'analyse de MobaXterm (`Documents\MobaXterm-Analyse`) et code d'
 
 | MobaXterm | Orbiterm |
 |---|---|
-| HTTP, TFTP, FTP, SSH/SFTP | ✅ |
+| HTTP, TFTP, FTP, SSH/SFTP | ✅ (SSH : clés publiques autorisées ✅ 0.7.14) |
 | Telnet | ✅ 0.7.9 (identifiant + mot de passe, shell du poste) |
 | Iperf (test de débit) | ✅ 0.7.9 (compatible clients iperf3, TCP, -P, -R ; pas d'UDP) |
 | VNC (partage de l'écran local) | ✅ 0.7.12 (Windows ; Linux sous X11 — pas Wayland) : affichage seul ou prise de contrôle, mot de passe obligatoire |
@@ -78,4 +86,5 @@ Base : rapport d'analyse de MobaXterm (`Documents\MobaXterm-Analyse`) et code d'
 2. ✅ (0.7.8) **Fichiers** : éditeur de texte intégré (onglet), édition des fichiers distants depuis le SFTP, suivi du dossier du terminal.
 3. ✅ (0.7.9) **Échanges / outils** : export-import des sessions et de la configuration, comparaison de fichiers et dossiers, serveurs Telnet et Iperf.
 4. ✅ (0.7.10) **Protocoles** : ZMODEM, repli SCP.
-5. **Bureau à distance et partage** : son RDP, serveur VNC (partage de l'écran de ce poste), RDP multi-écran et passerelle RD Gateway.
+5. ✅ (0.7.11 – 0.7.13) **Bureau à distance et partage** : son RDP, serveur VNC (partage de l'écran de ce poste), RDP multi-écran et passerelle RD Gateway.
+6. **Clés SSH** : générateur de clés, clés PuTTY, clés publiques sur le serveur SSH intégré (0.7.14) ; agent SSH (agent du système / Pageant, transfert d'agent).

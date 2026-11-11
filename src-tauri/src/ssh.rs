@@ -626,15 +626,15 @@ async fn authenticate(handle: &mut Handle<ClientHandler>, user: &str, creds: Cre
             keyboard_interactive(handle, user, &password).await
         }
         Credentials::Key { path, passphrase } => {
-            let key = match russh::keys::load_secret_key(&path, passphrase.as_deref()) {
+            // OpenSSH, PEM or PuTTY .ppk
+            let key = match crate::keygen::load(&path, passphrase.as_deref()) {
                 Ok(k) => k,
-                Err(russh::keys::Error::KeyIsEncrypted) => return Err(AppError::NeedPassphrase),
+                Err(AppError::NeedPassphrase) => return Err(AppError::NeedPassphrase),
                 Err(e) => {
-                    // A wrong passphrase also ends up here.
                     if passphrase.is_none() && e.to_string().to_lowercase().contains("encrypt") {
                         return Err(AppError::NeedPassphrase);
                     }
-                    return Err(AppError::Ssh(format!("clé {}: {e}", path.display())));
+                    return Err(AppError::Ssh(format!("clé {} : {}", path.display(), e.to_string().trim_start_matches("Configuration : "))));
                 }
             };
             let hash = handle.best_supported_rsa_hash().await?.flatten();

@@ -35,6 +35,7 @@
   import PortScanner from "$lib/PortScanner.svelte";
   import OpenPorts from "$lib/OpenPorts.svelte";
   import WakeOnLan from "$lib/WakeOnLan.svelte";
+  import KeyGenerator from "$lib/KeyGenerator.svelte";
 
   import pkg from "../../package.json";
   const VERSION = pkg.version;
@@ -185,6 +186,7 @@
         { label: "Ouvrir un fichier dans l'éditeur…", icon: "file", shortcut: "Ctrl+Maj+O", action: openInEditor },
         { label: "Comparer deux fichiers…", icon: "split", action: () => app.openDiff("", "", "files") },
         { label: "Comparer deux dossiers…", icon: "folder", action: () => app.openDiff("", "", "dirs") },
+        { label: "Générateur de clés SSH…", icon: "key", action: () => (app.netTool = "keygen") },
         { sep: true },
         ...netItems(),
         { sep: true },
@@ -689,6 +691,8 @@
   <OpenPorts />
 {:else if app.netTool === "wol"}
   <WakeOnLan />
+{:else if app.netTool === "keygen"}
+  <KeyGenerator />
 {/if}
 
 {#if app.showSettings}

@@ -708,3 +708,56 @@ async fn vnc_server() {
     assert!(log.iter().any(|l| l.contains("affichage seul")), "{log:?}");
     m.stop_all().await;
 }
+
+/// Public-key login on the built-in SSH server, with keys made by the key generator
+/// (OpenSSH and PuTTY .ppk files, with a passphrase).
+#[tokio::test]
+async fn ssh_server_public_key() {
+    use orbiterm_lib::keygen;
+    let root = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let keys = tempfile::tempdir().unwrap();
+    let good = keygen::generate("ed25519", "bon@orbiterm").unwrap();
+    let other = keygen::generate("ecdsa256", "autre@orbiterm").unwrap();
+    let m = ServerManager::new(dir.path().to_path_buf());
+    let mut c = cfg(ServerKind::Ssh, root.path());
+    c.authorized_keys = format!("# commentaire\n\nno-pty {}\n", keygen::info(&good).public_openssh);
+    // no password: the key alone is enough
+    let port = m.start_with(c, String::new()).await.expect("key-only SSH server");
+    let known = dir.path().join("known_hosts");
+    let connect = |path: std::path::PathBuf, pass: Option<&str>, user: &str| {
+        let p = ConnectParams::simple(
+            "127.0.0.1",
+            port,
+            user,
+            Credentials::Key { path, passphrase: pass.map(str::to_string) },
+            known.clone(),
+        );
+        SshConnection::connect(p, Arc::new(|_| Box::pin(async { true })), Arc::new(|_| {}), Arc::new(|_| {}))
+    };
+    let openssh = keys.path().join("id_ed25519");
+    std::fs::write(&openssh, keygen::to_openssh(&good, "phrase").unwrap()).unwrap();
+    let ppk = keys.path().join("id_ed25519.ppk");
+    std::fs::write(&ppk, keygen::to_ppk(&good, "phrase").unwrap()).unwrap();
+    let refused = keys.path().join("autre.ppk");
+    std::fs::write(&refused, keygen::to_ppk(&other, "").unwrap()).unwrap();
+
+    assert!(matches!(connect(openssh.clone(), None, "orbi").await, Err(AppError::NeedPassphrase)));
+    for path in [&openssh, &ppk] {
+        let conn = connect(path.clone(), Some("phrase"), "orbi").await.unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        let s = conn.sftp().await.unwrap();
+        assert!(s.read_dir("/").await.is_ok());
+        conn.disconnect().await;
+    }
+    let r = connect(refused, None, "orbi").await;
+    assert!(matches!(r, Err(AppError::AuthFailed)), "unknown key: {:?}", r.err());
+    let r = connect(ppk, Some("phrase"), "intrus").await;
+    assert!(matches!(r, Err(AppError::AuthFailed)), "other user: {:?}", r.err());
+    // no password set: password logins are refused
+    let p = ConnectParams::simple("127.0.0.1", port, "orbi", Credentials::Password(String::new()), known.clone());
+    let r = SshConnection::connect(p, Arc::new(|_| Box::pin(async { true })), Arc::new(|_| {}), Arc::new(|_| {})).await;
+    assert!(r.is_err());
+    let log = m.status().await.into_iter().find(|s| s.config.kind == ServerKind::Ssh).unwrap().log;
+    assert!(log.iter().any(|l| l.msg.contains("connecté en tant que orbi (clé SHA256:")), "{log:?}");
+    m.stop(ServerKind::Ssh).await;
+}

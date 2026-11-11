@@ -1,4 +1,4 @@
-//! SSH server (russh): password login for one user, interactive shell in a
+//! SSH server (russh): password or public-key login for one user, interactive shell in a
 //! pseudo-terminal (local shell of this computer), remote commands (exec), SFTP confined
 //! to the shared folder, and local port forwarding (direct-tcpip).
 
@@ -8,7 +8,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use russh::keys::{Algorithm, PrivateKey, ssh_key::LineEnding};
+use russh::keys::{Algorithm, PrivateKey, PublicKey, ssh_key::LineEnding};
 use russh::server::{Auth, Handle, Msg, Session};
 use russh::{Channel, ChannelId};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -46,6 +46,10 @@ pub async fn start(addr: SocketAddr, ctx: Ctx, stop: oneshot::Receiver<()>) -> s
         keys: vec![key],
         ..Default::default()
     });
+    let authorized = Arc::new(ctx.cfg.authorized_keys());
+    if !authorized.is_empty() {
+        ctx.log.log(format!("{} clé(s) publique(s) autorisée(s)", authorized.len()));
+    }
     let listener = TcpListener::bind(addr).await?;
     let port = listener.local_addr()?.port();
     let ctx = Arc::new(ctx);
@@ -54,7 +58,7 @@ pub async fn start(addr: SocketAddr, ctx: Ctx, stop: oneshot::Receiver<()>) -> s
         let accept = async {
             loop {
                 let Ok((stream, peer)) = listener.accept().await else { break };
-                let handler = Sshd::new(ctx.clone(), peer);
+                let handler = Sshd::new(ctx.clone(), peer, authorized.clone());
                 let config = config.clone();
                 conns.spawn(async move {
                     if let Ok(running) = russh::server::run_stream(config, stream, handler).await {
@@ -92,6 +96,8 @@ struct Sshd {
     /// command / forwarding tasks of this client (aborted when it disconnects)
     tasks: JoinSet<()>,
     user: Option<String>,
+    /// public keys allowed to log in
+    authorized: Arc<Vec<PublicKey>>,
     _guard: ClientGuard,
 }
 
@@ -112,7 +118,7 @@ enum Out {
 }
 
 impl Sshd {
-    fn new(ctx: Arc<Ctx>, peer: SocketAddr) -> Self {
+    fn new(ctx: Arc<Ctx>, peer: SocketAddr, authorized: Arc<Vec<PublicKey>>) -> Self {
         let _guard = ctx.log.client();
         Self {
             ctx,
@@ -123,8 +129,13 @@ impl Sshd {
             stdins: HashMap::new(),
             tasks: JoinSet::new(),
             user: None,
+            authorized,
             _guard,
         }
+    }
+
+    fn key_allowed(&self, user: &str, key: &PublicKey) -> bool {
+        user == self.ctx.cfg.user && self.authorized.iter().any(|k| k.key_data() == key.key_data())
     }
 
     fn check(&mut self, user: &str, password: &str) -> Auth {
@@ -224,6 +235,26 @@ impl russh::server::Handler for Sshd {
 
     async fn auth_password(&mut self, user: &str, password: &str) -> Result<Auth, Self::Error> {
         Ok(self.check(user, password))
+    }
+
+    async fn auth_publickey_offered(
+        &mut self,
+        user: &str,
+        offer: russh::server::PublicKeyOffer<'_>,
+    ) -> Result<Auth, Self::Error> {
+        Ok(if self.key_allowed(user, offer.public_key) { Auth::Accept } else { Auth::reject() })
+    }
+
+    async fn auth_publickey(&mut self, user: &str, key: russh::server::VerifiedPublicKey<'_>) -> Result<Auth, Self::Error> {
+        if self.key_allowed(user, key.public_key) {
+            self.user = Some(user.to_string());
+            let fp = key.public_key.fingerprint(Default::default());
+            self.ctx.log.log(format!("{} connecté en tant que {user} (clé {fp})", self.peer.ip()));
+            Ok(Auth::Accept)
+        } else {
+            self.ctx.log.log(format!("{} clé refusée pour « {user} »", self.peer.ip()));
+            Ok(Auth::reject())
+        }
     }
 
     async fn auth_keyboard_interactive<'a>(

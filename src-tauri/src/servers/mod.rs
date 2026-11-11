@@ -100,6 +100,8 @@ pub struct ServerConfig {
     /// SSH / Telnet: id of the local shell started for clients ("" = default)
     pub shell: String,
     pub autostart: bool,
+    /// SSH: public keys allowed to log in as `user` (authorized_keys lines)
+    pub authorized_keys: String,
 }
 
 impl Default for ServerConfig {
@@ -121,7 +123,22 @@ impl ServerConfig {
             listing: true,
             shell: String::new(),
             autostart: false,
+            authorized_keys: String::new(),
         }
+    }
+
+    /// Valid keys of `authorized_keys` (blank lines, comments and unreadable lines skipped;
+    /// OpenSSH options before the key type are ignored).
+    pub fn authorized_keys(&self) -> Vec<russh::keys::PublicKey> {
+        self.authorized_keys
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .filter_map(|l| {
+                let start = l.find("ssh-").or_else(|| l.find("ecdsa-")).or_else(|| l.find("sk-"))?;
+                russh::keys::PublicKey::from_openssh(&l[start..]).ok()
+            })
+            .collect()
     }
 
     pub fn root_dir(&self) -> PathBuf {
@@ -318,7 +335,10 @@ impl ServerManager {
         let root = cfg.root_dir();
         std::fs::create_dir_all(&root)
             .map_err(|e| AppError::Config(format!("dossier partagé {} : {e}", root.display())))?;
-        if matches!(kind, ServerKind::Ssh | ServerKind::Telnet | ServerKind::Vnc) && password.is_empty() {
+        if kind == ServerKind::Ssh && password.is_empty() && cfg.authorized_keys().is_empty() {
+            return Err(AppError::Config("définis d'abord le mot de passe du serveur SSH ou une clé publique autorisée".into()));
+        }
+        if matches!(kind, ServerKind::Telnet | ServerKind::Vnc) && password.is_empty() {
             return Err(AppError::Config(format!("définis d'abord le mot de passe du serveur {}", kind.label())));
         }
         if matches!(kind, ServerKind::Ftp) && password.is_empty() && !cfg.anonymous {
