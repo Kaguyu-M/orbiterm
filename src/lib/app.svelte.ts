@@ -92,6 +92,11 @@ export interface Prefs {
   termHighlight: boolean;
   /** SSH side browser follows the folder of the terminal */
   sftpFollow: boolean;
+  /** SFTP / FTP tabs: explorer of this computer next to the remote files */
+  localPane: boolean;
+  localPaneWidth: number;
+  /** last folder shown by the local explorer */
+  localDir: string;
   // SSH
   keepalive: number;
   sshX11: boolean;
@@ -134,6 +139,9 @@ export const DEFAULT_PREFS: Prefs = {
   termLogDir: "",
   termHighlight: true,
   sftpFollow: true,
+  localPane: true,
+  localPaneWidth: 460,
+  localDir: "",
   keepalive: 30,
   sshX11: false,
   sshCompression: false,

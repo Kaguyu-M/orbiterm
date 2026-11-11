@@ -20,6 +20,10 @@
     onseparate,
     source = "",
     follow = false,
+    localDir,
+    onlocalchange,
+    onitemdrag,
+    dropActive = false,
   }: {
     connId: string;
     visible: boolean;
@@ -33,6 +37,14 @@
     source?: string;
     /** browser of an SSH terminal: can follow the folder of its shell */
     follow?: boolean;
+    /** folder shown by the local explorer next to this one: downloads go there without asking */
+    localDir?: () => string | null;
+    /** a download changed the local folder */
+    onlocalchange?: () => void;
+    /** start of a drag towards the local explorer */
+    onitemdrag?: (ev: PointerEvent, e: Entry) => void;
+    /** a local file is being dragged over this pane */
+    dropActive?: boolean;
   } = $props();
 
   let path = $state("");
@@ -145,8 +157,8 @@
   type Pick = { dir?: string; files?: string[]; folder?: string };
   const testPick = () => (window as unknown as { __orbitermSftpPick?: Pick }).__orbitermSftpPick;
 
-  async function download(e: Entry) {
-    const dir = testPick()?.dir ?? (await open({ directory: true, title: "Télécharger dans…" }));
+  export async function download(e: Entry) {
+    const dir = testPick()?.dir ?? localDir?.() ?? (await open({ directory: true, title: "Télécharger dans…" }));
     if (typeof dir !== "string") return;
     const t = newTransfer(`⬇ ${e.name}${e.kind === "dir" ? "/" : ""}`);
     try {
@@ -155,13 +167,14 @@
         t.msg = `${r.files} fichier(s), ${formatSize(r.bytes)}${r.skipped ? ` — ${r.skipped} lien(s) ignoré(s)` : ""}`;
       } else await api.sftpDownload(connId, e.path, dir, t.id);
       t.state = "ok";
+      onlocalchange?.();
     } catch (err) {
       t.state = "err";
       t.msg = asApiError(err).message;
     }
   }
 
-  async function uploadFiles(files: string[]) {
+  export async function uploadFiles(files: string[]) {
     const target = path;
     for (const f of files) {
       const name = f.split(/[\\/]/).pop() ?? f;
@@ -270,7 +283,7 @@
       items.push(
         { label: e.kind === "dir" ? "Ouvrir" : "Modifier dans l'éditeur", icon: e.kind === "dir" ? "folder" : "edit", action: () => activate(e) },
         { label: "Ouvrir avec le programme par défaut", icon: "file", disabled: !isFile, action: () => openExternal(e) },
-        { label: e.kind === "dir" ? "Télécharger le dossier…" : "Télécharger…", icon: "download", action: () => download(e) },
+        { label: (e.kind === "dir" ? "Télécharger le dossier" : "Télécharger") + (localDir?.() ? " dans le dossier local affiché" : "…"), icon: "download", action: () => download(e) },
         { sep: true },
         { label: "Renommer", icon: "edit", shortcut: "F2", action: () => rename(e) },
         { label: "Supprimer", icon: "trash", shortcut: "Suppr", action: () => remove(e) },
@@ -378,7 +391,7 @@
   });
 </script>
 
-<div class="sftp" class:drop={dropHover} class:wide bind:this={panel}>
+<div class="sftp" class:drop={dropHover || dropActive} class:wide bind:this={panel}>
   <div class="toolbar">
     <button title="Dossier parent" aria-label="Dossier parent" onclick={() => load(remoteParent(path))}><Icon name="up" size={16} /></button>
     <button title="Dossier personnel" aria-label="Dossier personnel" onclick={init}><Icon name="home" size={16} /></button>
@@ -408,7 +421,7 @@
   {#if followNote && app.prefs.sftpFollow}<div class="note">{followNote}</div>{/if}
 
   {#if wide}
-    <div class="cols"><span></span><span>Nom</span><span class="r">Taille</span><span>Modifié</span><span>Droits</span><span></span></div>
+    <div class="cols"><span></span><span>Nom</span><span class="r">Taille</span><span class="dt">Modifié</span><span class="pm">Droits</span><span class="acts"></span></div>
   {/if}
   <div class="list" class:loading role="presentation" oncontextmenu={(ev) => menu(ev, null)}>
     {#each shown as e (e.path)}
@@ -420,6 +433,7 @@
         onclick={() => (selected = e.path)}
         ondblclick={() => activate(e)}
         oncontextmenu={(ev) => menu(ev, e)}
+        onpointerdown={(ev) => onitemdrag?.(ev, e)}
         data-sftp-entry={e.name}
         onkeydown={(k) => {
           if (k.key === "Enter") activate(e);
@@ -459,7 +473,7 @@
       {/each}
     </div>
   {/if}
-  <div class="hint">Glisse des fichiers ici pour les envoyer</div>
+  <div class="hint">{localDir?.() ? "Glisse un fichier vers le volet local pour le télécharger — les fichiers glissés ici sont envoyés" : "Glisse des fichiers ici pour les envoyer"}</div>
 </div>
 
 {#if perm}
@@ -597,6 +611,35 @@
     inset: 0;
     background: var(--panel);
     font-size: 13px;
+    container-type: inline-size;
+  }
+  .wide .list {
+    overflow-x: hidden;
+  }
+  .cols .dt,
+  .cols .pm {
+    color: inherit;
+    font: inherit;
+  }
+  /* narrow pane (local explorer shown next to it): drop the columns that matter least */
+  @container (max-width: 700px) {
+    .cols,
+    .wide .item {
+      grid-template-columns: 18px minmax(120px, 1fr) 80px 150px;
+    }
+    .wide .pm,
+    .wide .acts {
+      display: none;
+    }
+  }
+  @container (max-width: 430px) {
+    .cols,
+    .wide .item {
+      grid-template-columns: 18px minmax(100px, 1fr) 70px;
+    }
+    .wide .dt {
+      display: none;
+    }
   }
   .cols,
   .wide .item {
@@ -611,6 +654,7 @@
     border-bottom: 1px solid var(--chrome-border);
   }
   .wide .item {
+    user-select: none;
     height: 22px;
     padding: 1px 8px;
     align-items: center;

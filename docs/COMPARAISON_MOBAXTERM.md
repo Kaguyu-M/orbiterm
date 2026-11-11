@@ -47,6 +47,7 @@ Base : rapport d'analyse de MobaXterm (`Documents\MobaXterm-Analyse`) et code d'
 | Nouveau fichier vide, copier le chemin | ✅ 0.7.15 |
 | Téléchargement et envoi de dossiers entiers (bouton, menu, glisser-déposer) | ✅ 0.7.15 |
 | Ouvrir avec le programme par défaut du poste (renvoyé à chaque enregistrement) | ✅ 0.7.15 |
+| Onglet SFTP / FTP à deux volets : explorateur du poste local à côté des fichiers distants, glisser-déposer entre les deux | ✅ 0.8.0 |
 
 ## Bureaux distants
 
@@ -98,3 +99,4 @@ Base : rapport d'analyse de MobaXterm (`Documents\MobaXterm-Analyse`) et code d'
 8. ✅ (0.7.16) **Gestion des mots de passe** : fenêtre listant les mots de passe du trousseau (sessions, passerelles, VNC, serveurs intégrés), remplacement et suppression.
 9. ✅ (0.7.17) **Serveur X** : installation de VcXsrv en un clic (winget) depuis Paramètres → Serveur X, avec suivi de la progression.
 10. ✅ (0.7.18) **Thèmes** : thèmes d'interface Cyberpunk néon, Gris sombre et Gris clair (en plus de crème et brun), thèmes de terminal assortis.
+11. ✅ (0.8.0) **Explorateur local intégré** : onglets SFTP / FTP à deux volets (poste local / serveur), transferts par glisser-déposer entre les volets.

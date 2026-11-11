@@ -372,6 +372,13 @@ export const api = {
     invoke<TreeTransfer>("sftp_upload_dir", { connId, local, remoteDir, transferId }),
   sftpOpenExternal: (connId: string, remote: string) => invoke<string>("sftp_open_external", { connId, remote }),
   localKind: (path: string) => invoke<"file" | "dir" | "other">("local_kind", { path }),
+  localList: (path: string) => invoke<LocalListing>("local_list", { path }),
+  localPlaces: () => invoke<LocalPlace[]>("local_places"),
+  localMkdir: (dir: string, name: string) => invoke<string>("local_mkdir", { dir, name }),
+  localRename: (path: string, newName: string) => invoke<string>("local_rename", { path, newName }),
+  localTrash: (path: string) => invoke<void>("local_trash", { path }),
+  localOpen: (path: string) => invoke<void>("local_open", { path }),
+  localReveal: (path: string) => invoke<void>("local_reveal", { path }),
   sftpDownload: (connId: string, remote: string, localDir: string, transferId: string) =>
     invoke<string>("sftp_download", { connId, remote, localDir, transferId }),
   sftpUpload: (connId: string, local: string, remoteDir: string, transferId: string) =>
@@ -421,6 +428,26 @@ export interface SavedSecret {
   kind: string;
   user: string;
   host: string;
+}
+
+/** Entry of the local explorer. */
+export interface LocalEntry {
+  name: string;
+  path: string;
+  kind: "dir" | "file" | "link";
+  size: number;
+  mtime: number;
+  hidden: boolean;
+}
+export interface LocalListing {
+  path: string;
+  parent: string | null;
+  entries: LocalEntry[];
+}
+export interface LocalPlace {
+  label: string;
+  path: string;
+  kind: "home" | "folder" | "drive";
 }
 
 /** Result of a folder download / upload. */

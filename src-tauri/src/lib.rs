@@ -18,6 +18,7 @@ pub mod importer;
 pub mod keygen;
 pub mod monitor;
 pub mod known_hosts;
+pub mod localfs;
 pub mod nettools;
 pub mod pty;
 pub mod servers;
@@ -107,6 +108,13 @@ pub fn run() {
             commands::term_write_bytes,
             commands::local_file_info,
             commands::local_kind,
+            commands::local_list,
+            commands::local_places,
+            commands::local_mkdir,
+            commands::local_rename,
+            commands::local_trash,
+            commands::local_open,
+            commands::local_reveal,
             commands::local_read_chunk,
             commands::local_write_chunk,
             commands::sftp_mkdir,

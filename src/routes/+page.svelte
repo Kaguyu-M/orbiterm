@@ -11,7 +11,7 @@
   import { openUrl } from "@tauri-apps/plugin-opener";
   import { checkUpdate, type UpdateInfo } from "$lib/update";
   import ExternalView from "$lib/ExternalView.svelte";
-  import SftpPanel from "$lib/SftpPanel.svelte";
+  import FilesView from "$lib/FilesView.svelte";
   import VncView from "$lib/VncView.svelte";
   import RdpView from "$lib/RdpView.svelte";
   import RemoteInfo from "$lib/RemoteInfo.svelte";
@@ -618,7 +618,7 @@
                 {/if}
               {:else if view === "files"}
                 {#if t.connId && t.state === "open"}
-                  <SftpPanel wide connId={t.connId} visible={shown} askText={app.askText} confirm={app.confirm} source={`${t.session.username ? t.session.username + "@" : ""}${t.session.host}`} />
+                  <FilesView connId={t.connId} visible={shown} source={`${t.session.username ? t.session.username + "@" : ""}${t.session.host}`} />
                 {:else if t.state === "connecting"}
                   <div class="viewmsg">{t.status || "Connexion…"}</div>
                 {/if}

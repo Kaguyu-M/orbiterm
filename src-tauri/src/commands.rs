@@ -997,6 +997,53 @@ pub async fn local_kind(path: String) -> String {
     .into()
 }
 
+// ---- local explorer (shown next to the remote files in SFTP / FTP tabs)
+
+fn blocking<T: Send + 'static>(f: impl FnOnce() -> AppResult<T> + Send + 'static) -> impl std::future::Future<Output = AppResult<T>> {
+    async move { tokio::task::spawn_blocking(f).await.map_err(|e| AppError::Conn(e.to_string()))? }
+}
+
+/// Content of a local folder (the home folder when `path` is empty).
+#[tauri::command]
+pub async fn local_list(path: String) -> AppResult<crate::localfs::LocalListing> {
+    blocking(move || crate::localfs::list(&path)).await
+}
+
+#[tauri::command]
+pub async fn local_places() -> AppResult<Vec<crate::localfs::LocalPlace>> {
+    blocking(|| Ok(crate::localfs::places())).await
+}
+
+#[tauri::command]
+pub async fn local_mkdir(dir: String, name: String) -> AppResult<String> {
+    blocking(move || crate::localfs::mkdir(&dir, &name)).await
+}
+
+#[tauri::command]
+pub async fn local_rename(path: String, new_name: String) -> AppResult<String> {
+    blocking(move || crate::localfs::rename(&path, &new_name)).await
+}
+
+/// Moves a local file or folder to the recycle bin.
+#[tauri::command]
+pub async fn local_trash(path: String) -> AppResult<()> {
+    blocking(move || crate::localfs::to_trash(&path)).await
+}
+
+/// Opens a local file with the program associated on this computer.
+#[tauri::command]
+pub async fn local_open(app: AppHandle, path: String) -> AppResult<()> {
+    use tauri_plugin_opener::OpenerExt;
+    app.opener().open_path(&path, None::<&str>).map_err(|e| AppError::Conn(format!("ouverture de {path} : {e}")))
+}
+
+/// Shows a local file or folder in the file manager of the system.
+#[tauri::command]
+pub async fn local_reveal(app: AppHandle, path: String) -> AppResult<()> {
+    use tauri_plugin_opener::OpenerExt;
+    app.opener().reveal_item_in_dir(&path).map_err(|e| AppError::Conn(format!("{path} : {e}")))
+}
+
 /// Reads up to `len` bytes (1 MiB at most) of a local file at `offset`, as base64.
 #[tauri::command]
 pub async fn local_read_chunk(path: String, offset: u64, len: u32) -> AppResult<String> {
