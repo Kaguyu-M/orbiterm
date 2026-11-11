@@ -23,6 +23,7 @@ pub mod sftp_server;
 pub mod tools_commands;
 pub mod secrets;
 pub mod serial;
+pub mod scp;
 pub mod sftp;
 pub mod ssh;
 pub mod telnet;
@@ -96,6 +97,11 @@ pub fn run() {
             commands::xserver_stop,
             commands::sftp_home,
             commands::sftp_list,
+            commands::sftp_mode,
+            commands::term_write_bytes,
+            commands::local_file_info,
+            commands::local_read_chunk,
+            commands::local_write_chunk,
             commands::sftp_mkdir,
             commands::sftp_rename,
             commands::sftp_remove,

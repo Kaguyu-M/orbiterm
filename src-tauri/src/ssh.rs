@@ -300,6 +300,8 @@ pub struct SshConnection {
     handle: Arc<Handle<ClientHandler>>,
     writer: Option<ChannelWriteHalf<Msg>>,
     sftp: Mutex<Option<Arc<SftpSession>>>,
+    /// the server refused the SFTP subsystem: the file browser uses shell commands + SCP
+    no_sftp: std::sync::atomic::AtomicBool,
     /// the jump host connection, kept alive as long as this one
     jump: Option<Handle<ClientHandler>>,
     shared: Arc<Shared>,
@@ -440,6 +442,7 @@ impl SshConnection {
             handle: Arc::new(handle),
             writer,
             sftp: Mutex::new(None),
+            no_sftp: Default::default(),
             jump,
             shared,
             tasks: StdMutex::new(vec![]),
@@ -468,15 +471,58 @@ impl SshConnection {
 
     /// Opens (once) and returns the SFTP session carried by this connection.
     pub async fn sftp(&self) -> AppResult<Arc<SftpSession>> {
+        self.sftp_opt()
+            .await?
+            .ok_or_else(|| AppError::Unsupported("le serveur ne propose pas SFTP (seul SCP est disponible)".into()))
+    }
+
+    /// SFTP session, or None when the server has no SFTP subsystem (remembered).
+    pub async fn sftp_opt(&self) -> AppResult<Option<Arc<SftpSession>>> {
+        use std::sync::atomic::Ordering;
         let mut guard = self.sftp.lock().await;
         if let Some(s) = guard.as_ref() {
-            return Ok(s.clone());
+            return Ok(Some(s.clone()));
         }
-        let ch = self.handle.channel_open_session().await?;
+        if self.no_sftp.load(Ordering::Relaxed) {
+            return Ok(None);
+        }
+        let mut ch = self.handle.channel_open_session().await?;
         ch.request_subsystem(true, "sftp").await?;
-        let s = Arc::new(SftpSession::new(ch.into_stream()).await?);
-        *guard = Some(s.clone());
-        Ok(s)
+        // wait for the answer: refused = no SFTP on this server (dropbear, appliances…)
+        loop {
+            match tokio::time::timeout(Duration::from_secs(10), ch.wait()).await {
+                Ok(Some(ChannelMsg::Success)) => break,
+                Ok(Some(ChannelMsg::Failure)) | Ok(None) | Ok(Some(ChannelMsg::Close)) | Ok(Some(ChannelMsg::Eof)) => {
+                    self.no_sftp.store(true, Ordering::Relaxed);
+                    return Ok(None);
+                }
+                Ok(Some(ChannelMsg::ExitStatus { .. })) => {
+                    self.no_sftp.store(true, Ordering::Relaxed);
+                    return Ok(None);
+                }
+                Ok(Some(_)) => continue,
+                Err(_) => break, // no answer: try anyway
+            }
+        }
+        match tokio::time::timeout(Duration::from_secs(15), SftpSession::new(ch.into_stream())).await {
+            Ok(Ok(s)) => {
+                let s = Arc::new(s);
+                *guard = Some(s.clone());
+                Ok(Some(s))
+            }
+            // accepted but no sftp-server program behind it
+            Ok(Err(_)) | Err(_) => {
+                self.no_sftp.store(true, Ordering::Relaxed);
+                Ok(None)
+            }
+        }
+    }
+
+    /// Opens a channel running `cmd` (no PTY), for callers that need stdin / exit status.
+    pub async fn exec_channel(&self, cmd: &str) -> AppResult<Channel<Msg>> {
+        let ch = self.handle.channel_open_session().await?;
+        ch.exec(true, cmd).await?;
+        Ok(ch)
     }
 
     /// Current folder of the interactive shell (Linux servers: /proc), or None.

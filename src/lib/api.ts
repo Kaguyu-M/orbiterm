@@ -300,6 +300,11 @@ export const api = {
   hostkeyAnswer: (requestId: string, accept: boolean) =>
     invoke<void>("hostkey_answer", { requestId, accept }),
   termWrite: (connId: string, data: string) => invoke<void>("term_write", { connId, data }),
+  termWriteBytes: (connId: string, data: string) => invoke<void>("term_write_bytes", { connId, data }),
+  localFileInfo: (path: string) => invoke<{ size: number; mtime: number }>("local_file_info", { path }),
+  localReadChunk: (path: string, offset: number, len: number) => invoke<string>("local_read_chunk", { path, offset, len }),
+  localWriteChunk: (dir: string, name: string, data: string, create: boolean) =>
+    invoke<string>("local_write_chunk", { dir, name, data, create }),
   termLog: (connId: string, text: string) => invoke<void>("term_log", { connId, text }),
   termResize: (connId: string, cols: number, rows: number) =>
     invoke<void>("term_resize", { connId, cols, rows }),
@@ -347,6 +352,7 @@ export const api = {
   textWrite: (connId: string, path: string, file: TextFile) => invoke<void>("text_write", { connId, path, file }),
   sshCwd: (connId: string) => invoke<string | null>("ssh_cwd", { connId }),
   sftpHome: (connId: string) => invoke<string>("sftp_home", { connId }),
+  sftpMode: (connId: string) => invoke<"sftp" | "scp" | "ftp">("sftp_mode", { connId }),
   sftpList: (connId: string, path: string) => invoke<Entry[]>("sftp_list", { connId, path }),
   sftpMkdir: (connId: string, path: string) => invoke<void>("sftp_mkdir", { connId, path }),
   sftpRename: (connId: string, from: string, to: string) =>

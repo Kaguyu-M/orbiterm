@@ -16,6 +16,7 @@ use crate::editor;
 use crate::importer;
 use crate::error::{AppError, AppResult};
 use crate::secrets;
+use crate::scp;
 use crate::sftp::{self, Entry};
 use crate::pty::{self, LocalShell, PtyConnection, PtySpawn};
 use crate::serial::SerialConnection;
@@ -57,9 +58,10 @@ pub enum MonitorSlot {
     Unavailable(String),
 }
 
-/// Remote file access of a tab: SFTP (SSH sessions) or FTP.
+/// Remote file access of a tab: SFTP (SSH sessions), shell + SCP (SSH without SFTP) or FTP.
 enum Files {
     Sftp(Arc<russh_sftp::client::SftpSession>),
+    Scp(Arc<SshConnection>),
     Ftp(Arc<FtpConnection>),
 }
 
@@ -81,7 +83,10 @@ impl AppState {
 
     async fn files(&self, id: &str) -> AppResult<Files> {
         match self.conn(id).await? {
-            Conn::Ssh(c) => Ok(Files::Sftp(c.sftp().await?)),
+            Conn::Ssh(c) => Ok(match c.sftp_opt().await? {
+                Some(s) => Files::Sftp(s),
+                None => Files::Scp(c),
+            }),
             Conn::Ftp(f) => Ok(Files::Ftp(f)),
             _ => Err(AppError::Unsupported("pas d'accès aux fichiers pour cette session".into())),
         }
@@ -799,6 +804,84 @@ pub async fn term_write(state: State<'_, AppState>, conn_id: String, data: Strin
     state.conn(&conn_id).await?.write(data.as_bytes()).await
 }
 
+/// Raw bytes typed / sent to a terminal (base64): ZMODEM transfers.
+#[tauri::command]
+pub async fn term_write_bytes(state: State<'_, AppState>, conn_id: String, data: String) -> AppResult<()> {
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data)
+        .map_err(|e| AppError::Conn(format!("données invalides : {e}")))?;
+    state.conn(&conn_id).await?.write(&bytes).await
+}
+
+#[derive(Serialize)]
+pub struct LocalFileInfo {
+    pub size: u64,
+    pub mtime: u64,
+}
+
+/// Size and modification time of a local file (ZMODEM sending).
+#[tauri::command]
+pub async fn local_file_info(path: String) -> AppResult<LocalFileInfo> {
+    let md = tokio::fs::metadata(&path).await?;
+    if !md.is_file() {
+        return Err(AppError::InvalidPath(format!("{path} n'est pas un fichier")));
+    }
+    let mtime = md.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs()).unwrap_or(0);
+    Ok(LocalFileInfo { size: md.len(), mtime })
+}
+
+/// Reads up to `len` bytes (1 MiB at most) of a local file at `offset`, as base64.
+#[tauri::command]
+pub async fn local_read_chunk(path: String, offset: u64, len: u32) -> AppResult<String> {
+    use tokio::io::{AsyncReadExt, AsyncSeekExt};
+    let mut f = tokio::fs::File::open(&path).await?;
+    f.seek(std::io::SeekFrom::Start(offset)).await?;
+    let mut buf = vec![0u8; len.min(1 << 20) as usize];
+    let mut n = 0;
+    while n < buf.len() {
+        let k = f.read(&mut buf[n..]).await?;
+        if k == 0 {
+            break;
+        }
+        n += k;
+    }
+    buf.truncate(n);
+    Ok(base64::engine::general_purpose::STANDARD.encode(buf))
+}
+
+/// Writes (create = start a new file) or appends base64 bytes to a local file in `dir`
+/// (ZMODEM receiving). `name` must be a plain file name; a new file never replaces an
+/// existing one (" (1)" is added). Returns the full path.
+#[tauri::command]
+pub async fn local_write_chunk(dir: String, name: String, data: String, create: bool) -> AppResult<String> {
+    use tokio::io::AsyncWriteExt;
+    let mut path = sftp::safe_local_join(std::path::Path::new(&dir), &name)?;
+    if create && path.exists() {
+        // never overwrite: "name (1).ext", "name (2).ext"…
+        let p = std::path::Path::new(&name);
+        let stem = p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        let ext = p.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+        for i in 1.. {
+            let cand = sftp::safe_local_join(std::path::Path::new(&dir), &format!("{stem} ({i}){ext}"))?;
+            if !cand.exists() {
+                path = cand;
+                break;
+            }
+        }
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data)
+        .map_err(|e| AppError::Conn(format!("données invalides : {e}")))?;
+    let mut f = if create {
+        tokio::fs::File::create(&path).await?
+    } else {
+        tokio::fs::OpenOptions::new().append(true).open(&path).await?
+    };
+    f.write_all(&bytes).await?;
+    f.flush().await?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
 /// Lines completed in a terminal tab, appended to its session log (if any).
 #[tauri::command]
 pub fn term_log(state: State<'_, AppState>, conn_id: String, text: String) {
@@ -976,14 +1059,27 @@ pub async fn serial_ports() -> AppResult<Vec<String>> {
 pub async fn sftp_home(state: State<'_, AppState>, conn_id: String) -> AppResult<String> {
     match state.files(&conn_id).await? {
         Files::Sftp(s) => sftp::home(&s).await,
+        Files::Scp(c) => scp::home(&c).await,
         Files::Ftp(f) => Ok(f.home()),
     }
+}
+
+/// How the file browser of a tab reaches the files: "sftp", "scp" (SSH without SFTP) or "ftp".
+#[tauri::command]
+pub async fn sftp_mode(state: State<'_, AppState>, conn_id: String) -> AppResult<String> {
+    Ok(match state.files(&conn_id).await? {
+        Files::Sftp(_) => "sftp",
+        Files::Scp(_) => "scp",
+        Files::Ftp(_) => "ftp",
+    }
+    .into())
 }
 
 #[tauri::command]
 pub async fn sftp_list(state: State<'_, AppState>, conn_id: String, path: String) -> AppResult<Vec<Entry>> {
     match state.files(&conn_id).await? {
         Files::Sftp(s) => sftp::list(&s, &path).await,
+        Files::Scp(c) => scp::list(&c, &path).await,
         Files::Ftp(f) => f.list(&path).await,
     }
 }
@@ -992,6 +1088,7 @@ pub async fn sftp_list(state: State<'_, AppState>, conn_id: String, path: String
 pub async fn sftp_mkdir(state: State<'_, AppState>, conn_id: String, path: String) -> AppResult<()> {
     match state.files(&conn_id).await? {
         Files::Sftp(s) => sftp::mkdir(&s, &path).await,
+        Files::Scp(c) => scp::mkdir(&c, &path).await,
         Files::Ftp(f) => f.mkdir(&path).await,
     }
 }
@@ -1000,6 +1097,7 @@ pub async fn sftp_mkdir(state: State<'_, AppState>, conn_id: String, path: Strin
 pub async fn sftp_rename(state: State<'_, AppState>, conn_id: String, from: String, to: String) -> AppResult<()> {
     match state.files(&conn_id).await? {
         Files::Sftp(s) => sftp::rename(&s, &from, &to).await,
+        Files::Scp(c) => scp::rename(&c, &from, &to).await,
         Files::Ftp(f) => f.rename(&from, &to).await,
     }
 }
@@ -1008,6 +1106,7 @@ pub async fn sftp_rename(state: State<'_, AppState>, conn_id: String, from: Stri
 pub async fn sftp_remove(state: State<'_, AppState>, conn_id: String, path: String) -> AppResult<()> {
     match state.files(&conn_id).await? {
         Files::Sftp(s) => sftp::remove(&s, &path).await,
+        Files::Scp(c) => scp::remove(&c, &path).await,
         Files::Ftp(f) => f.remove(&path).await,
     }
 }
@@ -1047,6 +1146,7 @@ pub async fn sftp_download(
     let progress = progress_emitter(app, transfer_id);
     match files {
         Files::Sftp(s) => sftp::download(&s, &remote, &local, &progress).await?,
+        Files::Scp(c) => scp::download(&c, &remote, &local, &progress).await?,
         Files::Ftp(f) => f.download(&remote, &local, &progress).await?,
     }
     Ok(local.to_string_lossy().into_owned())
@@ -1072,6 +1172,7 @@ pub async fn sftp_upload(
     let progress = progress_emitter(app, transfer_id);
     match files {
         Files::Sftp(s) => sftp::upload(&s, &local_path, &remote, &progress).await?,
+        Files::Scp(c) => scp::upload(&c, &local_path, &remote, &progress).await?,
         Files::Ftp(f) => f.upload(&local_path, &remote, &progress).await?,
     }
     Ok(remote)
@@ -1147,6 +1248,7 @@ pub async fn text_read(state: State<'_, AppState>, conn_id: String, path: String
                 }
                 sftp::download(&s, &path, &tmp, &check).await?
             }
+            Files::Scp(c) => scp::download(&c, &path, &tmp, &check).await?,
             Files::Ftp(f) => f.download(&path, &tmp, &check).await?,
         }
         let b = tokio::fs::read(&tmp).await?;
@@ -1174,6 +1276,7 @@ pub async fn text_write(state: State<'_, AppState>, conn_id: String, path: Strin
     let none = |_: u64, _: u64| {};
     match files {
         Files::Sftp(s) => sftp::upload(&s, &tmp, &path, &none).await,
+        Files::Scp(c) => scp::upload(&c, &tmp, &path, &none).await,
         Files::Ftp(f) => f.upload(&tmp, &path, &none).await,
     }
 }

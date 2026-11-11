@@ -4,21 +4,21 @@ Terminal multi-protocoles multiplateforme (Windows + Linux) : onglets, sessions 
 X11, RDP, VNC, FTP, navigateur web, écran partagé, MultiExec et macros. Application originale dont l'ergonomie s'inspire de MobaXterm.
 Conception : [`docs/CONCEPTION.md`](docs/CONCEPTION.md).
 
-**Version 0.7.9**
+**Version 0.7.10**
 
 | Domaine | Fonctionnalités |
 |---|---|
 | Sessions | SSH, Telnet, Rlogin, port série, Mosh, shells locaux (PowerShell, cmd, Git Bash…), WSL ; dossiers, glisser-déposer, recherche, connexion rapide, sessions récentes |
 | SSH | mot de passe (trousseau du système) ou clé, vérification des clés d'hôte, navigateur SFTP, compression, commande distante, keepalive ; bandeau au-dessus du terminal (copier, coller, effacer, session SFTP, plein écran, fermer la session), barre d’informations du serveur sous le terminal (CPU, mémoire, disque, réseau, durée de fonctionnement, utilisateurs) ; depuis un onglet SSH : **session SFTP séparée** enregistrée (même serveur, même compte, mot de passe mémorisé dans le trousseau) |
 | Bureaux distants | RDP **intégré dans l'onglet** (client IronRDP : NLA, certificat vérifié comme les clés SSH, mot de passe dans le trousseau, bureau adapté à la taille de l'onglet, plein écran, Ctrl+Alt+Suppr, **presse-papiers partagé** (texte, dans les deux sens), **partage d’un dossier local** (lecteur redirigé : « Ce PC » sous Windows, ~/thinclient_drives avec xrdp), coller du texte, bouton **Fermer la session** (fermeture de la session Windows ou Linux, ou simple déconnexion), barre d’informations du poste distant ; option fenêtre séparée mstsc / FreeRDP), VNC intégré dans l'onglet (noVNC : mot de passe mémorisable, ajustement, lecture seule, Ctrl+Alt+Suppr, presse-papiers) |
-| Fichiers | onglets SFTP et FTP / FTPS autonomes (explorateur plein onglet avec colonnes, envoi / téléchargement / glisser-déposer), édition des fichiers distants (double-clic, renvoyés au serveur à l’enregistrement), navigateur SFTP qui suit le dossier du terminal (serveurs Linux) |
+| Fichiers | onglets SFTP et FTP / FTPS autonomes (explorateur plein onglet avec colonnes, envoi / téléchargement / glisser-déposer), édition des fichiers distants (double-clic, renvoyés au serveur à l’enregistrement), navigateur SFTP qui suit le dossier du terminal (serveurs Linux), repli automatique sur SCP et les commandes du shell quand le serveur ne propose pas SFTP (dropbear, équipements réseau) |
 | Éditeur | onglet éditeur de texte (coloration syntaxique, rechercher / remplacer, aller à la ligne, encodage et fins de ligne conservés), fichiers locaux (Ctrl+Maj+O) ou distants |
 | Comparaison | onglet de comparaison de deux fichiers (côte à côte, recopie d'un bloc d'un côté à l'autre, enregistrement) ou de deux dossiers (fichiers identiques, différents, absents d'un côté ; double-clic pour comparer un fichier) |
 | Navigateur | onglet web intégré (précédent / suivant / actualiser / barre d'adresse), sans aucun accès aux commandes d'Orbiterm |
 | Réseau | redirections -L / -R / -D (SOCKS) par session, gestionnaire de tunnels (démarrage auto), rebond SSH (jump host, aussi pour RDP / VNC), redirection X11 (VcXsrv / Xming / X natif) |
 | Outils | export / import de toute la configuration (sessions, dossiers, macros, tunnels, préférences ; jamais de mot de passe), recherche des mises à jour (menu Aide), scanner de ports (plages, sous-réseaux /24, listes prédéfinies, ouverture directe d'une session SSH / RDP / VNC / web sur un port trouvé), ports ouverts et connexions du poste (avec le programme), Wake-on-LAN (machines mémorisées) |
 | Serveurs intégrés | HTTP (liste des dossiers, reprise de téléchargement), TFTP (blksize / tsize, PXE), FTP (compte ou anonyme), SSH/SFTP (shell du poste, commandes, SFTP limité au dossier partagé), Telnet (shell du poste, non chiffré), Iperf (mesure de débit avec un client `iperf3`, TCP, normal / inverse / plusieurs flux) ; lecture seule possible, écoute locale ou réseau, journal d'activité en direct, démarrage avec Orbiterm |
-| Terminal | écran partagé (2 côte à côte, 2 superposés, grille 2×2, mosaïque), MultiExec (saisie dans plusieurs terminaux), macros (enregistrer / rejouer, macro lancée au démarrage d’une session), recherche (Ctrl+Maj+F), mots-clés en couleur (erreurs, avertissements, succès), journalisation des sessions dans des fichiers texte (Documents/Orbiterm/journaux par défaut), commentaire de session (info-bulle), thèmes, zoom |
+| Terminal | transferts ZMODEM (`rz` sur le serveur : envoyer des fichiers, `sz` : recevoir ; Ctrl+C interrompt), écran partagé (2 côte à côte, 2 superposés, grille 2×2, mosaïque), MultiExec (saisie dans plusieurs terminaux), macros (enregistrer / rejouer, macro lancée au démarrage d’une session), recherche (Ctrl+Maj+F), mots-clés en couleur (erreurs, avertissements, succès), journalisation des sessions dans des fichiers texte (Documents/Orbiterm/journaux par défaut), commentaire de session (info-bulle), thèmes, zoom |
 | Import | MobaXterm (`MobaXterm.ini`, exports `.moba`), PuTTY, OpenSSH `~/.ssh/config` — sans jamais importer de mot de passe |
 | Apparence | interface épurée, **mode clair / sombre** (ou suivre le système, menu Affichage → Mode sombre), palette brun profond / noisette / olive / ambre / crème, thèmes de terminal « Orbiterm brun » et « Orbiterm crème » |
 | Configuration | fenêtre Paramètres : général, terminal, SSH, serveur X, affichage |
@@ -142,6 +142,7 @@ src/                         interface (Svelte 5 + xterm.js)
   lib/EditorView.svelte      onglet éditeur de texte (CodeMirror)
   lib/DiffView.svelte        onglet de comparaison de fichiers / dossiers
   lib/update.ts              recherche des mises à jour (publications GitHub)
+  lib/zmodem.ts              transferts ZMODEM dans le terminal (zmodem.js)
   lib/highlight.ts           mots-clés en couleur, suivi des lignes du terminal
   lib/VncView.svelte         visionneuse VNC (noVNC)
   lib/RdpView.svelte         bureau RDP dans l'onglet (canvas, clavier par scancodes)
@@ -153,6 +154,7 @@ src-tauri/src/               backend Rust
   ssh.rs, forward.rs, x11.rs SSH (russh), redirections, X11
   pty.rs, telnet.rs, serial.rs  terminaux locaux, Telnet/Rlogin, port série
   sftp.rs, known_hosts.rs    SFTP, clés d'hôte
+  scp.rs                     navigateur de fichiers sans SFTP (commandes du shell + SCP)
   editor.rs                  fichiers texte de l’éditeur (encodage, fins de ligne)
   dircmp.rs, bundle.rs       comparaison de dossiers, export / import de la configuration
   termlog.rs                 journaux des sessions (fichiers texte)
@@ -172,4 +174,4 @@ src-tauri/tests/                    tests de bout en bout
 
 ## Licence
 
-MIT — voir [LICENSE](LICENSE).
+MIT — voir [LICENSE](LICENSE). Les bibliothèques utilisées gardent leur propre licence (par exemple zmodem.js : Apache-2.0, xterm.js et CodeMirror : MIT).

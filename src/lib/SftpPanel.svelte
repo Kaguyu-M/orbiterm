@@ -63,9 +63,11 @@
     }
   }
 
+  let scpMode = $state(false);
   async function init() {
     try {
       await load(await api.sftpHome(connId));
+      scpMode = (await api.sftpMode(connId).catch(() => "sftp")) === "scp";
     } catch (e) {
       error = asApiError(e).message;
     }
@@ -276,6 +278,7 @@
   </form>
 
   {#if error}<div class="error">{error}</div>{/if}
+  {#if scpMode}<div class="note" data-scp>Mode SCP : ce serveur ne propose pas SFTP (commandes du shell et transferts SCP).</div>{/if}
   {#if followNote && app.prefs.sftpFollow}<div class="note">{followNote}</div>{/if}
 
   {#if wide}

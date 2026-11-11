@@ -1,6 +1,6 @@
 # Orbiterm face à MobaXterm — fonctionnalités
 
-Base : rapport d'analyse de MobaXterm (`Documents\MobaXterm-Analyse`) et code d'Orbiterm (v0.7.6, mis à jour jusqu'à la v0.7.9).
+Base : rapport d'analyse de MobaXterm (`Documents\MobaXterm-Analyse`) et code d'Orbiterm (v0.7.6, mis à jour jusqu'à la v0.7.10).
 ✅ présent · 🟡 partiel · ❌ absent · ⛔ écarté volontairement
 
 ## Sessions
@@ -24,7 +24,7 @@ Base : rapport d'analyse de MobaXterm (`Documents\MobaXterm-Analyse`) et code d'
 | Recherche dans le terminal | ✅ 0.7.7 |
 | Journalisation de l'activité dans un dossier | ✅ 0.7.7 |
 | Coloration syntaxique (mots-clés : error, warning…) | ✅ 0.7.7 |
-| ZMODEM (lrz / lsz) | ❌ → lot 4 |
+| ZMODEM (lrz / lsz) | ✅ 0.7.10 (`rz` / `sz` dans le terminal, Ctrl+C interrompt, jamais d'écrasement) |
 | Détacher un onglet en fenêtre | ⛔ tout reste dans les onglets (choix validé) |
 
 ## Navigateur SFTP
@@ -34,7 +34,7 @@ Base : rapport d'analyse de MobaXterm (`Documents\MobaXterm-Analyse`) et code d'
 | Panneau latéral auto, envoi / téléchargement, glisser-déposer, fichiers cachés | ✅ |
 | Ouvrir / éditer un fichier distant (renvoyé à l'enregistrement) | ✅ 0.7.8 (double-clic → onglet éditeur, Ctrl+S renvoie le fichier) |
 | Suivre le dossier courant du terminal | ✅ 0.7.8 (serveurs Linux) |
-| Repli SCP quand SFTP est absent | ❌ → lot 4 |
+| Repli SCP quand SFTP est absent | ✅ 0.7.10 (automatique, signalé « Mode SCP » dans le navigateur) |
 
 ## Bureaux distants
 
@@ -78,4 +78,4 @@ Base : rapport d'analyse de MobaXterm (`Documents\MobaXterm-Analyse`) et code d'
 1. ✅ (0.7.7) **Terminal** : recherche, journalisation des sessions, surlignage de mots-clés, macro de démarrage et commentaire par session.
 2. ✅ (0.7.8) **Fichiers** : éditeur de texte intégré (onglet), édition des fichiers distants depuis le SFTP, suivi du dossier du terminal.
 3. ✅ (0.7.9) **Échanges / outils** : export-import des sessions et de la configuration, comparaison de fichiers et dossiers, serveurs Telnet et Iperf.
-4. **Protocoles** : XDMCP, ZMODEM, repli SCP.
+4. 🟡 (0.7.10) **Protocoles** : ZMODEM ✅, repli SCP ✅, XDMCP à décider (il ouvrirait le serveur X dans sa propre fenêtre).

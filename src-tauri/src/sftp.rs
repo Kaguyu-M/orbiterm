@@ -60,7 +60,7 @@ pub fn safe_local_join(dir: &Path, name: &str) -> AppResult<PathBuf> {
     Ok(dir.join(name))
 }
 
-fn perms_string(mode: u32) -> String {
+pub fn perms_string(mode: u32) -> String {
     let flags = [
         (0o400, 'r'), (0o200, 'w'), (0o100, 'x'),
         (0o040, 'r'), (0o020, 'w'), (0o010, 'x'),

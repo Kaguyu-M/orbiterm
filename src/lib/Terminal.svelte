@@ -16,6 +16,7 @@
 <script lang="ts">
   // One xterm.js terminal bound to one backend connection (any protocol).
   import { clipRead, clipWrite } from "./clipboard";
+  import { ZmodemBridge } from "./zmodem";
   import { onMount } from "svelte";
   import { Terminal } from "@xterm/xterm";
   import { FitAddon } from "@xterm/addon-fit";
@@ -138,6 +139,8 @@
     }
   }
 
+  let zmodem: ZmodemBridge | null = null;
+
   function send(d: string) {
     if (connId) api.termWrite(connId, d).catch(() => {});
   }
@@ -178,6 +181,11 @@
     });
 
     term.onData((d) => {
+      // during a ZMODEM transfer the keyboard only interrupts it (Ctrl+C)
+      if (zmodem?.active) {
+        if (d.charCodeAt(0) === 3) zmodem.abort();
+        return;
+      }
       send(d);
       oninput?.(d);
     });
@@ -257,8 +265,11 @@
     attachedTo = connId;
     lastSize = "";
     logging = prefs.termLog;
+    const id = connId;
+    zmodem = new ZmodemBridge({ write: (b) => term!.write(b), connId: () => id });
+    const zm = zmodem;
     detach = attach(connId, {
-      data: (bytes) => term!.write(bytes),
+      data: (bytes) => zm.consume(bytes),
       closed: (reason) => {
         // the last lines (prompt included) before the backend closes the file
         term!.write("", () => flushLog(true));
