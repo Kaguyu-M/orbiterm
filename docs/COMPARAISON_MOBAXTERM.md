@@ -32,8 +32,8 @@ Base : rapport d'analyse de MobaXterm (`Documents\MobaXterm-Analyse`) et code d'
 | MobaXterm | Orbiterm |
 |---|---|
 | Panneau latéral auto, envoi / téléchargement, glisser-déposer, fichiers cachés | ✅ |
-| Ouvrir / éditer un fichier distant (renvoyé à l'enregistrement) | ❌ → lot 2 |
-| Suivre le dossier courant du terminal | ❌ → lot 2 |
+| Ouvrir / éditer un fichier distant (renvoyé à l'enregistrement) | ✅ 0.7.8 (double-clic → onglet éditeur, Ctrl+S renvoie le fichier) |
+| Suivre le dossier courant du terminal | ✅ 0.7.8 (serveurs Linux) |
 | Repli SCP quand SFTP est absent | ❌ → lot 4 |
 
 ## Bureaux distants
@@ -60,7 +60,7 @@ Base : rapport d'analyse de MobaXterm (`Documents\MobaXterm-Analyse`) et code d'
 | MobaXterm | Orbiterm |
 |---|---|
 | Scanner de ports, ports ouverts, Wake-on-LAN, tunnels SSH, barre d'infos distante | ✅ |
-| Éditeur de texte (MobaTextEditor) | ❌ → lot 2 |
+| Éditeur de texte (MobaTextEditor) | ✅ 0.7.8 (onglet éditeur intégré) |
 | Comparaison de fichiers / dossiers (MobaDiff) | ❌ → lot 3 |
 | Capture de paquets | ⛔ exige un pilote (Npcap) |
 | MobApt, jeux, plugins .mxt3, Customizer | ⛔ propres à l'environnement Cygwin de MobaXterm |
@@ -76,6 +76,6 @@ Base : rapport d'analyse de MobaXterm (`Documents\MobaXterm-Analyse`) et code d'
 ## Lots de travail
 
 1. **Terminal** : recherche, journalisation des sessions, surlignage de mots-clés, macro de démarrage et commentaire par session.
-2. **Fichiers** : éditeur de texte intégré (onglet), édition des fichiers distants depuis le SFTP, suivi du dossier du terminal.
+2. ✅ (0.7.8) **Fichiers** : éditeur de texte intégré (onglet), édition des fichiers distants depuis le SFTP, suivi du dossier du terminal.
 3. **Échanges / outils** : export-import des sessions et de la configuration, comparaison de fichiers et dossiers, serveurs Telnet et Iperf.
 4. **Protocoles** : XDMCP, ZMODEM, repli SCP.
