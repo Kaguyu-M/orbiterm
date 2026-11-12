@@ -162,15 +162,19 @@ pub async fn download(_version: &str, _progress: impl Fn(u64, Option<u64>)) -> A
     Err(AppError::Config("la mise à jour intégrée n'existe que pour l'installateur Windows".into()))
 }
 
+/// Switches of the installer for an update without any question: `/P` only shows a progress
+/// bar, `/UPDATE` keeps the choices of the first installation, `/R` starts Orbiterm again.
+pub const INSTALLER_ARGS: [&str; 3] = ["/P", "/R", "/UPDATE"];
+
 /// Starts a verified installer. Windows asks for the authorisation itself when one is needed.
 #[cfg(windows)]
 pub fn launch(path: &std::path::Path) -> AppResult<()> {
-    match std::process::Command::new(path).spawn() {
+    match std::process::Command::new(path).args(INSTALLER_ARGS).spawn() {
         Ok(_) => Ok(()),
         // 740: the program asks for elevation, which only the shell can grant
         Err(e) if e.raw_os_error() == Some(740) => {
             use std::os::windows::process::CommandExt;
-            std::process::Command::new("cmd").args(["/C", "start", ""]).arg(path).creation_flags(0x0800_0000).spawn()?;
+            std::process::Command::new("cmd").args(["/C", "start", ""]).arg(path).args(INSTALLER_ARGS).creation_flags(0x0800_0000).spawn()?;
             Ok(())
         }
         Err(e) => Err(e.into()),

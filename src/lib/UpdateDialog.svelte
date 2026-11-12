@@ -70,7 +70,7 @@
       <p class="muted">…</p>
     {:else if mode.kind === "installer"}
       {#if step === "ask"}
-        <p>Orbiterm télécharge le nouvel installateur, vérifie son empreinte SHA-256, le lance puis se ferme.</p>
+        <p>Orbiterm télécharge la nouvelle version, vérifie son empreinte SHA-256, l'installe sans rien vous demander, puis redémarre.</p>
         {#if open}<p class="warn"><Icon name="info" size={14} /> {open} onglet{open > 1 ? "s ouverts seront fermés" : " ouvert sera fermé"}.</p>{/if}
       {:else if step === "download"}
         <p data-update-progress>
@@ -78,7 +78,7 @@
         </p>
         <progress max="100" value={percent ?? undefined}></progress>
       {:else if step === "launch"}
-        <p>Empreinte vérifiée. Lancement de l'installateur…</p>
+        <p>Empreinte vérifiée. Installation en cours, Orbiterm va redémarrer…</p>
       {:else}
         <p class="error" data-update-error>{error}</p>
       {/if}
