@@ -93,10 +93,64 @@ fn ensure_path(store: &mut Store, path: &[String], created: &mut usize) -> Strin
     parent
 }
 
+/// Part of a store to put in a file: the folder `folder` with all it contains (`Some("")` =
+/// every session), or else the sessions `sessions` alone, without their folders. The macros
+/// run at startup and the tunnels of these sessions come with them.
+pub fn subset(store: &Store, sessions: &[String], folder: Option<&str>) -> Store {
+    let mut out = Store::default();
+    match folder {
+        Some("") => {
+            out.folders = store.folders.clone();
+            out.sessions = store.sessions.clone();
+        }
+        Some(root) => {
+            let mut keep: Vec<&str> = vec![root];
+            // descendants, whatever the order of the list
+            loop {
+                let more: Vec<&str> = store
+                    .folders
+                    .iter()
+                    .filter(|f| keep.contains(&f.parent.as_str()) && !keep.contains(&f.id.as_str()))
+                    .map(|f| f.id.as_str())
+                    .collect();
+                if more.is_empty() {
+                    break;
+                }
+                keep.extend(more);
+            }
+            out.folders = store.folders.iter().filter(|f| keep.contains(&f.id.as_str())).cloned().collect();
+            for f in &mut out.folders {
+                if f.id == root {
+                    f.parent.clear(); // the exported folder becomes a top-level one in the file
+                }
+            }
+            out.sessions = store.sessions.iter().filter(|s| keep.contains(&s.folder.as_str())).cloned().collect();
+        }
+        None => {
+            out.sessions = store.sessions.iter().filter(|s| sessions.contains(&s.id)).cloned().collect();
+            for s in &mut out.sessions {
+                s.folder.clear();
+            }
+        }
+    }
+    let used: Vec<&String> = out.sessions.iter().filter_map(|s| s.extra.get("startup_macro")).collect();
+    out.macros = store.macros.iter().filter(|m| used.contains(&&m.id)).cloned().collect();
+    out.tunnels = store.tunnels.iter().filter(|t| out.sessions.iter().any(|s| s.id == t.session_id)).cloned().collect();
+    out
+}
+
 /// Adds the content of `other` to `store`: new ids, folders matched by path, references
 /// (tunnel → session, session → startup macro) remapped; identical items are not duplicated.
 pub fn merge(store: &mut Store, other: &Store) -> MergeStats {
+    merge_into(store, other, "")
+}
+
+/// Same as [`merge`], the folders and sessions of `other` going under the folder `base`
+/// of `store` ("" or an unknown id = the root).
+pub fn merge_into(store: &mut Store, other: &Store, base: &str) -> MergeStats {
     let mut st = MergeStats::default();
+    let base = folder_path(&store.folders, base);
+    let under = |p: Vec<String>| [base.clone(), p].concat();
 
     // macros (by name + steps)
     let mut macro_ids: HashMap<String, String> = HashMap::new();
@@ -115,12 +169,12 @@ pub fn merge(store: &mut Store, other: &Store) -> MergeStats {
 
     // folders, then sessions (same content in the same folder = already there)
     for f in &other.folders {
-        let p = folder_path(&other.folders, &f.id);
+        let p = under(folder_path(&other.folders, &f.id));
         ensure_path(store, &p, &mut st.folders);
     }
     let mut session_ids: HashMap<String, String> = HashMap::new();
     for s in &other.sessions {
-        let p = folder_path(&other.folders, &s.folder);
+        let p = under(folder_path(&other.folders, &s.folder));
         let folder = ensure_path(store, &p, &mut st.folders);
         let mut n = s.clone();
         n.folder = folder;
@@ -219,6 +273,43 @@ mod tests {
         let st = merge(&mut mine, &b.store);
         assert_eq!(st, MergeStats { skipped: 3, ..Default::default() });
         assert_eq!((mine.sessions.len(), mine.folders.len(), mine.macros.len(), mine.tunnels.len()), (1, 2, 1, 1));
+    }
+
+    #[test]
+    fn subset_of_a_folder_then_import_under_another() {
+        let mut st = sample();
+        st.sessions.push(session("s2", "ailleurs", ""));
+        st.macros.push(Macro { id: "m2".into(), name: "inutile".into(), steps: vec![] });
+
+        // folder "Web" (inside "Prod"): top-level in the file, with its macro and its tunnel
+        let part = subset(&st, &[], Some("f2"));
+        assert_eq!(part.folders.len(), 1);
+        assert_eq!(part.folders[0].parent, "");
+        assert_eq!(part.sessions.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["web1"]);
+        assert_eq!((part.macros.len(), part.tunnels.len()), (1, 1));
+
+        // a folder and what is below it
+        let part = subset(&st, &[], Some("f1"));
+        assert_eq!((part.folders.len(), part.sessions.len()), (2, 1));
+        // everything
+        let all = subset(&st, &[], Some(""));
+        assert_eq!((all.folders.len(), all.sessions.len(), all.macros.len()), (2, 2, 1));
+        // chosen sessions: no folder
+        let two = subset(&st, &["s1".into(), "s2".into()], None);
+        assert!(two.folders.is_empty() && two.sessions.iter().all(|s| s.folder.is_empty()));
+        assert_eq!(two.sessions.len(), 2);
+
+        // imported under an existing folder of another store
+        let mut mine = Store::default();
+        mine.folders.push(Folder { id: "a".into(), name: "Clients".into(), parent: String::new() });
+        let part = subset(&st, &[], Some("f2"));
+        let r = merge_into(&mut mine, &part, "a");
+        assert_eq!((r.sessions, r.folders), (1, 1));
+        assert_eq!(folder_path(&mine.folders, &mine.sessions[0].folder), ["Clients", "Web"]);
+        // an unknown destination means the root
+        let r = merge_into(&mut mine, &two, "disparu");
+        assert_eq!(r.sessions, 2);
+        assert!(mine.sessions.iter().filter(|s| s.folder.is_empty()).count() == 2);
     }
 
     #[test]

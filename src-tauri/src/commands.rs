@@ -1664,6 +1664,28 @@ pub async fn config_import(state: State<'_, AppState>, path: String) -> AppResul
     Ok(ConfigImport { stats, prefs: b.prefs })
 }
 
+/// Writes sessions in a file: the folder `folder` with all it contains ("" = every session),
+/// or the sessions `sessions`. No password, no interface setting. Returns the number of sessions.
+#[tauri::command]
+pub async fn sessions_export(state: State<'_, AppState>, path: String, sessions: Vec<String>, folder: Option<String>) -> AppResult<usize> {
+    let part = bundle::subset(&*state.store.lock().await, &sessions, folder.as_deref());
+    if part.sessions.is_empty() {
+        return Err(AppError::Config("aucune session à exporter".into()));
+    }
+    bundle::export(std::path::Path::new(&path), &part, None, env!("CARGO_PKG_VERSION"))?;
+    Ok(part.sessions.len())
+}
+
+/// Adds the sessions of a file under the folder `folder` ("" = root). Nothing is replaced.
+#[tauri::command]
+pub async fn sessions_import(state: State<'_, AppState>, path: String, folder: String) -> AppResult<bundle::MergeStats> {
+    let b = bundle::read(std::path::Path::new(&path))?;
+    let mut store = state.store.lock().await;
+    let stats = bundle::merge_into(&mut store, &b.store, &folder);
+    store.save(&state.config_dir)?;
+    Ok(stats)
+}
+
 /// Compares two local folders (recursively).
 #[tauri::command]
 pub async fn dir_compare(left: String, right: String) -> AppResult<crate::dircmp::DirDiff> {

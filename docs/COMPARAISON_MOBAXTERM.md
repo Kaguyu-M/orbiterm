@@ -102,3 +102,4 @@ Base : rapport d'analyse de MobaXterm (`Documents\MobaXterm-Analyse`) et code d'
 10. ✅ (0.7.18) **Thèmes** : thèmes d'interface Cyberpunk néon, Gris sombre et Gris clair (en plus de crème et brun), thèmes de terminal assortis.
 11. ✅ (0.8.0) **Explorateur local intégré** : onglets SFTP / FTP à deux volets (poste local / serveur), transferts par glisser-déposer entre les volets.
 12. ✅ (0.8.2) **Rangement des sessions** : glisser les sessions (une ou plusieurs) et les dossiers dans les dossiers, « Déplacer vers… » — le glisser-déposer précédent ne fonctionnait pas sous Windows.
+13. ✅ (0.8.3) **Menu du clic droit dans la liste des sessions**, y compris sur la zone vide : nouvelle session, nouveau dossier, **export de sessions vers un fichier** (une session, la sélection, un dossier avec ses sous-dossiers, ou tout) et **import depuis un fichier** (dans le dossier cliqué, sans doublon). Les mots de passe ne sont jamais écrits dans le fichier.

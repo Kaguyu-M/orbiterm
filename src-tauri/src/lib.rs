@@ -131,6 +131,8 @@ pub fn run() {
             commands::dir_compare,
             commands::config_export,
             commands::config_import,
+            commands::sessions_export,
+            commands::sessions_import,
             commands::ssh_cwd,
             commands::text_write,
             tools_commands::servers_status,

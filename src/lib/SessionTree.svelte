@@ -70,8 +70,11 @@
         items: [
           { label: `Exécuter les ${all.length} sessions`, icon: "play", action: () => all.forEach((x) => app.openSession(x)) },
           { label: `Déplacer les ${all.length} sessions vers…`, icon: "folder", action: () => askMove({ sessions: all.map((x) => x.id) }) },
+          { label: `Exporter les ${all.length} sessions vers un fichier…`, icon: "upload", action: () => app.exportSessions({ sessions: all.map((x) => x.id) }) },
           { sep: true },
+          { label: "Nouvelle session ici…", icon: "session", action: () => app.newSession(s.folder) },
           { label: "Nouveau dossier ici…", icon: "newfolder", action: () => app.newFolder(s.folder) },
+          { label: "Importer des sessions depuis un fichier…", icon: "download", action: () => app.importSessions(s.folder) },
         ],
       };
       return;
@@ -97,6 +100,9 @@
         { sep: true },
         { label: "Nouvelle session ici…", icon: "session", action: () => app.newSession(s.folder) },
         { label: "Nouveau dossier ici…", icon: "newfolder", action: () => app.newFolder(s.folder) },
+        { sep: true },
+        { label: "Exporter la session vers un fichier…", icon: "upload", action: () => app.exportSessions({ sessions: [s.id] }, s.name) },
+        { label: "Importer des sessions depuis un fichier…", icon: "download", action: () => app.importSessions(s.folder) },
       ],
     };
   }
@@ -121,6 +127,15 @@
               { label: "Supprimer le dossier", icon: "trash", action: () => app.deleteFolder(f) },
             ]
           : []),
+        { sep: true },
+        {
+          label: f ? "Exporter ce dossier vers un fichier…" : "Exporter toutes les sessions vers un fichier…",
+          icon: "upload",
+          disabled: app.store.sessions.length === 0,
+          action: () => app.exportSessions({ folder: id }, f?.name ?? "sessions"),
+        },
+        { label: f ? "Importer des sessions dans ce dossier…" : "Importer des sessions depuis un fichier…", icon: "download", action: () => app.importSessions(id) },
+        ...(f ? [] : [{ label: "Importer depuis MobaXterm, PuTTY, OpenSSH…", icon: "download", action: () => (app.showImport = true) }]),
         { sep: true },
         {
           label: "Tout déplier",
@@ -321,7 +336,8 @@
   {/if}
 {/snippet}
 
-<div class="tree" class:dragging={!!drag} role="tree" aria-multiselectable="true" bind:this={tree}>
+<!-- a right click under the rows (empty space) gives the menu of the root -->
+<div class="tree" class:dragging={!!drag} role="tree" tabindex="-1" aria-multiselectable="true" bind:this={tree} oncontextmenu={(e) => !e.defaultPrevented && folderMenu(e, null)} data-session-tree>
   <div
     class="row folder root"
     class:drop={dropTarget === ""}

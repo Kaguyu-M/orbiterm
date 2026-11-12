@@ -324,6 +324,52 @@ class App {
     }
   }
 
+  /**
+   * Writes sessions in a file (no passwords): the folder `what.folder` with all it contains
+   * ("" = every session), or the sessions `what.sessions`. `name` = proposed file name.
+   */
+  async exportSessions(what: { sessions?: string[]; folder?: string }, name = "sessions") {
+    const pick = (window as unknown as { __orbitermSessionFile?: string }).__orbitermSessionFile; // tests
+    let path: string | null | undefined = pick;
+    if (!path) {
+      const { save } = await import("@tauri-apps/plugin-dialog");
+      const safe = name.replace(/[\\/:*?"<>|]+/g, "_").trim() || "sessions";
+      path = await save({
+        title: "Exporter des sessions",
+        defaultPath: `orbiterm-${safe}.json`,
+        filters: [{ name: "Sessions Orbiterm", extensions: ["json"] }],
+      });
+    }
+    if (!path) return;
+    try {
+      const n = await api.sessionsExport(path, what.sessions ?? [], what.folder ?? null);
+      this.info(`${n} session${n > 1 ? "s exportées" : " exportée"} (sans les mots de passe) :\n${path}`);
+    } catch (e) {
+      this.alert(asApiError(e).message);
+    }
+  }
+
+  /** Adds the sessions of a file under the folder `folder` ("" = root); nothing is replaced. */
+  async importSessions(folder = "") {
+    const pick = (window as unknown as { __orbitermSessionFile?: string }).__orbitermSessionFile; // tests
+    let path: string | string[] | null | undefined = pick;
+    if (!path) {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      path = await open({ title: "Importer des sessions", multiple: false, directory: false, filters: [{ name: "Sessions Orbiterm", extensions: ["json"] }] });
+    }
+    if (!path || Array.isArray(path)) return;
+    try {
+      const st = await api.sessionsImport(path, folder);
+      await this.reload();
+      let msg = `Ajouté : ${st.sessions} session(s), ${st.folders} dossier(s).`;
+      if (st.skipped) msg += `\n${st.skipped} élément(s) déjà présent(s), non dupliqué(s).`;
+      if (st.sessions) msg += "\nLes mots de passe seront demandés à la première connexion.";
+      this.info(msg);
+    } catch (e) {
+      this.alert(asApiError(e).message);
+    }
+  }
+
   /** Adds the content of an exported configuration (nothing is replaced or deleted). */
   async importConfig() {
     const { open } = await import("@tauri-apps/plugin-dialog");

@@ -349,6 +349,9 @@ export const api = {
       "config_import",
       { path },
     ),
+  sessionsExport: (path: string, sessions: string[], folder: string | null) => invoke<number>("sessions_export", { path, sessions, folder }),
+  sessionsImport: (path: string, folder: string) =>
+    invoke<{ sessions: number; folders: number; macros: number; tunnels: number; skipped: number }>("sessions_import", { path, folder }),
   dirCompare: (left: string, right: string) =>
     invoke<{
       entries: Array<{ path: string; dir: boolean; status: "same" | "different" | "left_only" | "right_only" | "kind_mismatch"; left_size: number | null; right_size: number | null; left_mtime: number | null; right_mtime: number | null }>;
