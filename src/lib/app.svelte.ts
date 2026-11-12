@@ -315,13 +315,13 @@ class App {
   async exportConfig() {
     const { save } = await import("@tauri-apps/plugin-dialog");
     const day = new Date().toISOString().slice(0, 10);
-    const path = await save({
-      title: "Exporter la configuration",
-      defaultPath: `orbiterm-config-${day}.json`,
-      filters: [{ name: "Configuration Orbiterm", extensions: ["json"] }],
-    });
-    if (!path) return;
     try {
+      const path = await save({
+        title: "Exporter la configuration",
+        defaultPath: `orbiterm-config-${day}.json`,
+        filters: [{ name: "Configuration Orbiterm", extensions: ["json"] }],
+      });
+      if (!path) return;
       await api.configExport(path, $state.snapshot(this.prefs));
       const n = this.store.sessions.length;
       this.info(`Configuration exportée (${n} session${n > 1 ? "s" : ""}, sans les mots de passe) :\n${path}`);
@@ -337,17 +337,17 @@ class App {
   async exportSessions(what: { sessions?: string[]; folder?: string }, name = "sessions") {
     const pick = (window as unknown as { __orbitermSessionFile?: string }).__orbitermSessionFile; // tests
     let path: string | null | undefined = pick;
-    if (!path) {
-      const { save } = await import("@tauri-apps/plugin-dialog");
-      const safe = name.replace(/[\\/:*?"<>|]+/g, "_").trim() || "sessions";
-      path = await save({
-        title: "Exporter des sessions",
-        defaultPath: `orbiterm-${safe}.json`,
-        filters: [{ name: "Sessions Orbiterm", extensions: ["json"] }],
-      });
-    }
-    if (!path) return;
     try {
+      if (!path) {
+        const { save } = await import("@tauri-apps/plugin-dialog");
+        const safe = name.replace(/[\\/:*?"<>|]+/g, "_").trim() || "sessions";
+        path = await save({
+          title: "Exporter des sessions",
+          defaultPath: `orbiterm-${safe}.json`,
+          filters: [{ name: "Sessions Orbiterm", extensions: ["json"] }],
+        });
+      }
+      if (!path) return;
       const n = await api.sessionsExport(path, what.sessions ?? [], what.folder ?? null);
       this.info(`${n} session${n > 1 ? "s exportées" : " exportée"} (sans les mots de passe) :\n${path}`);
     } catch (e) {
