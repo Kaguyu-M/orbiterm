@@ -1,4 +1,5 @@
-// Update check against the GitHub releases of the project (only when the user asks).
+// Update check against the GitHub releases of the project (when the user asks, and at
+// start-up unless turned off in the settings). Installing is done by UpdateDialog.
 
 export const RELEASES = "https://github.com/Kaguyu-M/orbiterm/releases";
 const API = "https://api.github.com/repos/Kaguyu-M/orbiterm/releases/latest";

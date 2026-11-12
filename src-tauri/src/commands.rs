@@ -1873,6 +1873,53 @@ pub async fn xserver_start() -> AppResult<x11::XServerStatus> {
     tokio::task::spawn_blocking(x11::start).await.map_err(|e| AppError::Conn(e.to_string()))?
 }
 
+// ---------------------------------------------------------------- in-app update
+
+/// Installer downloaded and verified by `update_download`: the only file `update_launch` starts.
+static VERIFIED_UPDATE: std::sync::Mutex<Option<(String, PathBuf)>> = std::sync::Mutex::new(None);
+
+/// How this copy was installed: tells whether the application can update itself.
+#[tauri::command]
+pub async fn update_mode() -> AppResult<crate::updater::UpdateMode> {
+    Ok(crate::updater::mode())
+}
+
+/// Downloads the installer of `version` and checks its SHA-256 against the publication.
+/// Progress is sent as "update-progress" ({received, total}).
+#[tauri::command]
+pub async fn update_download(app: AppHandle, version: String) -> AppResult<()> {
+    *VERIFIED_UPDATE.lock().unwrap() = None;
+    let seen = std::sync::atomic::AtomicU64::new(0);
+    let path = crate::updater::download(&version, |received, total| {
+        // one event per 256 KiB is plenty for a progress bar
+        let before = seen.load(std::sync::atomic::Ordering::Relaxed);
+        if received - before >= 256 * 1024 || Some(received) == total {
+            seen.store(received, std::sync::atomic::Ordering::Relaxed);
+            let _ = app.emit("update-progress", serde_json::json!({ "received": received, "total": total }));
+        }
+    })
+    .await?;
+    *VERIFIED_UPDATE.lock().unwrap() = Some((version, path));
+    Ok(())
+}
+
+/// Starts the verified installer, then closes Orbiterm so that its files can be replaced.
+#[tauri::command]
+pub async fn update_launch(app: AppHandle) -> AppResult<()> {
+    let Some((version, path)) = VERIFIED_UPDATE.lock().unwrap().clone() else {
+        return Err(AppError::Config("aucune mise à jour vérifiée à installer".into()));
+    };
+    if !crate::updater::is_newer(&version, env!("CARGO_PKG_VERSION")) {
+        return Err(AppError::Config("cette version n'est pas plus récente que celle installée".into()));
+    }
+    crate::updater::launch(&path)?;
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        app.exit(0);
+    });
+    Ok(())
+}
+
 /// Installs VcXsrv with winget (Windows); lines of progress are sent as "xserver-install".
 #[tauri::command]
 pub async fn xserver_install(app: AppHandle) -> AppResult<x11::XServerStatus> {

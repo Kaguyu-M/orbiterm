@@ -130,6 +130,7 @@
       <fieldset>
         <legend>Démarrage et fermeture</legend>
         <label class="chk"><input type="checkbox" bind:checked={p.confirmQuit} /> Demander confirmation avant de quitter si des sessions sont ouvertes</label>
+        <label class="chk"><input type="checkbox" bind:checked={p.updateCheck} data-update-check /> Rechercher les mises à jour au démarrage (rien n'est installé sans votre accord)</label>
         <div class="row">
           <label for="defsh">Terminal local par défaut</label>
           <select id="defsh" bind:value={p.defaultShell}>

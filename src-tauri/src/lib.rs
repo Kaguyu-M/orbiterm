@@ -32,6 +32,7 @@ pub mod ssh;
 pub mod telnet;
 pub mod terminal;
 pub mod termlog;
+pub mod updater;
 pub mod x11;
 
 use tauri::Manager;
@@ -133,6 +134,9 @@ pub fn run() {
             commands::config_import,
             commands::sessions_export,
             commands::sessions_import,
+            commands::update_mode,
+            commands::update_download,
+            commands::update_launch,
             commands::ssh_cwd,
             commands::text_write,
             tools_commands::servers_status,

@@ -1,6 +1,6 @@
 [package]
 name = "orbiterm"
-version = "0.8.3"
+version = "0.8.4"
 description = "Orbiterm - SSH terminal & SFTP browser"
 authors = ["Kaguyu-M"]
 license = "MIT"
@@ -84,6 +84,8 @@ flate2 = "1"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"
+# in-app update: download of the installer (Windows only, the system TLS)
+reqwest = { version = "0.13", default-features = false, features = ["native-tls"] }
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]

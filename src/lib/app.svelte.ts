@@ -116,6 +116,10 @@ export interface Prefs {
   xAutoStart: boolean;
   // apparence de l'interface
   uiTheme: UiTheme;
+  /** look for a new version at start-up */
+  updateCheck: boolean;
+  /** version the user chose not to be told about again */
+  updateSkip: string;
 }
 
 export const DEFAULT_PREFS: Prefs = {
@@ -142,6 +146,8 @@ export const DEFAULT_PREFS: Prefs = {
   localPane: true,
   localPaneWidth: 460,
   localDir: "",
+  updateCheck: true,
+  updateSkip: "",
   keepalive: 30,
   sshX11: false,
   sshCompression: false,

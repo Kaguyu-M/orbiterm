@@ -10,6 +10,7 @@
   import { open as openDialog } from "@tauri-apps/plugin-dialog";
   import { openUrl } from "@tauri-apps/plugin-opener";
   import { checkUpdate, type UpdateInfo } from "$lib/update";
+  import UpdateDialog from "$lib/UpdateDialog.svelte";
   import ExternalView from "$lib/ExternalView.svelte";
   import FilesView from "$lib/FilesView.svelte";
   import VncView from "$lib/VncView.svelte";
@@ -41,13 +42,32 @@
   import pkg from "../../package.json";
   const VERSION = pkg.version;
   let upd: { state: "idle" | "checking" | "done" | "error"; info?: UpdateInfo; msg?: string } = $state({ state: "idle" });
+  /** version compared with the publications (tests may pretend to run an older one) */
+  const current = () => (window as unknown as { __orbitermVersion?: string }).__orbitermVersion ?? VERSION;
+  /** new version offered in the update dialog */
+  let offer = $state<UpdateInfo | null>(null);
   async function runUpdateCheck() {
     about = true;
     upd = { state: "checking" };
     try {
-      upd = { state: "done", info: await checkUpdate(VERSION) };
+      upd = { state: "done", info: await checkUpdate(current()) };
+      if (upd.info?.newer) {
+        about = false;
+        offer = upd.info;
+      }
     } catch (e) {
       upd = { state: "error", msg: e instanceof Error ? e.message : String(e) };
+    }
+  }
+  /** At start-up: silent, and only speaks when a version the user has not skipped exists. */
+  async function startupUpdateCheck() {
+    if (!app.prefs.updateCheck) return;
+    try {
+      const info = await checkUpdate(current());
+      upd = { state: "done", info };
+      if (info.newer && info.latest !== app.prefs.updateSkip && !offer) offer = info;
+    } catch {
+      // no network: nothing to say
     }
   }
   let about = $state(false);
@@ -481,6 +501,8 @@
     const unsubs: Array<() => void> = [];
     startBus();
     app.init();
+    const updTimer = setTimeout(startupUpdateCheck, 5000);
+    unsubs.push(() => clearTimeout(updTimer));
     listen<HostKeyPrompt>("hostkey-prompt", (e) => app.hostKeys.push(e.payload)).then((u) => unsubs.push(u));
     unsubs.push(onConnectionClosed((connId, reason) => app.onConnectionClosed(connId, reason)));
     // X server and standalone tunnels can change outside the app
@@ -814,8 +836,7 @@
             <span class="error">Vérification impossible : {upd.msg}</span>
           {:else if upd.state === "done" && upd.info?.newer}
             <b>Version {upd.info.latest} disponible.</b>
-            <button class="link" onclick={() => openUrl(upd.info!.url).catch(() => {})}>Voir la publication</button>
-            <span class="muted">(ou winget upgrade, apt upgrade, dnf upgrade, scoop update selon l'installation)</span>
+            <button class="link" onclick={() => ((about = false), (offer = upd.info!))} data-update-open>Mettre à jour…</button>
           {:else if upd.state === "done"}
             Orbiterm est à jour.
           {:else}
@@ -828,6 +849,19 @@
       <button class="primary dlg" onclick={() => (about = false)}>OK</button>
     {/snippet}
   </Modal>
+{/if}
+
+{#if offer}
+  <UpdateDialog
+    info={offer}
+    current={current()}
+    onclose={() => (offer = null)}
+    onskip={() => {
+      app.prefs.updateSkip = offer!.latest;
+      app.savePrefs();
+      offer = null;
+    }}
+  />
 {/if}
 
 {#if shortcuts}
