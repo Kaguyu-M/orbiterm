@@ -445,7 +445,7 @@
   // svelte-ignore state_referenced_locally
   const keysMode = tab.session.extra?.rdp_keys || "full";
   const capturing = $derived(
-    IS_WINDOWS && connected && focused && active && !!tab.connId && (keysMode === "always" || (keysMode === "full" && full)),
+    connected && focused && active && !!tab.connId && (keysMode === "always" || (keysMode === "full" && full)),
   );
   $effect(() => {
     const id = tab.connId;
@@ -501,7 +501,7 @@
       </button>
       <span class="fsstat" title="Images par seconde, débit réseau, codage de l'image">{statText || (desk.w ? `${desk.w}×${desk.h}` : "")}</span>
       <span class="fstitle">{tab.title}</span>
-      {#if capturing}<span class="fskeys" title="Ctrl+Alt+Fin envoie Ctrl+Alt+Suppr · Ctrl+Alt+Pause quitte le plein écran">raccourcis Windows → distant</span>{/if}
+      {#if capturing}<span class="fskeys" title={IS_WINDOWS ? "Ctrl+Alt+Fin envoie Ctrl+Alt+Suppr · Ctrl+Alt+Pause quitte le plein écran" : "Super, Alt+Tab… vont à l'ordinateur distant"}>raccourcis → distant</span>{/if}
       <button class="ico" title="Envoyer Ctrl+Alt+Suppr" aria-label="Envoyer Ctrl+Alt+Suppr" onclick={() => { send({ t: "cad" }); canvas.focus(); }}>⌃⌥⌦</button>
       <button class="ico" title="Réduire la fenêtre" aria-label="Réduire" onclick={minimize} data-rdp-min>
         <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 12h10" /></svg>

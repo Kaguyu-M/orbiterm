@@ -408,7 +408,7 @@ fn client_name() -> String {
 /// in H.264 (or RemoteFX progressive), far less data and server work than bitmap updates.
 /// Windows only for now (H.264 decoded by Media Foundation); ORBITERM_RDP_NOGFX=1 turns it off.
 fn gfx_enabled() -> bool {
-    cfg!(windows) && std::env::var_os("ORBITERM_RDP_NOGFX").is_none()
+    (cfg!(windows) || cfg!(target_os = "linux")) && std::env::var_os("ORBITERM_RDP_NOGFX").is_none()
 }
 
 #[cfg(windows)]
@@ -424,7 +424,13 @@ fn h264_decoder() -> Option<Box<dyn ironrdp_egfx::decode::H264Decoder>> {
     }
 }
 
-#[cfg(not(windows))]
+/// Linux: the system's GStreamer (graphics card through VA-API, else gst-libav / openh264).
+#[cfg(target_os = "linux")]
+fn h264_decoder() -> Option<Box<dyn ironrdp_egfx::decode::H264Decoder>> {
+    crate::gst_h264::GstH264::new().map(|d| Box::new(d) as Box<dyn ironrdp_egfx::decode::H264Decoder>)
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
 fn h264_decoder() -> Option<Box<dyn ironrdp_egfx::decode::H264Decoder>> {
     None
 }

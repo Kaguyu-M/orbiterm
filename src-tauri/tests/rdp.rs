@@ -181,6 +181,11 @@ async fn embedded_rdp_client() {
     drop(s);
 }
 
+/// ORBITERM_RDP_EXPECT_MODE: picture coding the real server must reach (2 = H.264).
+fn expected_mode() -> u8 {
+    std::env::var("ORBITERM_RDP_EXPECT_MODE").ok().and_then(|v| v.parse().ok()).unwrap_or(0)
+}
+
 /// Against a real RDP server, only when configured (nothing is stored in the repository):
 /// `ORBITERM_RDP_REAL=host[:port]`, `ORBITERM_RDP_USER`, `ORBITERM_RDP_PASSWORD`.
 /// Checks NLA logon, the first image, a dynamic resize (Display Control) and a clean close.
@@ -222,16 +227,21 @@ async fn real_rdp_server() {
     let mut rects = 0usize;
     let mut bytes = 0usize;
     let mut non_black = false;
+    // picture coding reported with each frame: 0 bitmaps, 1 graphics pipeline, 2 H.264
+    let mut mode = 0u8;
     wait_msg(&mut rx, "first image", |m| {
         if m.first() == Some(&1) {
             rects += 1;
             bytes += m.len();
             non_black |= m[9..].chunks(4).any(|p| p[0] > 16 || p[1] > 16 || p[2] > 16);
         }
-        rects >= 3 && non_black
+        if m.first() == Some(&8) && m.len() >= 10 {
+            mode = mode.max(m[9]);
+        }
+        rects >= 3 && non_black && mode >= expected_mode()
     })
     .await;
-    eprintln!("image reçue : {rects} rectangles, {} Ko", bytes / 1024);
+    eprintln!("image reçue : {rects} rectangles, {} Ko, codage {}", bytes / 1024, ["bitmaps", "GFX", "H.264"][usize::from(mode.min(2))]);
 
     // dynamic resize
     tx.send(Message::text(r#"{"t":"r","w":1600,"h":900}"#)).await.unwrap();

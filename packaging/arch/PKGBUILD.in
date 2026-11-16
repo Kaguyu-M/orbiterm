@@ -1,0 +1,38 @@
+# Maintainer: Kaguyu-M <213601983+Kaguyu-M@users.noreply.github.com>
+# Arch Linux / Omarchy package of Orbiterm, made from the .deb of the GitHub Release
+# (the same binary as Debian / Ubuntu). Filled in by the release workflow (@VERSION@, @SHA256@).
+pkgname=orbiterm-bin
+pkgver=@VERSION@
+pkgrel=1
+pkgdesc="Terminal et client d'accès distant tout-en-un (SSH, SFTP, RDP, VNC, Telnet, série…)"
+arch=('x86_64')
+url="https://github.com/Kaguyu-M/orbiterm"
+license=('MIT')
+depends=(
+  'webkit2gtk-4.1' 'gtk3' 'libsoup3' 'glib2' 'cairo' 'pango' 'gdk-pixbuf2'
+  'dbus' 'openssl' 'gstreamer' 'gst-plugins-base-libs' 'hicolor-icon-theme'
+)
+optdepends=(
+  'gst-libav: bureaux distants RDP en H.264 (décodage par le processeur)'
+  'gst-plugin-va: bureaux distants RDP en H.264 (décodage par la carte graphique)'
+  'gst-plugins-good: son des sessions RDP'
+  'gnome-keyring: mots de passe mémorisés (ou kwallet / keepassxc)'
+  'openssh: agent et clés OpenSSH du système'
+)
+provides=('orbiterm')
+conflicts=('orbiterm')
+options=('!strip' '!debug')
+source=("Orbiterm_${pkgver}_amd64.deb::https://github.com/Kaguyu-M/orbiterm/releases/download/v${pkgver}/Orbiterm_${pkgver}_amd64.deb"
+        "LICENSE-${pkgver}::https://raw.githubusercontent.com/Kaguyu-M/orbiterm/v${pkgver}/LICENSE")
+sha256sums=('@SHA256@'
+            '@LICENSE_SHA256@')
+noextract=("Orbiterm_${pkgver}_amd64.deb")
+
+package() {
+  cd "$srcdir"
+  bsdtar -xf "Orbiterm_${pkgver}_amd64.deb" data.tar.gz 2>/dev/null || bsdtar -xf "Orbiterm_${pkgver}_amd64.deb"
+  local data
+  data=$(ls data.tar.* | head -n1)
+  bsdtar -xf "$data" -C "$pkgdir"
+  install -Dm644 "LICENSE-${pkgver}" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

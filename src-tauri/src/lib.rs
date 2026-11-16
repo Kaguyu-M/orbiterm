@@ -15,6 +15,8 @@ pub mod rdp_channels;
 pub mod rdp_client;
 #[cfg(windows)]
 mod keyhook;
+#[cfg(target_os = "linux")]
+mod gst_h264;
 pub mod vnc;
 pub mod importer;
 pub mod keygen;
@@ -40,7 +42,34 @@ pub mod x11;
 use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+/// WebKitGTK's DMA-BUF renderer kills the window at start ("Error 22/71 dispatching to Wayland
+/// display") in virtual machines (VirtualBox, VMware, QEMU, Hyper-V) and with NVIDIA's proprietary
+/// driver. Turned off there only, unless the user set WEBKIT_DISABLE_DMABUF_RENDERER themselves.
+#[cfg(target_os = "linux")]
+fn needs_dmabuf_off(vendor: &str, product: &str, nvidia: bool) -> bool {
+    let id = format!("{vendor} {product}").to_lowercase();
+    nvidia
+        || ["virtualbox", "innotek", "vmware", "qemu", "kvm", "bochs", "virtual machine", "parallels", "xen"]
+            .iter()
+            .any(|vm| id.contains(vm))
+}
+
+#[cfg(target_os = "linux")]
+fn webkit_workarounds() {
+    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_some() {
+        return;
+    }
+    let read = |p: &str| std::fs::read_to_string(p).unwrap_or_default().trim().to_string();
+    let nvidia = std::path::Path::new("/proc/driver/nvidia/version").exists();
+    if needs_dmabuf_off(&read("/sys/class/dmi/id/sys_vendor"), &read("/sys/class/dmi/id/product_name"), nvidia) {
+        // SAFETY: first thing run() does, before any other thread exists
+        unsafe { std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1") };
+    }
+}
+
 pub fn run() {
+    #[cfg(target_os = "linux")]
+    webkit_workarounds();
     // diagnostics on demand: ORBITERM_LOG=debug (or any env_logger filter), written to stderr
     if let Ok(filter) = std::env::var("ORBITERM_LOG") {
         let _ = env_logger::Builder::new().parse_filters(&filter).try_init();
@@ -164,4 +193,17 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    #[test]
+    fn dmabuf_off_only_where_it_breaks() {
+        assert!(super::needs_dmabuf_off("innotek GmbH", "VirtualBox", false));
+        assert!(super::needs_dmabuf_off("QEMU", "Standard PC (Q35 + ICH9, 2009)", false));
+        assert!(super::needs_dmabuf_off("VMware, Inc.", "VMware Virtual Platform", false));
+        assert!(super::needs_dmabuf_off("LENOVO", "21K5", true));
+        assert!(!super::needs_dmabuf_off("LENOVO", "21K5", false));
+        assert!(!super::needs_dmabuf_off("Framework", "Laptop 13", false));
+    }
 }

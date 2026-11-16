@@ -66,6 +66,9 @@ rustPlatform.buildRustPackage (finalAttrs: {
     gst_all_1.gstreamer
     gst_all_1.gst-plugins-base
     gst_all_1.gst-plugins-good
+    # H.264 of RDP sessions (GFX): avdec_h264 on the processor, vah264dec on the graphics card
+    gst_all_1.gst-libav
+    gst_all_1.gst-plugins-bad
   ];
 
   # the test suite opens network servers and uses the session keyring

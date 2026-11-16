@@ -1261,7 +1261,42 @@ pub async fn rdp_capture_keys(window: tauri::WebviewWindow, state: State<'_, App
             }),
         );
     }
-    #[cfg(not(windows))]
+    // Linux: a keyboard grab of the window. On Wayland GTK then asks the compositor to inhibit
+    // its shortcuts (Hyprland, KDE; GNOME asks the user once), on X11 the window manager's
+    // shortcuts are grabbed; the keys reach the remote desktop through the web view.
+    #[cfg(target_os = "linux")]
+    {
+        let _ = state;
+        static OWNER: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+        {
+            let mut owner = OWNER.lock().unwrap_or_else(|e| e.into_inner());
+            if on {
+                *owner = Some(conn_id.clone());
+            } else if owner.as_deref() == Some(conn_id.as_str()) {
+                *owner = None;
+            } else {
+                return Ok(()); // another tab took the capture over
+            }
+        }
+        let w = window.clone();
+        window
+            .run_on_main_thread(move || {
+                use gtk::prelude::*;
+                let Ok(gtk_window) = w.gtk_window() else { return };
+                let Some(seat) = gtk::gdk::Display::default().and_then(|d| d.default_seat()) else { return };
+                if on {
+                    let Some(gdk_window) = gtk_window.window() else { return };
+                    let status = seat.grab(&gdk_window, gtk::gdk::SeatCapabilities::KEYBOARD, false, None, None, None);
+                    if status != gtk::gdk::GrabStatus::Success {
+                        log::warn!("raccourcis du système : prise du clavier refusée ({status:?})");
+                    }
+                } else {
+                    seat.ungrab();
+                }
+            })
+            .map_err(|e| AppError::Conn(e.to_string()))?;
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
     let _ = (window, state, conn_id, on);
     Ok(())
 }

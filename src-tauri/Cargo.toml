@@ -1,6 +1,6 @@
 [package]
 name = "orbiterm"
-version = "0.9.0"
+version = "0.9.1"
 description = "Orbiterm - SSH terminal & SFTP browser"
 authors = ["Kaguyu-M"]
 license = "MIT"
@@ -96,6 +96,12 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphic
 
 [target.'cfg(target_os = "linux")'.dependencies]
 x11rb = { version = "0.13", features = ["xtest"] }
+# RDP H.264 decoded by the system's GStreamer (VA-API, gst-libav, openh264): no bundled codec
+gstreamer = "0.25"
+gstreamer-app = "0.25"
+gstreamer-video = "0.25"
+# keyboard grab of the full-screen remote desktop (same GTK as Tauri's)
+gtk = "0.18"
 
 [dev-dependencies]
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect"] }

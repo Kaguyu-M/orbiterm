@@ -1,15 +1,16 @@
 <script lang="ts">
   // VNC viewer (noVNC) connected to the backend WebSocket bridge of the tab.
   import { clipRead } from "./clipboard";
-  import RFB from "@novnc/novnc";
+  import type RFB from "@novnc/novnc";
   import Icon from "./Icon.svelte";
-  import { api, type Session } from "./api";
+  import { api, IS_WINDOWS, type Session } from "./api";
   import { app, type Tab } from "./app.svelte";
 
   let { tab, active }: { tab: Tab; active: boolean } = $props();
 
   let screen: HTMLDivElement;
   let rfb: RFB | null = null;
+  let rfbModule: Promise<typeof RFB> | null = null;
   let status = $state("");
   let connected = $state(false);
   // svelte-ignore state_referenced_locally
@@ -18,6 +19,26 @@
   let viewOnly = $state(tab.session.extra?.vnc_viewonly === "1");
   let desktop = $state("");
   let attachedTo: string | null = null;
+
+  /**
+   * noVNC, loaded with the first VNC tab. When its module loads it tries a WebCodecs H.264
+   * decode; with WebKitGTK that goes through GStreamer and, with some decoders (gst-libav,
+   * openh264), aborts the web process: the whole window stayed blank at start. VNC does not
+   * need WebCodecs (noVNC then uses its other encodings), so Linux hides it from noVNC.
+   */
+  function loadRfb(): Promise<typeof RFB> {
+    if (!rfbModule) {
+      if (!IS_WINDOWS) {
+        try {
+          delete (window as { VideoDecoder?: unknown }).VideoDecoder;
+        } catch {
+          /* not removable: noVNC keeps it */
+        }
+      }
+      rfbModule = import("@novnc/novnc").then((m) => m.default);
+    }
+    return rfbModule;
+  }
 
   const s = (): Session => tab.session;
   const saved = () => !!s().id && s().remember_password;
@@ -28,7 +49,8 @@
     status = "Connexion au serveur VNC…";
     const url = await api.vncUrl(connId);
     let stored = saved() ? await api.vncPasswordGet(s().id).catch(() => null) : null;
-    const r = new RFB(screen, url, { wsProtocols: ["binary"] });
+    const Rfb = await loadRfb();
+    const r = new Rfb(screen, url, { wsProtocols: ["binary"] });
     rfb = r;
     r.scaleViewport = scale;
     r.viewOnly = viewOnly;

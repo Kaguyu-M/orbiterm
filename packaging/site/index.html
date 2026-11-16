@@ -37,10 +37,17 @@ sudo apt update &amp;&amp; sudo apt install orbiterm</pre>
   <pre>sudo curl -fsSLo /etc/yum.repos.d/orbiterm.repo https://kaguyu-m.github.io/orbiterm/orbiterm.repo
 sudo dnf install Orbiterm</pre>
 
+  <h2>Arch Linux / Omarchy</h2>
+  <pre>curl -fsSL https://kaguyu-m.github.io/orbiterm/orbiterm.asc | sudo pacman-key --add -
+sudo pacman-key --lsign-key C855DF19C2A7518B
+printf '\n[orbiterm]\nServer = https://kaguyu-m.github.io/orbiterm/arch/$arch\n' | sudo tee -a /etc/pacman.conf
+sudo pacman -Sy orbiterm-bin gst-libav</pre>
+  <p>Ou depuis l’AUR : <code>yay -S orbiterm-bin</code> (<code>paru -S orbiterm-bin</code>).</p>
+
   <h2>NixOS / Nix</h2>
   <pre>nix profile install github:Kaguyu-M/orbiterm</pre>
 
-  <p>Les mises à jour arrivent ensuite par <code>winget upgrade</code>, <code>scoop update</code>, <code>apt upgrade</code>, <code>dnf upgrade</code> ou <code>nix profile upgrade</code>.</p>
+  <p>Les mises à jour arrivent ensuite par <code>winget upgrade</code>, <code>scoop update</code>, <code>apt upgrade</code>, <code>dnf upgrade</code>, <code>pacman -Syu</code> ou <code>nix profile upgrade</code>.</p>
 </main>
 </body>
 </html>

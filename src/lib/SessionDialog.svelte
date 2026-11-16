@@ -257,14 +257,12 @@
                 <option value="auto">Automatique (celle de cet écran : 125 %, 150 %…)</option>
                 <option value="100">100 % (plus de place, texte plus petit)</option>
               </select>
-              {#if IS_WINDOWS}
-                <label class="lbl" for="rkeys">Raccourcis Windows</label>
-                <select id="rkeys" value={x("rdp_keys", "full")} onchange={(e) => setX("rdp_keys", e.currentTarget.value)} data-rdp-keys>
-                  <option value="full">Envoyés à l'ordinateur distant en plein écran (comme le Bureau à distance)</option>
-                  <option value="always">Toujours envoyés quand le bureau distant a le clavier</option>
-                  <option value="never">Jamais : Alt+Tab et la touche Windows restent sur cet ordinateur</option>
-                </select>
-              {/if}
+              <label class="lbl" for="rkeys">{IS_WINDOWS ? "Raccourcis Windows" : "Raccourcis du système"}</label>
+              <select id="rkeys" value={x("rdp_keys", "full")} onchange={(e) => setX("rdp_keys", e.currentTarget.value)} data-rdp-keys>
+                <option value="full">Envoyés à l'ordinateur distant en plein écran (comme le Bureau à distance)</option>
+                <option value="always">Toujours envoyés quand le bureau distant a le clavier</option>
+                <option value="never">Jamais : Alt+Tab et la touche {IS_WINDOWS ? "Windows" : "Super"} restent sur cet ordinateur</option>
+              </select>
               <label class="lbl" for="rreco">Reconnexion</label>
               <select id="rreco" value={x("reconnect", "1")} onchange={(e) => setX("reconnect", e.currentTarget.value)} data-reconnect>
                 <option value="1">Automatique après une coupure (veille, Wi-Fi)</option>
