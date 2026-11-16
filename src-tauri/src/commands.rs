@@ -335,6 +335,8 @@ struct TermClosed {
     reason: String,
     /// normal end of session (the user quit), not an error
     ended: bool,
+    /// lost connection (network, sleep): the tab may reconnect by itself
+    lost: bool,
 }
 
 #[derive(Clone, Serialize)]
@@ -358,6 +360,9 @@ pub struct OpenArgs {
     #[serde(default)]
     pub remember: bool,
     pub jump_password: Option<String>,
+    /// display scale of the window in % (RDP: sent to the server)
+    #[serde(default)]
+    pub scale: Option<u32>,
 }
 
 fn make_prompter(app: AppHandle, waiters: Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>) -> HostKeyPrompter {
@@ -387,6 +392,7 @@ fn sinks(app: &AppHandle, conn_id: &str, log: Option<Arc<crate::termlog::TermLog
     });
     let (app_c, id_c) = (app.clone(), conn_id.to_string());
     let on_close: CloseSink = Arc::new(move |reason: String| {
+        let (lost, reason) = crate::ssh::split_lost(reason);
         let (ended, reason) = crate::ssh::split_reason(reason);
         if let Some(l) = log.clone() {
             // the tab still sends its last lines: the file is closed a moment later
@@ -399,7 +405,7 @@ fn sinks(app: &AppHandle, conn_id: &str, log: Option<Arc<crate::termlog::TermLog
                 }
             });
         }
-        let _ = app_c.emit("term-closed", TermClosed { conn_id: id_c.clone(), reason, ended });
+        let _ = app_c.emit("term-closed", TermClosed { conn_id: id_c.clone(), reason, ended, lost });
     });
     (on_data, on_close)
 }
@@ -830,6 +836,7 @@ pub async fn term_open(app: AppHandle, state: State<'_, AppState>, args: OpenArg
                     monitors: if opts.size == "multimon" { local_monitors(&app) } else { Vec::new() },
                     gateway: rd_gateway,
                     quality: rdp_client::Quality::parse(session.opt("rdp_quality")),
+                    scale: if session.opt("rdp_scale") == "100" { 100 } else { args.scale.unwrap_or(100) },
                 };
                 let prompter = make_prompter(app.clone(), state.hostkey_waiters.clone());
                 match rdp_client::connect(params, prompter, on_close).await {
@@ -1217,6 +1224,46 @@ pub async fn rdp_url(state: State<'_, AppState>, conn_id: String) -> AppResult<R
         Conn::Rdp(s) => Ok(RdpView { url: s.url(), width: s.desktop.0, height: s.desktop.1 }),
         _ => Err(AppError::NotFound(conn_id)),
     }
+}
+
+/// Full-screen remote desktop with the keyboard: Windows shortcuts (Win, Alt+Tab…) go to the
+/// remote computer (`on`), or back to this one. Windows only (no-op elsewhere).
+#[derive(Serialize, Clone)]
+#[cfg_attr(not(windows), allow(dead_code))]
+struct RdpHotkey {
+    conn_id: String,
+    action: &'static str,
+}
+
+#[tauri::command]
+pub async fn rdp_capture_keys(window: tauri::WebviewWindow, state: State<'_, AppState>, conn_id: String, on: bool) -> AppResult<()> {
+    #[cfg(windows)]
+    {
+        use crate::keyhook::{self, HookEvent};
+        if !on {
+            keyhook::release_for(&conn_id);
+            return Ok(());
+        }
+        let Conn::Rdp(s) = state.conn(&conn_id).await? else {
+            return Err(AppError::NotFound(conn_id));
+        };
+        let hwnd = window.hwnd().map_err(|e| AppError::Conn(e.to_string()))?.0 as isize;
+        let app = window.app_handle().clone();
+        keyhook::capture(
+            &conn_id.clone(),
+            hwnd,
+            Box::new(move |ev| match ev {
+                HookEvent::Key(sc, up) => s.key(sc, up),
+                HookEvent::CtrlAltDel => s.ctrl_alt_del(),
+                HookEvent::LeaveFullScreen => {
+                    let _ = app.emit("rdp-hotkey", RdpHotkey { conn_id: conn_id.clone(), action: "leave-full" });
+                }
+            }),
+        );
+    }
+    #[cfg(not(windows))]
+    let _ = (window, state, conn_id, on);
+    Ok(())
 }
 
 /// WebSocket URL the VNC viewer connects to.

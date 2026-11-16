@@ -53,6 +53,7 @@ fn params(port: u16, password: &str, known: &std::path::Path) -> RdpParams {
         monitors: Vec::new(),
         gateway: None,
         quality: orbiterm_lib::rdp_client::Quality::Auto,
+        scale: 100,
     }
 }
 

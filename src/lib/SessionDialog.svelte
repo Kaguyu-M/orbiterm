@@ -224,6 +224,8 @@
             </div>
             <span class="lbl">Compression</span>
             <label class="chk"><input type="checkbox" checked={x("compression") === "1"} onchange={(e) => setX("compression", e.currentTarget.checked ? "1" : "")} /> Compresser le trafic SSH (zlib)</label>
+            <span class="lbl">Reconnexion</span>
+            <label class="chk"><input type="checkbox" checked={x("reconnect") === "1"} onchange={(e) => setX("reconnect", e.currentTarget.checked ? "1" : "")} data-reconnect /> Se reconnecter automatiquement après une coupure (veille, Wi-Fi)</label>
             <label class="lbl" for="rcmd">Commande à exécuter</label>
             <input id="rcmd" value={x("command")} oninput={(e) => setX("command", e.currentTarget.value)} placeholder="(shell interactif)" spellcheck="false" />
             {/if}
@@ -249,6 +251,24 @@
                 <option value="auto">Automatique (selon la réactivité du réseau)</option>
                 <option value="lan">Réseau local : meilleure image</option>
                 <option value="slow">Lien lent / VPN : plus réactif (couleurs 16 bits, sans fond d'écran ni lissage des polices)</option>
+              </select>
+              <label class="lbl" for="rscale">Échelle de l'affichage</label>
+              <select id="rscale" value={x("rdp_scale", "auto")} onchange={(e) => setX("rdp_scale", e.currentTarget.value)} data-rdp-scale>
+                <option value="auto">Automatique (celle de cet écran : 125 %, 150 %…)</option>
+                <option value="100">100 % (plus de place, texte plus petit)</option>
+              </select>
+              {#if IS_WINDOWS}
+                <label class="lbl" for="rkeys">Raccourcis Windows</label>
+                <select id="rkeys" value={x("rdp_keys", "full")} onchange={(e) => setX("rdp_keys", e.currentTarget.value)} data-rdp-keys>
+                  <option value="full">Envoyés à l'ordinateur distant en plein écran (comme le Bureau à distance)</option>
+                  <option value="always">Toujours envoyés quand le bureau distant a le clavier</option>
+                  <option value="never">Jamais : Alt+Tab et la touche Windows restent sur cet ordinateur</option>
+                </select>
+              {/if}
+              <label class="lbl" for="rreco">Reconnexion</label>
+              <select id="rreco" value={x("reconnect", "1")} onchange={(e) => setX("reconnect", e.currentTarget.value)} data-reconnect>
+                <option value="1">Automatique après une coupure (veille, Wi-Fi)</option>
+                <option value="0">Manuelle (bouton « Reconnecter »)</option>
               </select>
             {/if}
             <label class="lbl" for="rdom">Domaine</label>

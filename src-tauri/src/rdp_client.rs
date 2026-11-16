@@ -83,6 +83,8 @@ pub struct RdpParams {
     pub gateway: Option<RdGateway>,
     /// image quality against responsiveness (session option rdp_quality)
     pub quality: Quality,
+    /// display scale of this computer in % (125, 150…), 100 = none (session option rdp_scale)
+    pub scale: u32,
 }
 
 /// Session option "rdp_quality": what the server is asked to send.
@@ -165,6 +167,12 @@ async fn open_transport(p: &RdpParams) -> AppResult<(Stream, SocketAddr, Option<
         .map_err(|_| unreachable())??;
         log::info!("RDP {}:{} : connexion TCP en {:?} (total {:?})", p.host, p.port, rtt, started.elapsed());
         let _ = stream.set_nodelay(true);
+        // a dead link (Wi-Fi lost, the other computer slept) is noticed in about 30 s
+        // instead of the system's 2 hours: the tab can then reconnect
+        let keepalive = socket2::TcpKeepalive::new().with_time(Duration::from_secs(15)).with_interval(Duration::from_secs(3));
+        if let Err(e) = socket2::SockRef::from(&stream).set_tcp_keepalive(&keepalive) {
+            log::warn!("RDP : keepalive TCP impossible : {e}");
+        }
         let addr = stream.local_addr()?;
         return Ok((Box::new(stream), addr, Some(rtt)));
     };
@@ -260,8 +268,9 @@ enum WsIn {
     Button { b: u8, down: bool, x: u16, y: u16 },
     #[serde(rename = "w")]
     Wheel { d: i16, #[serde(default)] h: bool, x: u16, y: u16 },
+    /// new size of the tab; `s`: display scale in % (0 = unchanged)
     #[serde(rename = "r")]
-    Resize { w: u16, h: u16 },
+    Resize { w: u16, h: u16, #[serde(default)] s: u32 },
     /// lock keys state (focus)
     #[serde(rename = "s")]
     Sync { caps: bool, num: bool, scroll: bool },
@@ -294,6 +303,15 @@ pub struct RdpSession {
 impl RdpSession {
     pub fn url(&self) -> String {
         format!("ws://127.0.0.1:{}/{}", self.port, self.token)
+    }
+
+    /// A key typed while the system shortcuts are captured (full screen, see keyhook).
+    pub fn key(&self, sc: u16, up: bool) {
+        let _ = self.cmd.send(Cmd::In(WsIn::Key { sc, up }));
+    }
+
+    pub fn ctrl_alt_del(&self) {
+        let _ = self.cmd.send(Cmd::In(WsIn::CtrlAltDel));
     }
 
     pub fn close(&self) {
@@ -425,6 +443,35 @@ fn picture_mode(stage: &ironrdp_session::ActiveStage) -> u8 {
     }
 }
 
+/// Desktop scale factor sent to the server (MS-RDPBCGR: 100 to 500 %), None at 100 %.
+pub fn scale_factor(scale: u32) -> Option<u32> {
+    (scale > 100).then(|| scale.min(500))
+}
+
+/// Device scale factor matching a desktop scale (the protocol only knows 100, 140 and 180 %).
+fn device_scale(scale: u32) -> u32 {
+    match scale {
+        0..=132 => 100,
+        133..=165 => 140,
+        _ => 180,
+    }
+}
+
+/// Physical size in millimetres of a desktop of `w` × `h` pixels shown at `scale` %
+/// (96 dpi at 100 %): the server derives its DPI from it.
+fn physical_mm(w: u16, h: u16, scale: u32) -> (u32, u32) {
+    let mm = |px: u16| ((f64::from(px) * 25.4 * 100.0 / (96.0 * f64::from(scale.max(100)))).round() as u32).clamp(10, 10000);
+    (mm(w), mm(h))
+}
+
+fn desktop_w(p: &RdpParams) -> u16 {
+    monitor_layout(&p.monitors).map_or(p.width, |(w, _, _)| w)
+}
+
+fn desktop_h(p: &RdpParams) -> u16 {
+    monitor_layout(&p.monitors).map_or(p.height, |(_, h, _)| h)
+}
+
 fn connector_config(p: &RdpParams, slow: bool) -> AppResult<ironrdp_connector::Config> {
     let codecs = client_codecs_capabilities(&[]).map_err(|e| AppError::Conn(format!("codecs RDP : {e}")))?;
     use ironrdp_pdu::gcc::ConnectionType;
@@ -443,6 +490,10 @@ fn connector_config(p: &RdpParams, slow: bool) -> AppResult<ironrdp_connector::C
         // font smoothing, desktop composition); IronRDP's default only drew window outlines
         (ConnectionType::Lan, 32, PerformanceFlags::ENABLE_FONT_SMOOTHING | PerformanceFlags::ENABLE_DESKTOP_COMPOSITION)
     };
+    // automatic quality: the server measures the link (round trip, bandwidth) at connection time
+    // and during the session, and adapts what it sends (H.264 quality…) — like mstsc's
+    // "detect connection quality automatically"
+    let connection_type = if p.quality == Quality::Auto { ConnectionType::Autodetect } else { connection_type };
     Ok(ironrdp_connector::Config {
         credentials: Credentials::UsernamePassword { username: p.username.clone(), password: p.password.clone() },
         domain: p.domain.clone(),
@@ -458,13 +509,13 @@ fn connector_config(p: &RdpParams, slow: bool) -> AppResult<ironrdp_connector::C
             Some((w, h, _)) => DesktopSize { width: w, height: h },
             None => DesktopSize { width: p.width, height: p.height },
         },
-        desktop_scale_factor: 0,
+        desktop_scale_factor: scale_factor(p.scale).unwrap_or(0),
         monitor_layout: monitor_layout(&p.monitors)
             .filter(|(_, _, m)| m.len() > 1)
             .map(|(_, _, monitors)| ironrdp_pdu::gcc::ClientMonitorData { monitors }),
-        desktop_physical_size: None,
+        desktop_physical_size: scale_factor(p.scale).map(|s| physical_mm(desktop_w(p), desktop_h(p), s)),
         desktop_orientation: None,
-        device_scale_factor: None,
+        device_scale_factor: scale_factor(p.scale).map(device_scale),
         monitor_extended_layout: None,
         relative_mouse_input: false,
         enable_standard_rdp_security: false,
@@ -527,7 +578,31 @@ fn map_connect_err(e: ironrdp_connector::ConnectorError) -> AppError {
                 None => AppError::Conn(format!("RDP (NLA) : {} ({:?})", se.description, se.error_type)),
             }
         }
-        _ => AppError::Conn(format!("RDP : {msg}")),
+        _ => AppError::Conn(format!("RDP : {}", readable(&msg))),
+    }
+}
+
+/// IronRDP error text without its source locations ("[write all @ …/framed.rs:314] custom
+/// error"); an I/O failure without detail means the link dropped during the exchange.
+fn readable(msg: &str) -> String {
+    let mut out = String::new();
+    let mut rest = msg;
+    while let Some(start) = rest.find('[') {
+        let Some(end) = rest[start..].find(']') else { break };
+        if !rest[start..start + end].contains(" @ ") {
+            out.push_str(&rest[..start + end + 1]);
+            rest = &rest[start + end + 1..];
+        } else {
+            out.push_str(&rest[..start]);
+            rest = rest[start + end + 1..].trim_start();
+        }
+    }
+    out.push_str(rest);
+    let out = out.trim().to_string();
+    if out.is_empty() || out == "custom error" {
+        "la connexion a été coupée pendant l'ouverture de la session".into()
+    } else {
+        out
     }
 }
 
@@ -555,6 +630,7 @@ pub async fn connect(p: RdpParams, prompter: HostKeyPrompter, on_close: CloseSin
                 }
             };
             rt.block_on(async move {
+                let scale = p.scale;
                 let (framed, result, channels) = match establish(p, prompter).await {
                     Ok(v) => v,
                     Err(e) => {
@@ -576,9 +652,9 @@ pub async fn connect(p: RdpParams, prompter: HostKeyPrompter, on_close: CloseSin
                 if ready_tx.send(Ok((port, token, desktop))).is_err() {
                     return;
                 }
-                let reason = match active_session(framed, result, channels, loop_tx, cmd_rx).await {
+                let reason = match active_session(framed, result, channels, loop_tx, cmd_rx, scale).await {
                     Ok(r) => r,
-                    Err(e) => format!("connexion RDP interrompue : {e}"),
+                    Err(e) => crate::ssh::lost(format!("connexion RDP interrompue : {e}")),
                 };
                 on_close(reason);
             });
@@ -796,6 +872,15 @@ fn rect_message(image: &DecodedImage, (l, t, r, b): (u16, u16, u16, u16)) -> Opt
         px[3] = 0xff;
     }
     Some(out)
+}
+
+/// Message 9: network characteristics measured by the server (average round trip in ms,
+/// bandwidth in kbit/s, 0 when unknown).
+fn link_message(rtt_ms: u32, kbps: u32) -> Vec<u8> {
+    let mut m = vec![9u8];
+    m.extend_from_slice(&rtt_ms.to_le_bytes());
+    m.extend_from_slice(&kbps.to_le_bytes());
+    m
 }
 
 fn size_message(w: u16, h: u16) -> Vec<u8> {
@@ -1019,7 +1104,12 @@ async fn active_session(
     channels: Channels,
     cmd_tx: mpsc::UnboundedSender<Cmd>,
     mut cmd_rx: mpsc::UnboundedReceiver<Cmd>,
+    initial_scale: u32,
 ) -> Result<String, String> {
+    log::info!(
+        "RDP : canal de messages (mesure du réseau par le serveur) : {}",
+        result.message_channel_id.map_or("absent".to_string(), |id| id.to_string())
+    );
     let (mut reader, mut writer) = split_tokio_framed(framed);
     let mut image = DecodedImage::new(PixelFormat::RgbA32, result.desktop_size.width, result.desktop_size.height);
     let activation_factory = result.activation_factory;
@@ -1048,7 +1138,11 @@ async fn active_session(
     let mut flush = tokio::time::interval(Duration::from_millis(10));
     flush.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut pending_resize: Option<(u16, u16, tokio::time::Instant)> = None;
+    // display scale last sent to the server (connection, then resizes)
+    let mut scale = initial_scale;
     let mut last_pointer: Option<Vec<u8>> = None;
+    // last network measurement of the server (message for the tab)
+    let mut link: Option<Vec<u8>> = None;
     let Channels { clip: mut clip_rx, drive, audio: mut audio_rx } = channels;
     // clipboard: our text (CRLF, as sent to the server), last text received from the server
     let mut local_clip: Option<String> = None;
@@ -1123,7 +1217,8 @@ async fn active_session(
                     Err(e) => return Err(e.to_string()),
                 };
                 wire.bytes += payload.len() as u64;
-                let out = stage.process(&mut image, action, &payload, None).map_err(|e| e.to_string())?;
+                // arrival time: the server's bandwidth measurements are timed with it
+                let out = stage.process(&mut image, action, &payload, reader.last_read_at()).map_err(|e| e.to_string())?;
                 if (image.width(), image.height()) != shown {
                     shown = (image.width(), image.height());
                     wire.mode = picture_mode(&stage);
@@ -1153,6 +1248,9 @@ async fn active_session(
                     if let Some(p) = &last_pointer {
                         emit(&mut viewer, Message::binary(p.clone()));
                     }
+                    if let Some(m) = &link {
+                        emit(&mut viewer, Message::binary(m.clone()));
+                    }
                     in_flight = None;
                     dirty.all(image.width(), image.height());
                     // viewer input → this loop (through the command channel)
@@ -1177,9 +1275,13 @@ async fn active_session(
                     }
                     Vec::new()
                 }
-                Some(Cmd::In(WsIn::Resize { w, h })) => {
+                Some(Cmd::In(WsIn::Resize { w, h, s })) => {
                     // debounced: applied 400 ms after the last resize of the tab
-                    if w >= 200 && h >= 200 && (w, h) != (image.width(), image.height()) {
+                    let rescale = s != 0 && s != scale;
+                    if rescale {
+                        scale = s;
+                    }
+                    if w >= 200 && h >= 200 && ((w, h) != (image.width(), image.height()) || rescale) {
                         pending_resize = Some((w, h, tokio::time::Instant::now() + Duration::from_millis(400)));
                     }
                     Vec::new()
@@ -1228,7 +1330,11 @@ async fn active_session(
                 {
                     pending_resize = None;
                     let (w, h) = MonitorLayoutEntry::adjust_display_size(u32::from(w), u32::from(h));
-                    match stage.encode_resize(w, h, None, None) {
+                    let (sf, dims) = match scale_factor(scale) {
+                        Some(sf) => (Some(sf), Some(physical_mm(w as u16, h as u16, sf))),
+                        None => (Some(100), None),
+                    };
+                    match stage.encode_resize(w, h, sf, dims) {
                         Some(Ok(frame)) => vec![ActiveStageOutput::ResponseFrame(frame)],
                         Some(Err(e)) => return Err(e.to_string()),
                         None => Vec::new(), // server without dynamic resolution: keep the size, the tab scales
@@ -1262,6 +1368,18 @@ async fn active_session(
                     emit(&mut viewer, Message::binary(vec![5u8]));
                 }
                 ActiveStageOutput::PointerPosition { .. } => {}
+                ActiveStageOutput::AutoDetect(ironrdp_pdu::rdp::autodetect::AutoDetectRequest::NetworkCharacteristicsResult {
+                    bandwidth_kbps,
+                    average_rtt_ms,
+                    ..
+                }) => {
+                    // the link as the server measured it: shown in the statistics
+                    link = Some(link_message(average_rtt_ms, bandwidth_kbps.unwrap_or(0)));
+                    if let Some(m) = &link {
+                        emit(&mut viewer, Message::binary(m.clone()));
+                    }
+                }
+                ActiveStageOutput::AutoDetect(other) => log::debug!("RDP : mesure réseau {other:?}"),
                 ActiveStageOutput::PointerBitmap(p) => {
                     let mut m = vec![3u8];
                     for v in [p.hotspot_x, p.hotspot_y, p.width, p.height] {
@@ -1348,6 +1466,16 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn readable_errors() {
+        assert_eq!(
+            super::readable(r"[write all @ C:\x\ironrdp-async-0.12.0\src\framed.rs:314] custom error"),
+            "la connexion a été coupée pendant l'ouverture de la session"
+        );
+        assert_eq!(super::readable("[read frame @ a.rs:1] connection reset"), "connection reset");
+        assert_eq!(super::readable("licence [MS-RDPELE] refusée"), "licence [MS-RDPELE] refusée");
+    }
 
     #[test]
     fn slow_link_profile() {

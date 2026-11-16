@@ -1,6 +1,6 @@
 [package]
 name = "orbiterm"
-version = "0.8.9"
+version = "0.9.0"
 description = "Orbiterm - SSH terminal & SFTP browser"
 authors = ["Kaguyu-M"]
 license = "MIT"
@@ -58,6 +58,8 @@ ironrdp-displaycontrol = "0.10"
 ironrdp-core = "0.3"
 # graphics pipeline (RDPGFX): H.264, RemoteFX progressive, ClearCodec
 ironrdp-egfx = "0.5"
+# TCP keepalive of the RDP connection (lost links are noticed, then reconnected)
+socket2 = "0.6"
 # built-in servers
 libunftp = "0.24"
 unftp-sbe-fs = "0.4"
@@ -90,7 +92,7 @@ ironrdp-egfx-native = "0.2"
 winreg = "0.55"
 # in-app update: download of the installer (Windows only, the system TLS)
 reqwest = { version = "0.13", default-features = false, features = ["native-tls"] }
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_LibraryLoader", "Win32_System_Threading"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 x11rb = { version = "0.13", features = ["xtest"] }

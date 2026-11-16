@@ -27,7 +27,8 @@
   import { onMount } from "svelte";
   import { availableMonitors, getCurrentWindow, PhysicalPosition, PhysicalSize } from "@tauri-apps/api/window";
   import Icon from "./Icon.svelte";
-  import { api, type Session } from "./api";
+  import { api, IS_WINDOWS, type Session } from "./api";
+  import { listen } from "@tauri-apps/api/event";
   import { app, type Tab } from "./app.svelte";
   import RemoteInfo from "./RemoteInfo.svelte";
   import { createSurface, type Surface } from "./surface";
@@ -86,11 +87,25 @@
     view = { w: Math.floor((desk.w / dpr) * s), h: Math.floor((desk.h / dpr) * s) };
   }
 
+  // display scale sent to the server (session option rdp_scale: "auto" follows this screen, "100")
+  // svelte-ignore state_referenced_locally
+  const autoScale = tab.session.extra?.rdp_scale !== "100";
+  const scaleNow = () => (autoScale ? Math.round((window.devicePixelRatio || 1) * 100) : 100);
+  let sentScale = 0;
+
   function requestFit() {
-    if (!fit || !box || !connected) return;
+    if (!box || !connected) return;
     const dpr = window.devicePixelRatio || 1;
+    const s = scaleNow();
+    // the window moved to a screen with another scale: the server redraws at the new size
+    const rescale = sentScale !== 0 && s !== sentScale;
+    sentScale = s;
+    if (!fit) {
+      if (rescale) send({ t: "r", w: desk.w, h: desk.h, s });
+      return;
+    }
     const w = Math.round(box.clientWidth * dpr), h = Math.round(box.clientHeight * dpr);
-    if (w >= 200 && h >= 200 && (w !== desk.w || h !== desk.h)) send({ t: "r", w, h });
+    if (w >= 200 && h >= 200 && (w !== desk.w || h !== desk.h || rescale)) send({ t: "r", w, h, s });
   }
 
   const sound = new PcmPlayer();
@@ -101,7 +116,8 @@
   // svelte-ignore state_referenced_locally
   const showStats = tab.session.extra?.rdp_stats === "1";
   // wire: KiB received from the server (cumulative), mode: 0 bitmaps, 1 graphics pipeline, 2 with H.264
-  const stat = { frames: 0, bytes: 0, total: 0, base: Infinity, lag: 0, maxLag: 0, since: 0, wire: 0, wire0: 0, mode: 0 };
+  // rtt / kbps: the link as measured by the server (automatic quality), -1 = not measured
+  const stat = { frames: 0, bytes: 0, total: 0, base: Infinity, lag: 0, maxLag: 0, since: 0, wire: 0, wire0: 0, mode: 0, rtt: -1, kbps: 0 };
   let statText = $state("");
   function frameEnd(sent: number) {
     if (!ackQueued) {
@@ -117,10 +133,11 @@
     stat.maxLag = Math.max(stat.maxLag, stat.lag);
     stat.frames++;
     (window as unknown as { __orbitermRdpStats?: typeof stat }).__orbitermRdpStats = stat;
-    if (showStats && now - stat.since >= 1000) {
+    if ((showStats || full) && now - stat.since >= 1000) {
       const s = (now - stat.since) / 1000;
       const codec = ["bitmaps", "GFX", "H.264"][stat.mode] ?? "?";
-      statText = `${Math.round(stat.frames / s)} i/s · réseau ${((stat.wire - stat.wire0) / s / 1024).toFixed(2)} Mo/s · ${codec} · retard ${Math.round(stat.maxLag)} ms · ${surf?.kind === "webgl" ? "GPU" : "2D"}`;
+      const link = stat.rtt < 0 ? "" : ` · lien ${stat.rtt} ms${stat.kbps ? `, ${stat.kbps >= 10000 ? Math.round(stat.kbps / 1000) : (stat.kbps / 1000).toFixed(1)} Mbit/s` : ""}`;
+      statText = `${Math.round(stat.frames / s)} i/s · réseau ${((stat.wire - stat.wire0) / s / 1024).toFixed(2)} Mo/s · ${codec}${link} · retard ${Math.round(stat.maxLag)} ms · ${surf?.kind === "webgl" ? "GPU" : "2D"}`;
       Object.assign(stat, { frames: 0, bytes: 0, maxLag: 0, since: now, wire0: stat.wire });
     }
   }
@@ -153,6 +170,9 @@
         stat.mode = dv.getUint8(9);
       }
       frameEnd(dv.getUint32(1, true));
+    } else if (t === 9) {
+      stat.rtt = dv.getUint32(1, true);
+      stat.kbps = dv.getUint32(5, true);
     } else if (t === 6) {
       // counter read by the automated tests
       const w = window as unknown as { __orbitermAudioBytes?: number };
@@ -192,6 +212,8 @@
     s.onopen = () => {
       connected = true;
       status = "";
+      // the session started with the scale of this screen
+      sentScale = scaleNow();
       if (active) canvas.focus();
       setTimeout(requestFit, 300);
       syncClip();
@@ -245,12 +267,26 @@
       requestFit(); // the backend waits until the size stops changing
     });
     ro.observe(box);
+    // screen scale changes (window moved to another monitor, settings changed)
+    let mq: MediaQueryList | null = null;
+    const watchScale = () => {
+      mq?.removeEventListener("change", onScale);
+      mq = window.matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`);
+      mq.addEventListener("change", onScale);
+    };
+    const onScale = () => {
+      watchScale();
+      layout();
+      requestFit();
+    };
+    watchScale();
     // browsers start audio suspended until the user interacts with the page
     const wake = () => sound.resume();
     box.addEventListener("pointerdown", wake);
     box.addEventListener("keydown", wake);
     return () => {
       ro.disconnect();
+      mq?.removeEventListener("change", onScale);
       ws?.close();
       sound.close();
       // tab closed in full screen: give the window back
@@ -404,8 +440,47 @@
     }
   }
 
+  // ------------------------------------------------- full screen like Windows Remote Desktop
+  // Windows shortcuts (session option rdp_keys): "full" in full screen only (mstsc), "always", "never"
+  // svelte-ignore state_referenced_locally
+  const keysMode = tab.session.extra?.rdp_keys || "full";
+  const capturing = $derived(
+    IS_WINDOWS && connected && focused && active && !!tab.connId && (keysMode === "always" || (keysMode === "full" && full)),
+  );
+  $effect(() => {
+    const id = tab.connId;
+    if (!capturing || !id) return;
+    api.rdpCaptureKeys(id, true).catch(() => {});
+    return () => {
+      api.rdpCaptureKeys(id, false).catch(() => {});
+    };
+  });
+  // Ctrl+Alt+Pause (caught by the keyboard hook) leaves full screen, as in mstsc
+  onMount(() => {
+    const un = listen<{ conn_id: string; action: string }>("rdp-hotkey", (e) => {
+      if (e.payload.conn_id === tab.connId && e.payload.action === "leave-full" && full) toggleFull();
+    });
+    return () => {
+      un.then((f) => f());
+    };
+  });
+
+  // connection bar: shown when full screen starts, then hidden unless pinned or hovered
+  let pinned = $state(false);
+  let barShown = $state(false);
+  let barTimer: ReturnType<typeof setTimeout> | undefined;
+  function peekBar(ms = 2500) {
+    barShown = true;
+    clearTimeout(barTimer);
+    barTimer = setTimeout(() => (barShown = false), ms);
+  }
+  async function minimize() {
+    await getCurrentWindow().minimize().catch(() => {});
+  }
+
   async function toggleFull() {
     full = !full;
+    if (full) peekBar();
     if (multimon) await spanMonitors(full).catch(() => {});
     else await getCurrentWindow().setFullscreen(full).catch(() => {});
     setTimeout(() => {
@@ -417,6 +492,30 @@
 </script>
 
 <div class="rdp" class:full>
+  {#if full}
+    <!-- full screen: connection bar like Windows Remote Desktop's, revealed at the top edge -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div class="fsbar" class:shown={pinned || barShown} data-rdp-fsbar onmouseenter={() => clearTimeout(barTimer)} onmouseleave={() => !pinned && peekBar(600)}>
+      <button class="ico" class:on={pinned} title={pinned ? "Ne plus épingler la barre" : "Épingler la barre"} aria-label="Épingler la barre" onclick={() => { pinned = !pinned; canvas.focus(); }} data-rdp-pin>
+        <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M6 2h4l-.5 4 2.5 2.5H4L6.5 6z" /><path d="M8 8.5V14" /></svg>
+      </button>
+      <span class="fsstat" title="Images par seconde, débit réseau, codage de l'image">{statText || (desk.w ? `${desk.w}×${desk.h}` : "")}</span>
+      <span class="fstitle">{tab.title}</span>
+      {#if capturing}<span class="fskeys" title="Ctrl+Alt+Fin envoie Ctrl+Alt+Suppr · Ctrl+Alt+Pause quitte le plein écran">raccourcis Windows → distant</span>{/if}
+      <button class="ico" title="Envoyer Ctrl+Alt+Suppr" aria-label="Envoyer Ctrl+Alt+Suppr" onclick={() => { send({ t: "cad" }); canvas.focus(); }}>⌃⌥⌦</button>
+      <button class="ico" title="Réduire la fenêtre" aria-label="Réduire" onclick={minimize} data-rdp-min>
+        <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 12h10" /></svg>
+      </button>
+      <button class="ico" title="Quitter le plein écran (Ctrl+Alt+Pause)" aria-label="Quitter le plein écran" onclick={toggleFull} data-rdp-unfull>
+        <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="3" y="5" width="8" height="8" /><path d="M5 5V3h8v8h-2" /></svg>
+      </button>
+      <button class="ico close" title="Se déconnecter (la session reste ouverte sur l'ordinateur distant)" aria-label="Se déconnecter" onclick={disconnectOnly}>
+        <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 4l8 8M12 4l-8 8" /></svg>
+      </button>
+    </div>
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div class="fsedge" onmouseenter={() => peekBar()}></div>
+  {/if}
   <div class="bar">
     <Icon name="rdp" size={16} />
     <span class="title">{tab.title}</span>
@@ -505,31 +604,75 @@
     background: var(--chrome);
     border-bottom: 1px solid var(--chrome-border);
   }
+  /* full screen: the tab toolbar gives way to the connection bar */
   .full .bar {
-    position: absolute;
-    top: 0;
-    left: 50%;
-    /* a 5 px strip stays visible: hovering it reveals the bar */
-    transform: translate(-50%, calc(-100% + 5px));
-    z-index: 2;
-    border: 1px solid var(--chrome-border);
-    border-top: none;
-    padding-top: 6px;
-    transition: transform 0.15s;
-  }
-  .full .bar::after {
-    content: "";
-    position: absolute;
-    left: 0;
-    right: 0;
-    bottom: -10px;
-    height: 10px;
+    display: none;
   }
   .full :global([data-remote-info]) {
     display: none;
   }
-  .full .bar:hover {
+  .fsbar {
+    position: absolute;
+    top: 0;
+    left: 50%;
+    z-index: 3;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    min-width: min(560px, 90vw);
+    padding: 2px 4px;
+    background: var(--chrome);
+    border: 1px solid var(--chrome-border);
+    border-top: none;
+    border-radius: 0 0 6px 6px;
+    box-shadow: 0 2px 8px var(--shadow);
+    transform: translate(-50%, -100%);
+    transition: transform 0.15s;
+  }
+  .fsbar.shown {
     transform: translate(-50%, 0);
+  }
+  .fsedge {
+    position: absolute;
+    top: 0;
+    left: 25%;
+    right: 25%;
+    height: 3px;
+    z-index: 2;
+  }
+  .fstitle {
+    flex: 1;
+    text-align: center;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .fsstat,
+  .fskeys {
+    color: var(--muted);
+    font-size: 11px;
+    white-space: nowrap;
+  }
+  .fsbar .ico {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 28px;
+    height: 24px;
+    padding: 0 6px;
+    border: none;
+    background: none;
+    color: var(--text);
+    font-size: 11px;
+  }
+  .fsbar .ico:hover,
+  .fsbar .ico.on {
+    background: var(--hover);
+  }
+  .fsbar .ico.close:hover {
+    background: var(--danger);
+    color: #fff;
   }
   .bar button {
     padding: 1px 8px;

@@ -507,6 +507,9 @@
 
   const stateLabel: Record<string, string> = { connecting: "connexion…", open: "connecté", closed: "terminé", error: "erreur" };
 
+  // clock of the reconnection countdowns; a long gap between two ticks means the computer slept
+  let now = $state(Date.now());
+
   onMount(() => {
     const unsubs: Array<() => void> = [];
     startBus();
@@ -514,7 +517,7 @@
     const updTimer = setTimeout(startupUpdateCheck, 5000);
     unsubs.push(() => clearTimeout(updTimer));
     listen<HostKeyPrompt>("hostkey-prompt", (e) => app.hostKeys.push(e.payload)).then((u) => unsubs.push(u));
-    unsubs.push(onConnectionClosed((connId, reason, ended) => app.onConnectionClosed(connId, reason, ended)));
+    unsubs.push(onConnectionClosed((connId, reason, ended, lost) => app.onConnectionClosed(connId, reason, ended, lost)));
     // X server and standalone tunnels can change outside the app
     const poll = setInterval(() => {
       app.refreshX();
@@ -522,6 +525,17 @@
       if (!app.showServers) app.refreshServers();
     }, 5000);
     unsubs.push(() => clearInterval(poll));
+    const clock = setInterval(() => {
+      const t = Date.now();
+      const slept = t - now > 20000;
+      now = t;
+      if (slept) app.onWake(true);
+    }, 1000);
+    unsubs.push(() => clearInterval(clock));
+    // network back (Wi-Fi reconnected): planned reconnections go now
+    const online = () => app.onWake(false);
+    window.addEventListener("online", online);
+    unsubs.push(() => window.removeEventListener("online", online));
     return () => unsubs.forEach((u) => u());
   });
 </script>
@@ -671,7 +685,16 @@
               {:else if view === "diff"}
                 <DiffView tab={t} />
               {/if}
-              {#if (t.state === "closed" || t.state === "error") && view !== "external" && view !== "browser" && view !== "editor" && view !== "diff"}
+              {#if t.retry}
+                <div class="overlay retry" data-retry>
+                  <div class="retrymsg">
+                    <b>{t.retry.at ? "Connexion perdue" : "Reconnexion…"}</b>
+                    <span>{t.retry.at ? `Nouvelle tentative dans ${Math.max(0, Math.ceil((t.retry.at - now) / 1000))} s (essai ${t.retry.attempt})` : `essai ${t.retry.attempt}`}{t.retry.reason ? ` · ${t.retry.reason}` : ""}</span>
+                  </div>
+                  <button class="primary" disabled={!t.retry.at} onclick={() => app.retryNow(t)}><Icon name="refresh" size={14} /> Reconnecter maintenant</button>
+                  <button onclick={() => app.cancelRetry(t)} data-retry-cancel>Annuler</button>
+                </div>
+              {:else if (t.state === "closed" || t.state === "error") && view !== "external" && view !== "browser" && view !== "editor" && view !== "diff"}
                 <div class="overlay">
                   <button class="primary" onclick={() => app.reconnect(t)}><Icon name="refresh" size={14} /> Redémarrer la session</button>
                   <button onclick={() => app.closeTab(t)}>Fermer l'onglet</button>
@@ -1467,6 +1490,35 @@
     bottom: 16px;
     display: flex;
     gap: 8px;
+  }
+  .overlay.retry {
+    /* above a full-screen remote desktop too */
+    z-index: 950;
+    position: fixed;
+    left: 50%;
+    right: auto;
+    top: 40px;
+    bottom: auto;
+    transform: translateX(-50%);
+    align-items: center;
+    padding: 10px 14px;
+    background: var(--panel);
+    border: 1px solid var(--chrome-border);
+    border-radius: 8px;
+    box-shadow: 0 4px 14px var(--shadow);
+  }
+  .retrymsg {
+    display: flex;
+    flex-direction: column;
+    margin-right: 8px;
+  }
+  .retrymsg span {
+    color: var(--muted);
+    font-size: 12px;
+    max-width: 420px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .status {
     display: flex;

@@ -13,6 +13,8 @@ pub mod ftp;
 pub mod rdp;
 pub mod rdp_channels;
 pub mod rdp_client;
+#[cfg(windows)]
+mod keyhook;
 pub mod vnc;
 pub mod importer;
 pub mod keygen;
@@ -77,6 +79,7 @@ pub fn run() {
             commands::config_path,
             commands::vnc_url,
             commands::rdp_url,
+            commands::rdp_capture_keys,
             commands::vnc_password_get,
             commands::vnc_password_set,
             commands::external_running,

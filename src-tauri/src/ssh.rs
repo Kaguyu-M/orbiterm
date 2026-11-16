@@ -59,9 +59,25 @@ pub fn ended(reason: impl Into<String>) -> String {
     format!("{ENDED}{}", reason.into())
 }
 
+/// Marks a close reason as a lost connection (network failure, the computer slept): the tab
+/// may reconnect by itself, unlike a session the server ended on purpose.
+const LOST: &str = "\u{2}";
+
+pub fn lost(reason: impl Into<String>) -> String {
+    format!("{LOST}{}", reason.into())
+}
+
 /// Splits a close reason into (normal end?, text).
 pub fn split_reason(reason: String) -> (bool, String) {
     match reason.strip_prefix(ENDED) {
+        Some(r) => (true, r.to_string()),
+        None => (false, reason),
+    }
+}
+
+/// Splits a close reason into (lost connection?, rest).
+pub fn split_lost(reason: String) -> (bool, String) {
+    match reason.strip_prefix(LOST) {
         Some(r) => (true, r.to_string()),
         None => (false, reason),
     }
@@ -533,7 +549,7 @@ impl SshConnection {
                     on_close(match exit {
                         // the remote shell ended by itself (exit, logout)
                         Some(code) => ended(format!("Session terminée (code {code})")),
-                        None => "Connexion fermée".to_string(),
+                        None => lost("Connexion fermée"),
                     });
                 });
                 Some(writer)
@@ -794,6 +810,8 @@ mod tests {
     fn ended_reasons_round_trip() {
         assert_eq!(split_reason(ended("Session terminée (code 0)")), (true, "Session terminée (code 0)".into()));
         assert_eq!(split_reason("Connexion fermée".into()), (false, "Connexion fermée".into()));
+        assert_eq!(split_lost(lost("Connexion fermée")), (true, "Connexion fermée".into()));
+        assert_eq!(split_lost("Connexion fermée".into()), (false, "Connexion fermée".into()));
     }
 
     #[tokio::test]

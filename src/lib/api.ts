@@ -301,6 +301,8 @@ export const api = {
     passphrase?: string;
     jump_password?: string;
     remember?: boolean;
+    /** display scale of the window in % (RDP) */
+    scale?: number;
   }) => invoke<string>("term_open", { args }),
   hostkeyAnswer: (requestId: string, accept: boolean) =>
     invoke<void>("hostkey_answer", { requestId, accept }),
@@ -331,6 +333,8 @@ export const api = {
   xserverInstall: () => invoke<XServerStatus>("xserver_install"),
 
   vncUrl: (connId: string) => invoke<string>("vnc_url", { connId }),
+  /** Windows shortcuts (Win, Alt+Tab…) sent to the remote desktop while `on` (Windows only). */
+  rdpCaptureKeys: (connId: string, on: boolean) => invoke<void>("rdp_capture_keys", { connId, on }),
   rdpUrl: (connId: string) => invoke<{ url: string; width: number; height: number }>("rdp_url", { connId }),
   vncPasswordGet: (sessionId: string) => invoke<string | null>("vnc_password_get", { sessionId }),
   vncPasswordSet: (sessionId: string, password: string | null) => invoke<void>("vnc_password_set", { sessionId, password }),

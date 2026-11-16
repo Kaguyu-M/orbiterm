@@ -6,6 +6,7 @@ import {
   newSession,
   protocol,
   viewOf,
+  type ApiError,
   type Folder,
   type HostKeyPrompt,
   type LocalShell,
@@ -38,7 +39,12 @@ export interface Tab {
   dirty?: boolean;
   /** when the connection opened (ms), to tell a quick failure from a session the user quit */
   openedAt?: number;
+  /** automatic reconnection in progress: next attempt at `at` (ms; 0 = attempt running) */
+  retry?: { attempt: number; at: number; reason: string };
 }
+
+/** Delays between automatic reconnection attempts (s); the last one repeats. */
+const RETRY_DELAYS = [2, 5, 15, 30, 60];
 
 type TextAsk = {
   title: string;
@@ -905,14 +911,14 @@ class App {
     this.openSession(s);
   }
 
-  async connect(tab: Tab): Promise<void> {
+  async connect(tab: Tab, initialSecrets?: Secrets): Promise<ApiError | null> {
     const s = tab.session;
     tab.state = "connecting";
     if (s.kind === "browser" || s.kind === "editor" || s.kind === "diff") {
       // no backend connection: the view owns its content
       tab.state = "open";
       tab.status = "";
-      return;
+      return null;
     }
     tab.status = protocol(s.kind).remote ? `Connexion à ${describe(s)}…` : `Démarrage : ${describe(s)}…`;
     try {
@@ -937,12 +943,13 @@ class App {
           this.xserver = await api.xserverStart().catch(() => x);
       }
       // size is corrected by the terminal right after attaching
-      const initial = this.pendingSecrets.get(tab.key) ?? {};
+      const initial = initialSecrets ?? this.pendingSecrets.get(tab.key) ?? {};
       this.pendingSecrets.delete(tab.key);
       const connId = await this.withSecrets(
         s,
         async (sec) => {
-          const id = await api.termOpen({ session: snap, cols: 120, rows: 32, ...sec });
+          const scale = Math.round((window.devicePixelRatio || 1) * 100);
+          const id = await api.termOpen({ session: snap, cols: 120, rows: 32, scale, ...sec });
           // kept in memory only, to open a separate SFTP session later
           if (sec.password !== undefined || sec.jump_password !== undefined) this.typedSecrets.set(tab.key, { ...sec });
           return id;
@@ -966,14 +973,82 @@ class App {
           }
         })();
       }
+      return null;
     } catch (e) {
       const err = asApiError(e);
       tab.state = "error";
       tab.status = err.kind === "cancelled" ? err.message : `Échec : ${err.message}`;
+      return err;
+    }
+  }
+
+  // ------------------------------------------------------------ automatic reconnection
+  private retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+  /** Whether the tab reconnects by itself after a lost connection (RDP: on unless disabled; SSH: when enabled). */
+  autoReconnects(t: Tab): boolean {
+    const v = t.session.extra?.reconnect;
+    if (t.session.kind === "rdp") return v !== "0" && viewOf(t.session) === "rdp";
+    if (t.session.kind === "ssh") return v === "1";
+    return false;
+  }
+
+  /** Plans the next attempt (2 s, 5 s, 15 s, 30 s, then every minute). */
+  private scheduleRetry(t: Tab, reason: string) {
+    const attempt = (t.retry?.attempt ?? 0) + 1;
+    const delay = RETRY_DELAYS[Math.min(attempt - 1, RETRY_DELAYS.length - 1)];
+    t.retry = { attempt, at: Date.now() + delay * 1000, reason };
+    clearTimeout(this.retryTimers.get(t.key));
+    this.retryTimers.set(t.key, setTimeout(() => this.retryNow(t), delay * 1000));
+  }
+
+  /** Attempts the reconnection now (keeps the view, so a full-screen desktop stays full screen). */
+  async retryNow(t: Tab) {
+    clearTimeout(this.retryTimers.get(t.key));
+    this.retryTimers.delete(t.key);
+    if (!t.retry || !this.tabs.includes(t) || t.retry.at === 0) return;
+    t.retry = { ...t.retry, at: 0 };
+    const old = t.connId;
+    if (old) api.termClose(old).catch(() => {});
+    // password typed earlier in this tab (memory only), else the keyring, else asked again
+    const typed = this.typedSecrets.get(t.key);
+    const err = await this.connect(t, typed ? { ...typed } : undefined);
+    if (!t.retry) {
+      // cancelled meanwhile: drop the new connection
+      return;
+    }
+    if (!err) {
+      t.retry = undefined;
+      return;
+    }
+    // network failures retry again; a refused password, a cancelled prompt… stop here
+    if (["conn", "timeout", "io", "ssh"].includes(err.kind)) this.scheduleRetry(t, err.message);
+    else t.retry = undefined;
+  }
+
+  cancelRetry(t: Tab) {
+    clearTimeout(this.retryTimers.get(t.key));
+    this.retryTimers.delete(t.key);
+    t.retry = undefined;
+    if (t.state === "connecting") t.state = "closed";
+  }
+
+  /**
+   * The computer woke up (or the network came back): desktops that may have lost their
+   * connection while asleep reconnect now instead of waiting for the network timeout.
+   */
+  onWake(slept: boolean) {
+    for (const t of this.tabs) {
+      if (t.retry?.at) this.retryNow(t);
+      else if (slept && !t.retry && t.state === "open" && t.session.kind === "rdp" && this.autoReconnects(t)) {
+        t.retry = { attempt: 0, at: 1, reason: "sortie de veille" };
+        this.retryNow(t);
+      }
     }
   }
 
   reconnect(tab: Tab) {
+    this.cancelRetry(tab);
     const old = tab.connId;
     tab.connId = null;
     if (old) api.termClose(old).catch(() => {});
@@ -983,6 +1058,7 @@ class App {
   async closeTab(tab: Tab) {
     if (tab.dirty && !(await this.confirm(`« ${tab.title} » a des modifications non enregistrées. Fermer quand même ?`))) return;
     this.typedSecrets.delete(tab.key);
+    this.cancelRetry(tab);
     if (tab.connId) await api.termClose(tab.connId).catch(() => {});
     if (tab.session.kind === "browser") await api.browserClose(`browser-${tab.key}`).catch(() => {});
     const i = this.tabs.findIndex((t) => t.key === tab.key);
@@ -1054,8 +1130,16 @@ class App {
     this.activeKey = keys[(i + dir + keys.length) % keys.length];
   }
 
-  onConnectionClosed(connId: string, reason = "", ended = false) {
+  onConnectionClosed(connId: string, reason = "", ended = false, lost = false) {
     const t = this.tabs.find((x) => x.connId === connId);
+    if (t && lost && !t.retry && t.openedAt !== undefined && this.autoReconnects(t)) {
+      // lost link (sleep, Wi-Fi): the server keeps the session, reconnect by itself
+      t.status = reason;
+      t.state = "closed";
+      api.termClose(connId).catch(() => {});
+      this.scheduleRetry(t, reason);
+      return;
+    }
     if (t && ended && this.closesOnEnd(t)) {
       // the user quit the session (exit, logoff): no dead screen, back to the home tab
       const wasActive = this.activeKey === t.key;

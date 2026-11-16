@@ -32,15 +32,15 @@ export async function startBus() {
       pending.set(e.payload.conn_id, list);
     }
   });
-  await listen<{ conn_id: string; reason: string; ended?: boolean }>("term-closed", (e) => {
+  await listen<{ conn_id: string; reason: string; ended?: boolean; lost?: boolean }>("term-closed", (e) => {
     const sink = sinks.get(e.payload.conn_id);
     if (sink) sink.closed(e.payload.reason);
     else pendingClose.set(e.payload.conn_id, e.payload.reason);
-    for (const cb of closeWatchers) cb(e.payload.conn_id, e.payload.reason, !!e.payload.ended);
+    for (const cb of closeWatchers) cb(e.payload.conn_id, e.payload.reason, !!e.payload.ended, !!e.payload.lost);
   });
 }
 
-type CloseWatcher = (connId: string, reason: string, ended: boolean) => void;
+type CloseWatcher = (connId: string, reason: string, ended: boolean, lost: boolean) => void;
 const closeWatchers = new Set<CloseWatcher>();
 
 /** Called by the page to update tab state when a connection ends (`ended`: the user quit normally). */
