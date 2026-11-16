@@ -829,6 +829,7 @@ pub async fn term_open(app: AppHandle, state: State<'_, AppState>, args: OpenArg
                     sound: opts.sound == "local",
                     monitors: if opts.size == "multimon" { local_monitors(&app) } else { Vec::new() },
                     gateway: rd_gateway,
+                    quality: rdp_client::Quality::parse(session.opt("rdp_quality")),
                 };
                 let prompter = make_prompter(app.clone(), state.hostkey_waiters.clone());
                 match rdp_client::connect(params, prompter, on_close).await {

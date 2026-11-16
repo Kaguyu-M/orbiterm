@@ -80,6 +80,42 @@ pub struct RdpParams {
     pub monitors: Vec<(i32, i32, u32, u32, bool)>,
     /// Remote Desktop Gateway the connection goes through (HTTPS)
     pub gateway: Option<RdGateway>,
+    /// image quality against responsiveness (session option rdp_quality)
+    pub quality: Quality,
+}
+
+/// Session option "rdp_quality": what the server is asked to send.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Quality {
+    /// LAN when the server answers fast, slow link otherwise (VPN, Internet, RD gateway)
+    #[default]
+    Auto,
+    /// best picture: 32-bit colours, wallpaper, smoothed fonts
+    Lan,
+    /// lighter traffic: 16-bit colours, no wallpaper, no font smoothing, no animations
+    Slow,
+}
+
+impl Quality {
+    pub fn parse(s: &str) -> Self {
+        match s {
+            "lan" => Quality::Lan,
+            "slow" => Quality::Slow,
+            _ => Quality::Auto,
+        }
+    }
+}
+
+/// Above this TCP connect time the link is treated as slow (a LAN answers in a few ms).
+const SLOW_LINK_RTT: Duration = Duration::from_millis(15);
+
+/// Whether the slow-link profile applies: `rtt` is the TCP connect time (None through a gateway).
+fn slow_link(q: Quality, rtt: Option<Duration>) -> bool {
+    match q {
+        Quality::Lan => false,
+        Quality::Slow => true,
+        Quality::Auto => rtt.is_none_or(|d| d > SLOW_LINK_RTT),
+    }
 }
 
 /// Remote Desktop Gateway (MS-TSGU): the RDP connection is carried over HTTPS.
@@ -99,15 +135,36 @@ type Stream = Box<dyn AsyncReadWrite + Unpin + Send + Sync>;
 const NEGOTIATION_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Opens the transport to the RDP server: a TCP connection, or a tunnel through the gateway.
-async fn open_transport(p: &RdpParams) -> AppResult<(Stream, SocketAddr)> {
+/// Also returns the TCP connect time (round trip), None through a gateway.
+async fn open_transport(p: &RdpParams) -> AppResult<(Stream, SocketAddr, Option<Duration>)> {
     let Some(gw) = &p.gateway else {
-        let stream = tokio::time::timeout(Duration::from_secs(15), TcpStream::connect((p.host.as_str(), p.port)))
-            .await
-            .map_err(|_| AppError::Conn(format!("{}:{} ne répond pas", p.host, p.port)))?
-            .map_err(|e| AppError::Conn(format!("{}:{} : {e}", p.host, p.port)))?;
+        let unreachable = || AppError::Conn(format!("{}:{} ne répond pas", p.host, p.port));
+        let started = std::time::Instant::now();
+        let (stream, rtt) = tokio::time::timeout(Duration::from_secs(15), async {
+            // name resolution apart, so that a slow DNS answer is not taken for a slow link
+            let addrs: Vec<SocketAddr> = tokio::net::lookup_host((p.host.as_str(), p.port))
+                .await
+                .map_err(|e| AppError::Conn(format!("{}:{} : {e}", p.host, p.port)))?
+                .collect();
+            let mut last = None;
+            for a in addrs {
+                let t0 = std::time::Instant::now();
+                match TcpStream::connect(a).await {
+                    Ok(s) => return Ok((s, t0.elapsed())),
+                    Err(e) => last = Some(e),
+                }
+            }
+            Err(match last {
+                Some(e) => AppError::Conn(format!("{}:{} : {e}", p.host, p.port)),
+                None => unreachable(),
+            })
+        })
+        .await
+        .map_err(|_| unreachable())??;
+        log::info!("RDP {}:{} : connexion TCP en {:?} (total {:?})", p.host, p.port, rtt, started.elapsed());
         let _ = stream.set_nodelay(true);
         let addr = stream.local_addr()?;
-        return Ok((Box::new(stream), addr));
+        return Ok((Box::new(stream), addr, Some(rtt)));
     };
     use ironrdp_mstsgu::{GwClient, GwConnectTarget, GwErrorKind};
     let target = GwConnectTarget {
@@ -130,7 +187,7 @@ async fn open_transport(p: &RdpParams) -> AppResult<(Stream, SocketAddr)> {
     .await
     .map_err(|_| AppError::Conn(format!("passerelle {} : délai dépassé", gw.endpoint)))?;
     match r {
-        Ok((client, addr)) => Ok((Box::new(client), addr)),
+        Ok((client, addr)) => Ok((Box::new(client), addr, None)),
         Err(e) => Err(match e.kind() {
             GwErrorKind::HttpStatus(401) | GwErrorKind::HttpStatus(403) => AppError::JumpAuthFailed,
             kind => {
@@ -327,8 +384,22 @@ fn client_name() -> String {
     n.chars().take(15).collect()
 }
 
-fn connector_config(p: &RdpParams) -> AppResult<ironrdp_connector::Config> {
+fn connector_config(p: &RdpParams, slow: bool) -> AppResult<ironrdp_connector::Config> {
     let codecs = client_codecs_capabilities(&[]).map_err(|e| AppError::Conn(format!("codecs RDP : {e}")))?;
+    use ironrdp_pdu::gcc::ConnectionType;
+    // slow link: the same choices as mstsc's "low-speed broadband" experience
+    let (connection_type, color_depth, performance_flags) = if slow {
+        (
+            ConnectionType::BroadbandLow,
+            16,
+            PerformanceFlags::DISABLE_WALLPAPER
+                | PerformanceFlags::DISABLE_FULLWINDOWDRAG
+                | PerformanceFlags::DISABLE_MENUANIMATIONS
+                | PerformanceFlags::DISABLE_CURSOR_SHADOW,
+        )
+    } else {
+        (ConnectionType::Lan, 32, PerformanceFlags::default())
+    };
     Ok(ironrdp_connector::Config {
         credentials: Credentials::UsernamePassword { username: p.username.clone(), password: p.password.clone() },
         domain: p.domain.clone(),
@@ -354,12 +425,12 @@ fn connector_config(p: &RdpParams) -> AppResult<ironrdp_connector::Config> {
         monitor_extended_layout: None,
         relative_mouse_input: false,
         enable_standard_rdp_security: false,
-        connection_type: ironrdp_pdu::gcc::ConnectionType::Lan,
+        connection_type,
         remote_application_mode: false,
         rail_support_level: ironrdp_pdu::rdp::capability_sets::RailSupportLevel::empty(),
         support_dyn_vc_gfx_protocol: false,
         enable_audio_capture: false,
-        bitmap: Some(BitmapConfig { color_depth: 32, lossy_compression: true, codecs }),
+        bitmap: Some(BitmapConfig { color_depth, lossy_compression: true, codecs }),
         client_build: 0,
         client_name: client_name(),
         client_dir: String::new(),
@@ -377,7 +448,7 @@ fn connector_config(p: &RdpParams) -> AppResult<ironrdp_connector::Config> {
         // Deactivation-Reactivation sequence, which IronRDP cannot decode there (the
         // session dropped right after the logon on Kali / xrdp)
         compression_type: None,
-        performance_flags: PerformanceFlags::default(),
+        performance_flags,
         timezone_info: TimezoneInfo::default(),
         alternate_shell: String::new(),
         work_dir: String::new(),
@@ -488,9 +559,11 @@ async fn establish(
     if p.username.trim().is_empty() {
         return Err(AppError::Config("RDP : indique le nom d'utilisateur dans les paramètres de la session".into()));
     }
-    let (stream, client_addr) = open_transport(&p).await?;
+    let (stream, client_addr, rtt) = open_transport(&p).await?;
+    let slow = slow_link(p.quality, rtt);
+    log::info!("RDP {}:{} : profil {}", p.host, p.port, if slow { "lien lent" } else { "réseau local" });
     let mut framed = ironrdp_tokio::TokioFramed::new(stream);
-    let mut connector = ClientConnector::new(connector_config(&p)?, client_addr).with_static_channel(
+    let mut connector = ClientConnector::new(connector_config(&p, slow)?, client_addr).with_static_channel(
         DrdynvcClient::new().with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new()))),
     );
     let mut channels = Channels { clip: None, drive: false, audio: None };
@@ -1202,6 +1275,18 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn slow_link_profile() {
+        let ms = |n| Some(Duration::from_millis(n));
+        assert!(!slow_link(Quality::Auto, ms(2)));
+        assert!(slow_link(Quality::Auto, ms(40)));
+        assert!(slow_link(Quality::Auto, None)); // RD gateway
+        assert!(!slow_link(Quality::Lan, ms(200)));
+        assert!(slow_link(Quality::Slow, ms(1)));
+        assert_eq!(Quality::parse("slow"), Quality::Slow);
+        assert_eq!(Quality::parse(""), Quality::Auto);
+    }
 
     #[test]
     fn dirty_areas() {

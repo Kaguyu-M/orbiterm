@@ -124,6 +124,8 @@ export interface Prefs {
   updateSkip: string;
   /** close the tab and go back home when a session is quit normally (exit, logoff) */
   closeOnEnd: boolean;
+  /** draw remote desktops with the GPU (WebGL); off = 2D canvas */
+  rdpGpu: boolean;
 }
 
 export const DEFAULT_PREFS: Prefs = {
@@ -153,6 +155,7 @@ export const DEFAULT_PREFS: Prefs = {
   updateCheck: true,
   updateSkip: "",
   closeOnEnd: true,
+  rdpGpu: true,
   keepalive: 30,
   sshX11: false,
   sshCompression: false,

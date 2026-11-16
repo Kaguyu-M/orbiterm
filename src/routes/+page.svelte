@@ -1,4 +1,14 @@
 <script lang="ts">
+  /** Focuses a field shown in a dialog. WebKitGTK (Linux) ignores the autofocus attribute
+   * on elements added after the page has loaded, so the field is focused once on screen. */
+  function grabFocus(el: HTMLInputElement) {
+    const t = setTimeout(() => {
+      el.focus();
+      el.select();
+    }, 30);
+    return { destroy: () => clearTimeout(t) };
+  }
+
   import { onMount, untrack } from "svelte";
   import { listen } from "@tauri-apps/api/event";
   import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -780,8 +790,7 @@
         app.closeAsk(true);
       }}
     >
-      <!-- svelte-ignore a11y_autofocus -->
-      <input class="full" type={app.textAsk.secret ? "password" : "text"} bind:value={app.textAsk.value} autofocus />
+      <input class="full" type={app.textAsk.secret ? "password" : "text"} bind:value={app.textAsk.value} use:grabFocus />
       {#if app.textAsk.check}
         <label class="inline"><input type="checkbox" bind:checked={app.textAsk.checked} /> {app.textAsk.check}</label>
       {/if}

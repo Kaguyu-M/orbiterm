@@ -52,6 +52,7 @@ fn params(port: u16, password: &str, known: &std::path::Path) -> RdpParams {
         sound: true,
         monitors: Vec::new(),
         gateway: None,
+        quality: orbiterm_lib::rdp_client::Quality::Auto,
     }
 }
 
@@ -366,6 +367,8 @@ async fn server_logoff_is_a_normal_end() {
     p.sound = false;
     p.clipboard = false;
     p.share_dir = None;
+    // slow-link profile (16-bit colours): the session must open as well
+    p.quality = orbiterm_lib::rdp_client::Quality::Slow;
     let _session = connect(p, prompter(seen), on_close).await.expect("connect");
     let reason = tokio::time::timeout(Duration::from_secs(20), rx).await.expect("session end").unwrap();
     let (ended, text) = orbiterm_lib::ssh::split_reason(reason);

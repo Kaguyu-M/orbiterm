@@ -294,6 +294,10 @@
           <input id="sw" class="num" type="number" min="180" max="600" bind:value={p.sidebarWidth} /> px
         </div>
       </fieldset>
+      <fieldset>
+        <legend>Bureaux à distance</legend>
+        <label class="chk"><input type="checkbox" bind:checked={p.rdpGpu} data-rdp-gpu /> Dessiner le bureau distant avec la carte graphique (décocher en cas d'image noire)</label>
+      </fieldset>
     {/if}
   </div>
 

@@ -243,6 +243,14 @@
               <option value="multimon">Tous les écrans de ce poste (multi-écran)</option>
               {#each RDP_SIZES as z (z)}<option value={z}>{z.replace("x", " × ")}</option>{/each}
             </select>
+            {#if !ext}
+              <label class="lbl" for="rqual">Qualité de l'image</label>
+              <select id="rqual" value={x("rdp_quality", "auto")} onchange={(e) => setX("rdp_quality", e.currentTarget.value)} data-rdp-quality>
+                <option value="auto">Automatique (selon la réactivité du réseau)</option>
+                <option value="lan">Réseau local : meilleure image</option>
+                <option value="slow">Lien lent / VPN : plus réactif (couleurs 16 bits, sans fond d'écran ni lissage des polices)</option>
+              </select>
+            {/if}
             <label class="lbl" for="rdom">Domaine</label>
             <input id="rdom" value={x("rdp_domain")} oninput={(e) => setX("rdp_domain", e.currentTarget.value)} placeholder="(aucun — ou DOMAINE\utilisateur)" spellcheck="false" />
             <label class="lbl" for="rsnd">Son</label>

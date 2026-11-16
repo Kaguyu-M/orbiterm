@@ -30,12 +30,23 @@
   import { api, type Session } from "./api";
   import { app, type Tab } from "./app.svelte";
   import RemoteInfo from "./RemoteInfo.svelte";
+  import { createSurface, type Surface } from "./surface";
 
   let { tab, active }: { tab: Tab; active: boolean } = $props();
 
   let box: HTMLDivElement;
   let canvas: HTMLCanvasElement;
-  let ctx: CanvasRenderingContext2D | null = null;
+  // the remote desktop picture: WebGL texture (GPU) or 2D canvas (fallback, or pref rdpGpu off)
+  let surf: Surface | null = null;
+  let surfCanvas: HTMLCanvasElement | null = null;
+  function surface(): Surface {
+    if (!surf || surfCanvas !== canvas) {
+      surfCanvas = canvas;
+      // GPU context restored after a loss: ask the backend for the whole desktop again
+      surf = createSurface(canvas, app.prefs.rdpGpu, () => tab.connId && attach(tab.connId));
+    }
+    return surf;
+  }
   let ws: WebSocket | null = null;
   let attachedTo: string | null = null;
   let desk = $state({ w: 0, h: 0 });
@@ -89,7 +100,7 @@
   // display statistics (hidden session option rdp_stats = "1", also read by the automated tests)
   // svelte-ignore state_referenced_locally
   const showStats = tab.session.extra?.rdp_stats === "1";
-  const stat = { frames: 0, bytes: 0, base: Infinity, lag: 0, maxLag: 0, since: 0 };
+  const stat = { frames: 0, bytes: 0, total: 0, base: Infinity, lag: 0, maxLag: 0, since: 0 };
   let statText = $state("");
   function frameEnd(sent: number) {
     if (!ackQueued) {
@@ -107,7 +118,7 @@
     (window as unknown as { __orbitermRdpStats?: typeof stat }).__orbitermRdpStats = stat;
     if (showStats && now - stat.since >= 1000) {
       const s = (now - stat.since) / 1000;
-      statText = `${Math.round(stat.frames / s)} i/s · ${(stat.bytes / s / 1048576).toFixed(1)} Mo/s · retard ${Math.round(stat.maxLag)} ms`;
+      statText = `${Math.round(stat.frames / s)} i/s · ${(stat.bytes / s / 1048576).toFixed(1)} Mo/s · retard ${Math.round(stat.maxLag)} ms · ${surf?.kind === "webgl" ? "GPU" : "2D"}`;
       Object.assign(stat, { frames: 0, bytes: 0, maxLag: 0, since: now });
     }
   }
@@ -128,11 +139,13 @@
     const buf = ev.data as ArrayBuffer;
     const dv = new DataView(buf);
     const t = dv.getUint8(0);
-    if (t === 1 && ctx) {
+    if (t === 1 && surf) {
       const x = dv.getUint16(1, true), y = dv.getUint16(3, true), w = dv.getUint16(5, true), h = dv.getUint16(7, true);
-      ctx.putImageData(new ImageData(new Uint8ClampedArray(buf, 9, w * h * 4), w, h), x, y);
+      surf.put(x, y, w, h, new Uint8Array(buf, 9, w * h * 4));
       stat.bytes += buf.byteLength;
+      stat.total += buf.byteLength;
     } else if (t === 8) {
+      surf?.present();
       frameEnd(dv.getUint32(1, true));
     } else if (t === 6) {
       // counter read by the automated tests
@@ -143,9 +156,8 @@
       sound.volume(dv.getUint16(1, true), dv.getUint16(3, true));
     } else if (t === 2) {
       desk = { w: dv.getUint16(1, true), h: dv.getUint16(3, true) };
-      canvas.width = desk.w;
-      canvas.height = desk.h;
-      ctx = canvas.getContext("2d", { alpha: false });
+      surface().resize(desk.w, desk.h);
+      (window as unknown as { __orbitermRdpRenderer?: string }).__orbitermRdpRenderer = surf?.kind; // tests
       layout();
     } else if (t === 3) {
       const hx = dv.getUint16(1, true), hy = dv.getUint16(3, true), w = dv.getUint16(5, true), h = dv.getUint16(7, true);
