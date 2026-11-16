@@ -25,13 +25,12 @@
       overlays.default = final: _prev: { orbiterm = final.callPackage ./nix/package.nix { }; };
 
       # NixOS : `imports = [ orbiterm.nixosModules.default ]; programs.orbiterm.enable = true;`
+      # (the package is built with the nixpkgs pinned by this flake)
       nixosModules.default =
-        { config, lib, pkgs, ... }:
+        { lib, pkgs, ... }:
         {
-          options.programs.orbiterm.enable = lib.mkEnableOption "Orbiterm";
-          config = lib.mkIf config.programs.orbiterm.enable {
-            environment.systemPackages = [ self.packages.${pkgs.stdenv.hostPlatform.system}.default ];
-          };
+          imports = [ ./nix/module.nix ];
+          programs.orbiterm.package = lib.mkDefault self.packages.${pkgs.stdenv.hostPlatform.system}.default;
         };
     };
 }

@@ -84,6 +84,34 @@
 
   const sound = new PcmPlayer();
 
+  // frames are paced by this tab: the backend sends the next one once this one is on screen
+  let ackQueued = false;
+  // display statistics (hidden session option rdp_stats = "1", also read by the automated tests)
+  // svelte-ignore state_referenced_locally
+  const showStats = tab.session.extra?.rdp_stats === "1";
+  const stat = { frames: 0, bytes: 0, base: Infinity, lag: 0, maxLag: 0, since: 0 };
+  let statText = $state("");
+  function frameEnd(sent: number) {
+    if (!ackQueued) {
+      ackQueued = true;
+      requestAnimationFrame(() => {
+        ackQueued = false;
+        send({ t: "a" });
+      });
+    }
+    const now = performance.now();
+    stat.base = Math.min(stat.base, now - sent);
+    stat.lag = now - sent - stat.base;
+    stat.maxLag = Math.max(stat.maxLag, stat.lag);
+    stat.frames++;
+    (window as unknown as { __orbitermRdpStats?: typeof stat }).__orbitermRdpStats = stat;
+    if (showStats && now - stat.since >= 1000) {
+      const s = (now - stat.since) / 1000;
+      statText = `${Math.round(stat.frames / s)} i/s · ${(stat.bytes / s / 1048576).toFixed(1)} Mo/s · retard ${Math.round(stat.maxLag)} ms`;
+      Object.assign(stat, { frames: 0, bytes: 0, maxLag: 0, since: now });
+    }
+  }
+
   function onMessage(ev: MessageEvent) {
     if (typeof ev.data === "string") {
       try {
@@ -103,6 +131,9 @@
     if (t === 1 && ctx) {
       const x = dv.getUint16(1, true), y = dv.getUint16(3, true), w = dv.getUint16(5, true), h = dv.getUint16(7, true);
       ctx.putImageData(new ImageData(new Uint8ClampedArray(buf, 9, w * h * 4), w, h), x, y);
+      stat.bytes += buf.byteLength;
+    } else if (t === 8) {
+      frameEnd(dv.getUint32(1, true));
     } else if (t === 6) {
       // counter read by the automated tests
       const w = window as unknown as { __orbitermAudioBytes?: number };
@@ -371,7 +402,7 @@
   <div class="bar">
     <Icon name="rdp" size={16} />
     <span class="title">{tab.title}</span>
-    <span class="dim">{desk.w ? `${desk.w}×${desk.h}` : ""}</span>
+    <span class="dim">{desk.w ? `${desk.w}×${desk.h}` : ""}{statText ? ` · ${statText}` : ""}</span>
     <button title="Envoyer Ctrl+Alt+Suppr" disabled={!connected} onclick={() => { send({ t: "cad" }); canvas.focus(); }}>Ctrl+Alt+Suppr</button>
     <button title="Taper le texte du presse-papiers local dans la session" disabled={!connected} onclick={pasteText}>
       <Icon name="copy" size={14} /> Coller le texte

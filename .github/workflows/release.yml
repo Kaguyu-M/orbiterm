@@ -1,4 +1,5 @@
 # Publication d'une version : pousser une étiquette `vX.Y.Z` (identique à la version de package.json).
+# 0. lance les vérifications (checks.yml) : rien n'est publié si un test échoue
 # 1. compile l'installateur Windows (+ version portable), le .deb et le .rpm
 # 2. crée la Release GitHub avec ces fichiers
 # 3. met à jour les dépôts APT et DNF signés (GitHub Pages) et le manifeste Scoop (bucket/)
@@ -25,8 +26,15 @@ env:
   TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
+  checks:
+    name: Vérifications
+    uses: ./.github/workflows/checks.yml
+    with:
+      ref: ${{ inputs.tag || github.ref_name }}
+
   build:
     name: Compilation ${{ matrix.name }}
+    needs: checks
     strategy:
       fail-fast: true
       matrix:

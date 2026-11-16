@@ -504,7 +504,7 @@
     const updTimer = setTimeout(startupUpdateCheck, 5000);
     unsubs.push(() => clearTimeout(updTimer));
     listen<HostKeyPrompt>("hostkey-prompt", (e) => app.hostKeys.push(e.payload)).then((u) => unsubs.push(u));
-    unsubs.push(onConnectionClosed((connId, reason) => app.onConnectionClosed(connId, reason)));
+    unsubs.push(onConnectionClosed((connId, reason, ended) => app.onConnectionClosed(connId, reason, ended)));
     // X server and standalone tunnels can change outside the app
     const poll = setInterval(() => {
       app.refreshX();

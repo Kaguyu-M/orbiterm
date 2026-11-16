@@ -147,6 +147,14 @@ pub async fn serve(addr: SocketAddr, log: mpsc::UnboundedSender<String>) -> anyh
             .with_sound_factory(Some(Box::new(Sound { sender: None, log: Some(log.clone()) })))
             .build();
         server.set_credentials(Some(Credentials { username: "test".into(), password: "test".into(), domain: None }));
+        // ORB_RDP_QUIT_AFTER=<s>: the server ends the session by itself (like a logoff)
+        if let Some(secs) = std::env::var("ORB_RDP_QUIT_AFTER").ok().and_then(|v| v.parse::<u64>().ok()) {
+            let ev = server.event_sender().clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
+                let _ = ev.send(ironrdp_server::ServerEvent::Quit("fin de session".into()));
+            });
+        }
         let _ = log.send("connexion".into());
         match server.run_connection(stream).await {
             Ok(()) => {

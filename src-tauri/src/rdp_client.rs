@@ -4,10 +4,15 @@
 //! The tab's canvas talks to it through a WebSocket bound to 127.0.0.1 with a random token
 //! (like the VNC bridge):
 //! - backend → tab (binary): `1` rect (x, y, w, h: u16 LE, then RGBA), `2` desktop size (w, h),
-//!   `3` cursor (hot x, hot y, w, h, RGBA), `4` default cursor, `5` hidden cursor;
+//!   `3` cursor (hot x, hot y, w, h, RGBA), `4` default cursor, `5` hidden cursor,
+//!   `8` end of a frame (time in ms: u32 LE);
 //! - backend → tab (JSON text): `{"t":"clip","s":…}` text copied on the remote computer;
 //! - tab → backend (JSON text): keyboard scancodes, mouse, wheel, resize, Ctrl+Alt+Del,
-//!   local clipboard text.
+//!   local clipboard text, frame acknowledgement.
+//!
+//! Frames are paced by the tab: the next one is only sent once the previous one has been drawn
+//! (`{"t":"a"}`). Meanwhile the changed areas accumulate, so a slow display skips images
+//! instead of falling behind the remote desktop.
 //!
 //! Static channels: CLIPRDR (shared clipboard, text) and RDPDR (one shared local folder).
 //!
@@ -51,7 +56,7 @@ use ironrdp_rdpdr::Rdpdr;
 use crate::error::{AppError, AppResult};
 use crate::rdp_channels::{self, CF_UNICODETEXT, ClipEvent};
 use crate::known_hosts::HostKeyStatus;
-use crate::ssh::{CloseSink, HostKeyPrompter, HostKeyQuestion};
+use crate::ssh::{CloseSink, HostKeyPrompter, HostKeyQuestion, ended};
 
 pub struct RdpParams {
     pub host: String,
@@ -89,6 +94,9 @@ pub struct RdGateway {
 }
 
 type Stream = Box<dyn AsyncReadWrite + Unpin + Send + Sync>;
+
+/// Deadline of each step before the certificate question (negotiation, TLS upgrade).
+const NEGOTIATION_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Opens the transport to the RDP server: a TCP connection, or a tunnel through the gateway.
 async fn open_transport(p: &RdpParams) -> AppResult<(Stream, SocketAddr)> {
@@ -206,6 +214,9 @@ enum WsIn {
     /// the local clipboard changed (text)
     #[serde(rename = "clip")]
     Clip { s: String },
+    /// the last frame has been drawn: the next one may be sent
+    #[serde(rename = "a")]
+    Ack,
 }
 
 enum Cmd {
@@ -506,10 +517,14 @@ async fn establish(
         )));
     }
 
-    let should_upgrade = ironrdp_tokio::connect_begin(&mut framed, &mut connector).await.map_err(map_connect_err)?;
-    let (initial, leftover) = framed.into_inner();
-    let (tls, cert) = ironrdp_tls::upgrade(initial, &p.host)
+    let should_upgrade = tokio::time::timeout(NEGOTIATION_TIMEOUT, ironrdp_tokio::connect_begin(&mut framed, &mut connector))
         .await
+        .map_err(|_| AppError::Conn(format!("{}:{} : le serveur RDP ne répond pas à la négociation", p.host, p.port)))?
+        .map_err(map_connect_err)?;
+    let (initial, leftover) = framed.into_inner();
+    let (tls, cert) = tokio::time::timeout(NEGOTIATION_TIMEOUT, ironrdp_tls::upgrade(initial, &p.host))
+        .await
+        .map_err(|_| AppError::Conn(format!("{}:{} : le passage en TLS n'aboutit pas", p.host, p.port)))?
         .map_err(|e| AppError::Conn(format!("TLS : {e}")))?;
     let public_key = ironrdp_tls::extract_tls_server_public_key(&cert)
         .ok_or_else(|| AppError::Conn("certificat du serveur illisible".into()))?
@@ -584,20 +599,58 @@ async fn accept_viewers(listener: TcpListener, want: String, cmd: mpsc::Unbounde
 
 type Sink = futures_util::stream::SplitSink<tokio_tungstenite::WebSocketStream<TcpStream>, Message>;
 
-#[derive(Default, Clone, Copy)]
-struct Dirty(Option<(u16, u16, u16, u16)>); // inclusive left, top, right, bottom
+/// Inclusive left, top, right, bottom.
+type Area = (u16, u16, u16, u16);
+
+fn pixels((l, t, r, b): Area) -> u64 {
+    (u64::from(r.saturating_sub(l)) + 1) * (u64::from(b.saturating_sub(t)) + 1)
+}
+
+fn union(a: Area, b: Area) -> Area {
+    (a.0.min(b.0), a.1.min(b.1), a.2.max(b.2), a.3.max(b.3))
+}
+
+/// Areas of the desktop changed since the last frame sent to the tab.
+///
+/// Areas are merged when their union holds few pixels that did not change: two small
+/// updates far apart (a clock and a cursor) stay two small images instead of one that
+/// spans the whole desktop.
+#[derive(Default)]
+struct Dirty(Vec<Area>);
 
 impl Dirty {
+    /// pixels a merge may add before two areas are kept apart
+    const SLACK: u64 = 16 * 1024;
+    const MAX: usize = 24;
+
     fn add(&mut self, r: &InclusiveRectangle) {
-        self.0 = Some(match self.0 {
-            None => (r.left, r.top, r.right, r.bottom),
-            Some((l, t, rr, b)) => (l.min(r.left), t.min(r.top), rr.max(r.right), b.max(r.bottom)),
-        });
+        self.push((r.left, r.top, r.right, r.bottom));
+    }
+    fn push(&mut self, mut n: Area) {
+        while let Some(i) = self.0.iter().position(|&o| pixels(union(o, n)) <= pixels(o) + pixels(n) + Self::SLACK) {
+            n = union(self.0.swap_remove(i), n);
+        }
+        self.0.push(n);
+        if self.0.len() > Self::MAX {
+            let all = self.0.iter().copied().reduce(union);
+            self.0.clear();
+            self.0.extend(all);
+        }
     }
     fn all(&mut self, w: u16, h: u16) {
+        self.0.clear();
         if w > 0 && h > 0 {
-            self.0 = Some((0, 0, w - 1, h - 1));
+            self.0.push((0, 0, w - 1, h - 1));
         }
+    }
+    fn clear(&mut self) {
+        self.0.clear();
+    }
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+    fn take(&mut self) -> Vec<Area> {
+        std::mem::take(&mut self.0)
     }
 }
 
@@ -617,10 +670,11 @@ fn rect_message(image: &DecodedImage, (l, t, r, b): (u16, u16, u16, u16)) -> Opt
     }
     for y in t..=b {
         let start = usize::from(y) * stride + usize::from(l) * 4;
-        let row = &data[start..start + usize::from(w) * 4];
-        for px in row.as_chunks::<4>().0 {
-            out.extend_from_slice(&[px[0], px[1], px[2], 0xff]);
-        }
+        out.extend_from_slice(&data[start..start + usize::from(w) * 4]);
+    }
+    // opaque: the alpha of the decoded image is not meaningful
+    for px in out[9..].as_chunks_mut::<4>().0 {
+        px[3] = 0xff;
     }
     Some(out)
 }
@@ -694,24 +748,67 @@ fn input_events(m: WsIn) -> Vec<FastPathInputEvent> {
                 }
             })
             .collect(),
-        WsIn::Resize { .. } | WsIn::Clip { .. } => vec![],
+        WsIn::Resize { .. } | WsIn::Clip { .. } | WsIn::Ack => vec![],
     }
 }
 
-async fn send_text(sink: &mut Option<Sink>, text: String) {
-    if let Some(s) = sink
-        && s.send(Message::text(text)).await.is_err()
-    {
-        *sink = None;
+/// Messages for the tab. They are written by a task of their own: a tab that reads slowly
+/// never holds back the RDP session (keyboard, mouse, server traffic).
+struct Viewer {
+    tx: mpsc::UnboundedSender<Message>,
+    /// messages not written yet
+    queued: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl Viewer {
+    fn start(mut sink: Sink) -> Self {
+        use std::sync::atomic::Ordering;
+        let (tx, mut rx) = mpsc::unbounded_channel::<Message>();
+        let queued = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let left = queued.clone();
+        tokio::spawn(async move {
+            while let Some(m) = rx.recv().await {
+                let mut n = 1;
+                let mut ok = sink.feed(m).await.is_ok();
+                // everything already waiting goes out in one write
+                while ok && let Ok(m) = rx.try_recv() {
+                    n += 1;
+                    ok = sink.feed(m).await.is_ok();
+                }
+                ok = ok && sink.flush().await.is_ok();
+                left.fetch_sub(n, Ordering::Relaxed);
+                if !ok {
+                    break;
+                }
+            }
+        });
+        Viewer { tx, queued }
+    }
+
+    fn idle(&self) -> bool {
+        self.queued.load(std::sync::atomic::Ordering::Relaxed) == 0
     }
 }
 
-async fn send(sink: &mut Option<Sink>, data: Vec<u8>) {
-    if let Some(s) = sink
-        && s.send(Message::binary(data)).await.is_err()
-    {
-        *sink = None;
+fn emit(viewer: &mut Option<Viewer>, m: Message) {
+    if let Some(v) = viewer {
+        v.queued.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if v.tx.send(m).is_err() {
+            *viewer = None;
+        }
     }
+}
+
+/// Sends the changed areas as one frame, closed by the marker the tab acknowledges.
+fn send_frame(viewer: &mut Option<Viewer>, image: &DecodedImage, dirty: &mut Dirty, started: std::time::Instant) {
+    for area in dirty.take() {
+        if let Some(m) = rect_message(image, area) {
+            emit(viewer, Message::binary(m));
+        }
+    }
+    let mut end = vec![8u8];
+    end.extend_from_slice(&(started.elapsed().as_millis() as u32).to_le_bytes());
+    emit(viewer, Message::binary(end));
 }
 
 /// One step of the Deactivation-Reactivation sequence (server-initiated, e.g. xrdp after
@@ -773,6 +870,19 @@ fn describe_pdu(pdu: &[u8]) -> String {
     d.chars().take(80).collect()
 }
 
+/// The user left the remote session (logoff, "Disconnect" in the remote menu), as opposed
+/// to an error, a timeout or another connection taking the session over.
+fn user_ended(reason: &ironrdp_session::GracefulDisconnectReason) -> bool {
+    use ironrdp_pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode as C};
+    use ironrdp_session::GracefulDisconnectReason as R;
+    match reason {
+        R::UserInitiated | R::ServerInitiated => true,
+        R::Other(text) => [C::LogoffByUser, C::RpcInitiatedDisconnectByuser]
+            .into_iter()
+            .any(|c| *text == ErrorInfo::ProtocolIndependentCode(c).description()),
+    }
+}
+
 async fn active_session(
     framed: Framed,
     result: ironrdp_connector::ConnectionResult,
@@ -795,9 +905,14 @@ async fn active_session(
     }
     .build();
 
-    let mut sink: Option<Sink> = None;
+    let mut viewer: Option<Viewer> = None;
     let mut dirty = Dirty::default();
-    let mut flush = tokio::time::interval(Duration::from_millis(16));
+    // frame sent to the tab and not acknowledged yet
+    let mut in_flight: Option<std::time::Instant> = None;
+    let started = std::time::Instant::now();
+    // diagnostics: ORBITERM_RDP_NOACK=1 sends every frame without waiting for the tab
+    let paced = std::env::var_os("ORBITERM_RDP_NOACK").is_none();
+    let mut flush = tokio::time::interval(Duration::from_millis(10));
     flush.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut pending_resize: Option<(u16, u16, tokio::time::Instant)> = None;
     let mut last_pointer: Option<Vec<u8>> = None;
@@ -816,7 +931,7 @@ async fn active_session(
             } => {
                 match a {
                     // no viewer: the sound is dropped (nobody to hear it)
-                    Some(frame) => send(&mut sink, frame).await,
+                    Some(frame) => emit(&mut viewer, Message::binary(frame)),
                     None => audio_rx = None,
                 }
                 continue;
@@ -853,7 +968,7 @@ async fn active_session(
                         {
                             let m = serde_json::json!({ "t": "clip", "s": t }).to_string();
                             remote_clip = Some(t);
-                            send_text(&mut sink, m).await;
+                            emit(&mut viewer, Message::text(m));
                         }
                         None
                     }
@@ -866,7 +981,14 @@ async fn active_session(
                 Vec::new()
             }
             frame = reader.read_pdu() => {
-                let (action, payload) = frame.map_err(|e| e.to_string())?;
+                let (action, payload) = match frame {
+                    Ok(f) => f,
+                    // the server closed the connection cleanly (xrdp logoff, …)
+                    Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                        return Ok(ended("session RDP fermée par le serveur"));
+                    }
+                    Err(e) => return Err(e.to_string()),
+                };
                 stage.process(&mut image, action, &payload, None).map_err(|e| e.to_string())?
             }
             cmd = cmd_rx.recv() => match cmd {
@@ -880,12 +1002,13 @@ async fn active_session(
                     return Ok("session RDP fermée".into());
                 }
                 Some(Cmd::Viewer(ws)) => {
-                    let (mut s, mut stream) = (*ws).split();
-                    let _ = s.send(Message::binary(size_message(image.width(), image.height()))).await;
+                    let (s, mut stream) = (*ws).split();
+                    viewer = Some(Viewer::start(s));
+                    emit(&mut viewer, Message::binary(size_message(image.width(), image.height())));
                     if let Some(p) = &last_pointer {
-                        let _ = s.send(Message::binary(p.clone())).await;
+                        emit(&mut viewer, Message::binary(p.clone()));
                     }
-                    sink = Some(s);
+                    in_flight = None;
                     dirty.all(image.width(), image.height());
                     // viewer input → this loop (through the command channel)
                     let tx = cmd_tx.clone();
@@ -899,6 +1022,14 @@ async fn active_session(
                             }
                         }
                     });
+                    Vec::new()
+                }
+                Some(Cmd::In(WsIn::Ack)) => {
+                    in_flight = None;
+                    if paced && !dirty.is_empty() && viewer.is_some() {
+                        send_frame(&mut viewer, &image, &mut dirty, started);
+                        in_flight = Some(std::time::Instant::now());
+                    }
                     Vec::new()
                 }
                 Some(Cmd::In(WsIn::Resize { w, h })) => {
@@ -957,12 +1088,17 @@ async fn active_session(
                         Some(Err(e)) => return Err(e.to_string()),
                         None => Vec::new(), // server without dynamic resolution: keep the size, the tab scales
                     }
-                } else if let Some(r) = dirty.0.take() {
-                    if let Some(m) = rect_message(&image, r) {
-                        send(&mut sink, m).await;
-                    }
-                    Vec::new()
                 } else {
+                    // without a viewer the changes keep accumulating (as one area at most)
+                    // an acknowledgement lost with a stalled tab: go on once its queue is empty
+                    let free = match in_flight {
+                        None => true,
+                        Some(t) => !paced || (t.elapsed() > Duration::from_millis(500) && viewer.as_ref().is_some_and(Viewer::idle)),
+                    };
+                    if free && !dirty.is_empty() && viewer.is_some() {
+                        send_frame(&mut viewer, &image, &mut dirty, started);
+                        in_flight = Some(std::time::Instant::now());
+                    }
                     Vec::new()
                 }
             }
@@ -974,11 +1110,11 @@ async fn active_session(
                 ActiveStageOutput::GraphicsUpdate(r) => dirty.add(&r),
                 ActiveStageOutput::PointerDefault => {
                     last_pointer = Some(vec![4]);
-                    send(&mut sink, vec![4]).await;
+                    emit(&mut viewer, Message::binary(vec![4u8]));
                 }
                 ActiveStageOutput::PointerHidden => {
                     last_pointer = Some(vec![5]);
-                    send(&mut sink, vec![5]).await;
+                    emit(&mut viewer, Message::binary(vec![5u8]));
                 }
                 ActiveStageOutput::PointerPosition { .. } => {}
                 ActiveStageOutput::PointerBitmap(p) => {
@@ -988,7 +1124,7 @@ async fn active_session(
                     }
                     m.extend_from_slice(&p.bitmap_data);
                     last_pointer = Some(m.clone());
-                    send(&mut sink, m).await;
+                    emit(&mut viewer, Message::binary(m));
                 }
                 ActiveStageOutput::DeactivateAll => {
                     // Deactivation-Reactivation Sequence (e.g. after a resolution change)
@@ -1023,8 +1159,8 @@ async fn active_session(
                             );
                             stage.set_share_id(share_id);
                             stage.set_enable_server_pointer(enable_server_pointer);
-                            send(&mut sink, size_message(desktop_size.width, desktop_size.height)).await;
-                            dirty.0 = None;
+                            emit(&mut viewer, Message::binary(size_message(desktop_size.width, desktop_size.height)));
+                            dirty.clear();
                             break;
                         }
                     }
@@ -1037,7 +1173,10 @@ async fn active_session(
                         }
                     }
                 }
-                ActiveStageOutput::Terminate(reason) => return Ok(format!("session RDP terminée : {reason}")),
+                ActiveStageOutput::Terminate(reason) => {
+                    let text = format!("session RDP terminée : {reason}");
+                    return Ok(if user_ended(&reason) { ended(text) } else { text });
+                }
                 _ => {}
             }
         }
@@ -1063,6 +1202,44 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn dirty_areas() {
+        let rect = |l, t, r, b| InclusiveRectangle { left: l, top: t, right: r, bottom: b };
+        let mut d = Dirty::default();
+        assert!(d.is_empty());
+        // a clock in a corner and a cursor far away stay two small areas
+        d.add(&rect(1800, 0, 1900, 20));
+        d.add(&rect(100, 900, 110, 920));
+        assert_eq!(d.0.len(), 2);
+        // tiles of the same window merge into one area
+        for x in 0..10u16 {
+            d.add(&rect(400 + x * 64, 300, 463 + x * 64, 363));
+        }
+        assert_eq!(d.0.len(), 3);
+        assert!(d.0.contains(&(400, 300, 1039, 363)));
+        // an area that covers the others swallows them
+        d.add(&rect(0, 0, 1919, 1079));
+        assert_eq!(d.take(), vec![(0, 0, 1919, 1079)]);
+        assert!(d.is_empty());
+        // many scattered areas fall back to their bounding box
+        for i in 0..30u16 {
+            d.add(&rect(i * 300 % 1900, i * 400 % 1000, i * 300 % 1900 + 3, i * 400 % 1000 + 3));
+        }
+        assert!(d.0.len() <= Dirty::MAX);
+        d.all(800, 600);
+        assert_eq!(d.take(), vec![(0, 0, 799, 599)]);
+    }
+
+    #[test]
+    fn rect_is_opaque() {
+        let image = DecodedImage::new(PixelFormat::RgbA32, 4, 2);
+        let m = rect_message(&image, (1, 0, 2, 1)).unwrap();
+        assert_eq!(&m[..9], &[1, 1, 0, 0, 0, 2, 0, 2, 0]);
+        assert_eq!(m.len(), 9 + 2 * 2 * 4);
+        assert!(m[9..].chunks(4).all(|p| p[3] == 0xff));
+        assert!(rect_message(&image, (4, 0, 5, 1)).is_none());
+    }
 
     #[test]
     fn certificates_tofu() {

@@ -164,9 +164,15 @@ impl TcpTermConnection {
             let mut buf = vec![0u8; 16 * 1024];
             let mut parser = TelnetParser::new();
             let mut rlogin_first = true;
+            // the server closing the connection (logout) is a normal end; a read error is not
+            let mut clean = false;
             loop {
                 let n = match rd.read(&mut buf).await {
-                    Ok(0) | Err(_) => break,
+                    Ok(0) => {
+                        clean = true;
+                        break;
+                    }
+                    Err(_) => break,
                     Ok(n) => n,
                 };
                 match c2.mode {
@@ -197,7 +203,7 @@ impl TcpTermConnection {
                     }
                 }
             }
-            on_close("Connexion fermée".into());
+            on_close(if clean { crate::ssh::ended("Connexion fermée") } else { "Connexion interrompue".into() });
         });
         Ok(conn)
     }

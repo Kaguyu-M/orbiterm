@@ -333,6 +333,8 @@ struct TermData {
 struct TermClosed {
     conn_id: String,
     reason: String,
+    /// normal end of session (the user quit), not an error
+    ended: bool,
 }
 
 #[derive(Clone, Serialize)]
@@ -385,6 +387,7 @@ fn sinks(app: &AppHandle, conn_id: &str, log: Option<Arc<crate::termlog::TermLog
     });
     let (app_c, id_c) = (app.clone(), conn_id.to_string());
     let on_close: CloseSink = Arc::new(move |reason: String| {
+        let (ended, reason) = crate::ssh::split_reason(reason);
         if let Some(l) = log.clone() {
             // the tab still sends its last lines: the file is closed a moment later
             let (app_l, id_l, why) = (app_c.clone(), id_c.clone(), reason.clone());
@@ -396,7 +399,7 @@ fn sinks(app: &AppHandle, conn_id: &str, log: Option<Arc<crate::termlog::TermLog
                 }
             });
         }
-        let _ = app_c.emit("term-closed", TermClosed { conn_id: id_c.clone(), reason });
+        let _ = app_c.emit("term-closed", TermClosed { conn_id: id_c.clone(), reason, ended });
     });
     (on_data, on_close)
 }

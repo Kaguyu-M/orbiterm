@@ -36,6 +36,8 @@ export interface Tab {
   state: TabState;
   /** editor tabs: unsaved changes */
   dirty?: boolean;
+  /** when the connection opened (ms), to tell a quick failure from a session the user quit */
+  openedAt?: number;
 }
 
 type TextAsk = {
@@ -120,6 +122,8 @@ export interface Prefs {
   updateCheck: boolean;
   /** version the user chose not to be told about again */
   updateSkip: string;
+  /** close the tab and go back home when a session is quit normally (exit, logoff) */
+  closeOnEnd: boolean;
 }
 
 export const DEFAULT_PREFS: Prefs = {
@@ -148,6 +152,7 @@ export const DEFAULT_PREFS: Prefs = {
   localDir: "",
   updateCheck: true,
   updateSkip: "",
+  closeOnEnd: true,
   keepalive: 30,
   sshX11: false,
   sshCompression: false,
@@ -944,6 +949,7 @@ class App {
       tab.connId = connId;
       tab.state = "open";
       tab.status = "";
+      tab.openedAt = Date.now();
       if (s.kind === "ssh" && s.sftp_enabled && tab.key === this.activeKey && this.prefs.sidebar) this.sideTab = "sftp";
       // macro launched at startup (session "bookmark" settings), once the shell has shown its prompt
       const startup = this.store.macros.find((m) => m.id === s.extra?.startup_macro);
@@ -1045,8 +1051,17 @@ class App {
     this.activeKey = keys[(i + dir + keys.length) % keys.length];
   }
 
-  onConnectionClosed(connId: string, reason = "") {
+  onConnectionClosed(connId: string, reason = "", ended = false) {
     const t = this.tabs.find((x) => x.connId === connId);
+    if (t && ended && this.closesOnEnd(t)) {
+      // the user quit the session (exit, logoff): no dead screen, back to the home tab
+      const wasActive = this.activeKey === t.key;
+      t.state = "closed";
+      this.closeTab(t).then(() => {
+        if (wasActive) this.activeKey = HOME;
+      });
+      return;
+    }
     if (t) {
       // views without a terminal (RDP, VNC…) show it from tab.status
       t.status = reason;
@@ -1054,6 +1069,16 @@ class App {
       t.state = "closed";
       api.termClose(connId).catch(() => {});
     }
+  }
+
+  /** Whether a tab whose session was quit normally closes by itself. */
+  private closesOnEnd(t: Tab): boolean {
+    if (!this.prefs.closeOnEnd || t.dirty) return false;
+    // a session that ends right away (failing command, remote command printing a result)
+    // keeps its tab so its output can be read
+    if (t.openedAt === undefined || Date.now() - t.openedAt < 3000) return false;
+    if ((t.session.extra?.command ?? "").trim() !== "") return false;
+    return true;
   }
 
   async answerHostKey(accept: boolean) {

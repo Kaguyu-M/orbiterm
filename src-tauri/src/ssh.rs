@@ -48,8 +48,24 @@ pub type HostKeyPrompter =
     Arc<dyn Fn(HostKeyQuestion) -> Pin<Box<dyn Future<Output = bool> + Send>> + Send + Sync>;
 /// Receives terminal output bytes.
 pub type DataSink = Arc<dyn Fn(Vec<u8>) + Send + Sync>;
-/// Called once when the shell ends (reason text).
+/// Called once when the shell ends (reason text, see [`ended`]).
 pub type CloseSink = Arc<dyn Fn(String) + Send + Sync>;
+
+/// Marks a close reason as a normal end of session (the user quit: `exit`, logoff…), as
+/// opposed to an error or a lost connection. The tab can then close by itself.
+const ENDED: &str = "\u{1}";
+
+pub fn ended(reason: impl Into<String>) -> String {
+    format!("{ENDED}{}", reason.into())
+}
+
+/// Splits a close reason into (normal end?, text).
+pub fn split_reason(reason: String) -> (bool, String) {
+    match reason.strip_prefix(ENDED) {
+        Some(r) => (true, r.to_string()),
+        None => (false, reason),
+    }
+}
 
 pub enum Credentials {
     Password(String),
@@ -143,6 +159,46 @@ pub struct ClientHandler {
     /// Set when the user refused the key, to report a precise error.
     rejected: Arc<std::sync::atomic::AtomicBool>,
     shared: Arc<Shared>,
+    /// pauses the handshake deadline while the user answers the host-key question
+    waiting: Arc<Waiting>,
+}
+
+/// Time to reach the server (TCP connect, or the channel through a jump host).
+const REACH_TIMEOUT: Duration = Duration::from_secs(15);
+/// Silence allowed during the key exchange, not counting the time spent on a question.
+const HANDSHAKE_IDLE: Duration = Duration::from_secs(30);
+/// Authentication (password, key, agent): no question is asked at this stage.
+const AUTH_TIMEOUT: Duration = Duration::from_secs(90);
+
+/// Tracks whether a question is on screen and when the last one was answered.
+pub struct Waiting {
+    asking: std::sync::atomic::AtomicBool,
+    since: std::sync::Mutex<std::time::Instant>,
+}
+
+impl Waiting {
+    fn new() -> Self {
+        Waiting { asking: false.into(), since: std::sync::Mutex::new(std::time::Instant::now()) }
+    }
+    fn expired(&self, limit: Duration) -> bool {
+        !self.asking.load(std::sync::atomic::Ordering::SeqCst)
+            && self.since.lock().unwrap_or_else(|e| e.into_inner()).elapsed() > limit
+    }
+}
+
+/// Runs `fut` until it ends or stays silent for longer than `limit` (time spent on a question excluded).
+async fn idle_deadline<F: std::future::Future>(fut: F, waiting: &Waiting, limit: Duration) -> Option<F::Output> {
+    tokio::pin!(fut);
+    loop {
+        tokio::select! {
+            r = &mut fut => return Some(r),
+            _ = tokio::time::sleep(Duration::from_millis(250)) => {
+                if waiting.expired(limit) {
+                    return None;
+                }
+            }
+        }
+    }
 }
 
 fn extract_key(k: &PublicKeyOrCertificate) -> PublicKey {
@@ -174,7 +230,10 @@ impl client::Handler for ClientHandler {
             fingerprint: known_hosts::fingerprint(&key),
             status,
         };
+        self.waiting.asking.store(true, std::sync::atomic::Ordering::SeqCst);
         let accepted = (self.prompter)(question).await;
+        *self.waiting.since.lock().unwrap_or_else(|e| e.into_inner()) = std::time::Instant::now();
+        self.waiting.asking.store(false, std::sync::atomic::Ordering::SeqCst);
         if !accepted {
             self.rejected.store(true, std::sync::atomic::Ordering::SeqCst);
             return Ok(false);
@@ -347,6 +406,7 @@ async fn open_transport(
     via: Option<&Handle<ClientHandler>>,
 ) -> AppResult<Handle<ClientHandler>> {
     let rejected = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let waiting = Arc::new(Waiting::new());
     let handler = ClientHandler {
         host: host.to_string(),
         port,
@@ -354,29 +414,40 @@ async fn open_transport(
         prompter,
         rejected: rejected.clone(),
         shared,
+        waiting: waiting.clone(),
     };
-    // The TCP connect + key exchange gets a deadline; the host-key prompt may wait
-    // for the user, so the deadline is generous.
+    // Reaching the server and the key exchange each get a short deadline; the time the
+    // user spends on the host-key question is not counted.
+    let unreachable = || AppError::Conn(format!("{host}:{port} ne répond pas"));
     let res = match via {
-        None => tokio::time::timeout(Duration::from_secs(300), client::connect(config, (host, port), handler)).await,
-        Some(jump) => {
-            let ch = jump
-                .channel_open_direct_tcpip(host, port as u32, "127.0.0.1", 0)
+        None => {
+            let tcp = tokio::time::timeout(REACH_TIMEOUT, tokio::net::TcpStream::connect((host, port)))
                 .await
+                .map_err(|_| unreachable())?
+                .map_err(|e| AppError::Conn(format!("{host}:{port} : {e}")))?;
+            let _ = tcp.set_nodelay(true);
+            *waiting.since.lock().unwrap_or_else(|e| e.into_inner()) = std::time::Instant::now();
+            idle_deadline(client::connect_stream(config, tcp, handler), &waiting, HANDSHAKE_IDLE).await
+        }
+        Some(jump) => {
+            let ch = tokio::time::timeout(REACH_TIMEOUT, jump.channel_open_direct_tcpip(host, port as u32, "127.0.0.1", 0))
+                .await
+                .map_err(|_| AppError::Conn(format!("le rebond SSH ne joint pas {host}:{port} (délai dépassé)")))?
                 .map_err(|e| AppError::Conn(format!("le rebond SSH n'a pas pu joindre {host}:{port} : {e}")))?;
-            tokio::time::timeout(Duration::from_secs(300), client::connect_stream(config, ch.into_stream(), handler)).await
+            *waiting.since.lock().unwrap_or_else(|e| e.into_inner()) = std::time::Instant::now();
+            idle_deadline(client::connect_stream(config, ch.into_stream(), handler), &waiting, HANDSHAKE_IDLE).await
         }
     };
     match res {
-        Err(_) => Err(AppError::Timeout),
-        Ok(Err(e)) => {
+        None => Err(AppError::Conn(format!("{host}:{port} : le serveur SSH ne termine pas l'échange de clés"))),
+        Some(Err(e)) => {
             if rejected.load(std::sync::atomic::Ordering::SeqCst) {
                 Err(AppError::HostKeyRejected)
             } else {
                 Err(e.into())
             }
         }
-        Ok(Ok(h)) => Ok(h),
+        Some(Ok(h)) => Ok(h),
     }
 }
 
@@ -460,7 +531,8 @@ impl SshConnection {
                         }
                     }
                     on_close(match exit {
-                        Some(code) => format!("Session terminée (code {code})"),
+                        // the remote shell ended by itself (exit, logout)
+                        Some(code) => ended(format!("Session terminée (code {code})")),
                         None => "Connexion fermée".to_string(),
                     });
                 });
@@ -646,6 +718,12 @@ impl SshConnection {
 }
 
 async fn authenticate(handle: &mut Handle<ClientHandler>, user: &str, creds: Credentials, agent: bool) -> AppResult<()> {
+    tokio::time::timeout(AUTH_TIMEOUT, authenticate_inner(handle, user, creds, agent))
+        .await
+        .map_err(|_| AppError::Conn("le serveur SSH ne répond plus pendant l'authentification".into()))?
+}
+
+async fn authenticate_inner(handle: &mut Handle<ClientHandler>, user: &str, creds: Credentials, agent: bool) -> AppResult<()> {
     if agent && crate::agent::authenticate(handle, user).await? {
         return Ok(());
     }
@@ -706,4 +784,65 @@ fn cwd_command(tag: &str) -> String {
     format!(
         "p=$(grep -lsxz 'LC_ORBITERM_ID={tag}' /proc/[0-9]*/environ 2>/dev/null | cut -d/ -f3);          for i in $p; do pp=$(sed -e 's/.*) //' /proc/$i/stat 2>/dev/null | cut -d' ' -f2);          case \" $p \" in *\" $pp \"*) ;; *) readlink /proc/$i/cwd; exit 0;; esac; done"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ended_reasons_round_trip() {
+        assert_eq!(split_reason(ended("Session terminée (code 0)")), (true, "Session terminée (code 0)".into()));
+        assert_eq!(split_reason("Connexion fermée".into()), (false, "Connexion fermée".into()));
+    }
+
+    #[tokio::test]
+    async fn idle_deadline_pauses_during_a_question() {
+        let limit = Duration::from_millis(300);
+        // silent peer: gives up after the limit
+        let w = Waiting::new();
+        let r = idle_deadline(std::future::pending::<()>(), &w, limit).await;
+        assert!(r.is_none());
+        // a question on screen for longer than the limit does not count
+        let w = Arc::new(Waiting::new());
+        w.asking.store(true, std::sync::atomic::Ordering::SeqCst);
+        let w2 = w.clone();
+        let answered = async move {
+            tokio::time::sleep(Duration::from_millis(900)).await;
+            *w2.since.lock().unwrap() = std::time::Instant::now();
+            w2.asking.store(false, std::sync::atomic::Ordering::SeqCst);
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            7
+        };
+        assert_eq!(idle_deadline(answered, &w, limit).await, Some(7));
+    }
+
+    #[tokio::test]
+    async fn silent_server_fails_instead_of_waiting() {
+        // a server that accepts the TCP connection but never speaks SSH
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let mut keep = Vec::new();
+            while let Ok((s, _)) = listener.accept().await {
+                keep.push(s);
+            }
+        });
+        let prompter: HostKeyPrompter = Arc::new(|_| Box::pin(async { true }));
+        let dir = tempfile::tempdir().unwrap();
+        let t0 = std::time::Instant::now();
+        let r = open_transport(
+            client_config(false, 0),
+            "127.0.0.1",
+            port,
+            &dir.path().join("kh"),
+            prompter,
+            Arc::new(Shared::default()),
+            None,
+        )
+        .await;
+        let e = r.err().expect("must fail");
+        assert!(e.to_string().contains("échange de clés"), "{e}");
+        assert!(t0.elapsed() < HANDSHAKE_IDLE + Duration::from_secs(5));
+    }
 }

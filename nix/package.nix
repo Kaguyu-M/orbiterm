@@ -13,6 +13,7 @@
   glib-networking,
   dbus,
   aws-lc,
+  gst_all_1,
 }:
 
 let
@@ -40,7 +41,7 @@ rustPlatform.buildRustPackage (finalAttrs: {
   npmDeps = fetchNpmDeps {
     name = "${finalAttrs.pname}-${finalAttrs.version}-npm-deps";
     inherit (finalAttrs) src;
-    hash = "sha256-KXTM5mhOrLOH6Q09HjtAKK9fSTQOQXqg4qdsr+iFTes=";
+    hash = "sha256-oaA9C6RtoRVlcc4UfGLFAWxuftqoB5PqpeHkjiYbWrA=";
   };
 
   cargoRoot = "src-tauri";
@@ -61,6 +62,10 @@ rustPlatform.buildRustPackage (finalAttrs: {
     glib-networking # TLS for the embedded web views
     dbus # secret service (passwords in the system keyring)
     aws-lc # rustls crypto (built-in FTP server); nixpkgs links the system AWS-LC
+    # Web Audio of the web view (sound of RDP sessions); wrapGAppsHook3 exposes the plugins
+    gst_all_1.gstreamer
+    gst_all_1.gst-plugins-base
+    gst_all_1.gst-plugins-good
   ];
 
   # the test suite opens network servers and uses the session keyring

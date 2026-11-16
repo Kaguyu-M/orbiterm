@@ -9,7 +9,7 @@ use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_s
 use serde::Serialize;
 
 use crate::error::{AppError, AppResult};
-use crate::ssh::{CloseSink, DataSink};
+use crate::ssh::{CloseSink, DataSink, ended};
 
 pub struct PtyConnection {
     master: Mutex<Box<dyn MasterPty + Send>>,
@@ -157,8 +157,8 @@ impl PtyConnection {
         let closer = on_close.clone();
         std::thread::spawn(move || {
             let reason = match child.wait() {
-                Ok(st) if st.success() => "Processus terminé".to_string(),
-                Ok(st) => format!("Processus terminé (code {})", st.exit_code()),
+                Ok(st) if st.success() => ended("Processus terminé"),
+                Ok(st) => ended(format!("Processus terminé (code {})", st.exit_code())),
                 Err(e) => format!("Processus terminé ({e})"),
             };
             // give the reader a moment to flush the last output

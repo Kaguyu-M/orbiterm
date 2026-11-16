@@ -313,3 +313,61 @@ async fn rdp_through_gateway() {
     assert!(l.contains("gw:refusé") && l.contains("gw:auth-ok"), "server log: {l}");
     assert!(l.contains(&format!("gw:canal 127.0.0.1:{port}")) && l.contains("key:0x1e"), "server log: {l}");
 }
+
+/// A server that accepts the connection but never answers the negotiation: the tab must
+/// get an error instead of loading forever.
+#[tokio::test]
+async fn silent_rdp_server_times_out() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        let mut keep = Vec::new();
+        while let Ok((s, _)) = listener.accept().await {
+            keep.push(s);
+        }
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let on_close: CloseSink = Arc::new(|_| {});
+    let t0 = std::time::Instant::now();
+    let r = connect(params(port, "test", &dir.path().join("k")), prompter(seen), on_close).await;
+    let e = r.err().expect("must fail");
+    assert!(e.to_string().contains("ne répond pas à la négociation"), "{e}");
+    assert!(t0.elapsed() < Duration::from_secs(30));
+}
+
+/// The server ending the session by itself (logoff) is reported as a normal end, so the
+/// tab can close instead of showing a dead desktop.
+#[tokio::test]
+async fn server_logoff_is_a_normal_end() {
+    let Some(exe) = server_exe() else {
+        eprintln!("rdp-test-server introuvable : test ignoré");
+        return;
+    };
+    let port = 3393;
+    let child = Command::new(&exe)
+        .arg(port.to_string())
+        .env("ORB_RDP_QUIT_AFTER", "3")
+        .stdout(Stdio::null())
+        .spawn()
+        .expect("server");
+    let _guard = Server(child);
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    let dir = tempfile::tempdir().unwrap();
+    let (tx, rx) = tokio::sync::oneshot::channel::<String>();
+    let tx = Arc::new(Mutex::new(Some(tx)));
+    let on_close: CloseSink = Arc::new(move |r: String| {
+        if let Some(t) = tx.lock().unwrap().take() {
+            let _ = t.send(r);
+        }
+    });
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let mut p = params(port, "test", &dir.path().join("k"));
+    p.sound = false;
+    p.clipboard = false;
+    p.share_dir = None;
+    let _session = connect(p, prompter(seen), on_close).await.expect("connect");
+    let reason = tokio::time::timeout(Duration::from_secs(20), rx).await.expect("session end").unwrap();
+    let (ended, text) = orbiterm_lib::ssh::split_reason(reason);
+    assert!(ended, "not reported as a normal end: {text}");
+}
