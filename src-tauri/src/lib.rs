@@ -67,9 +67,40 @@ fn webkit_workarounds() {
     }
 }
 
+/// WebKitGTK keeps the pages of the app in its HTTP cache: after an update (apt, dnf, pacman)
+/// the window showed the previous version's interface with the new program. The cache is
+/// emptied once when the version changes. Returns whether it was.
+#[cfg(target_os = "linux")]
+fn drop_stale_web_cache(data_dir: &std::path::Path, version: &str) -> bool {
+    let marker = data_dir.join("orbiterm-version");
+    if std::fs::read_to_string(&marker).is_ok_and(|v| v.trim() == version) {
+        return false;
+    }
+    for sub in ["WebKitCache", "CacheStorage"] {
+        let _ = std::fs::remove_dir_all(data_dir.join(sub));
+    }
+    let _ = std::fs::create_dir_all(data_dir);
+    let _ = std::fs::write(&marker, version);
+    true
+}
+
+#[cfg(target_os = "linux")]
+fn web_data_dir() -> Option<std::path::PathBuf> {
+    // where Tauri's WebKitGTK keeps its data: $XDG_DATA_HOME/<identifier>
+    let base = std::env::var_os("XDG_DATA_HOME")
+        .filter(|v| !v.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".local/share")))?;
+    Some(base.join("com.orbiterm.app"))
+}
+
 pub fn run() {
     #[cfg(target_os = "linux")]
     webkit_workarounds();
+    #[cfg(target_os = "linux")]
+    if let Some(dir) = web_data_dir() {
+        drop_stale_web_cache(&dir, env!("CARGO_PKG_VERSION"));
+    }
     // diagnostics on demand: ORBITERM_LOG=debug (or any env_logger filter), written to stderr
     if let Ok(filter) = std::env::var("ORBITERM_LOG") {
         let _ = env_logger::Builder::new().parse_filters(&filter).try_init();
@@ -197,6 +228,20 @@ pub fn run() {
 
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
+    #[test]
+    fn web_cache_dropped_once_per_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("WebKitCache");
+        std::fs::create_dir_all(&cache).unwrap();
+        assert!(super::drop_stale_web_cache(dir.path(), "1.0.0"));
+        assert!(!cache.exists());
+        std::fs::create_dir_all(&cache).unwrap();
+        assert!(!super::drop_stale_web_cache(dir.path(), "1.0.0"));
+        assert!(cache.exists());
+        assert!(super::drop_stale_web_cache(dir.path(), "1.0.1"));
+        assert!(!cache.exists());
+    }
+
     #[test]
     fn dmabuf_off_only_where_it_breaks() {
         assert!(super::needs_dmabuf_off("innotek GmbH", "VirtualBox", false));

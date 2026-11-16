@@ -16,7 +16,8 @@
     NumpadEnter: 0xe01c, ControlRight: 0xe01d, NumpadDivide: 0xe035, PrintScreen: 0xe037, AltRight: 0xe038,
     Home: 0xe047, ArrowUp: 0xe048, PageUp: 0xe049, ArrowLeft: 0xe04b, ArrowRight: 0xe04d, End: 0xe04f,
     ArrowDown: 0xe050, PageDown: 0xe051, Insert: 0xe052, Delete: 0xe053, MetaLeft: 0xe05b, MetaRight: 0xe05c,
-    ContextMenu: 0xe05d,
+    // older WebKitGTK names the Super keys after their former DOM code
+    OSLeft: 0xe05b, OSRight: 0xe05c, ContextMenu: 0xe05d,
   };
 </script>
 
@@ -128,6 +129,9 @@
       });
     }
     const now = performance.now();
+    // `sent` is the backend's clock: it restarts on reconnection, so a lag no frame can
+    // really have (over a minute) means the reference is stale, not that the image is late
+    if (now - sent - stat.base > 60000) stat.base = Infinity;
     stat.base = Math.min(stat.base, now - sent);
     stat.lag = now - sent - stat.base;
     stat.maxLag = Math.max(stat.maxLag, stat.lag);
@@ -329,7 +333,8 @@
     if (d) send({ t: "w", d, h: false, ...pos(e) });
   }
   function onKey(e: KeyboardEvent, up: boolean) {
-    const sc = SC[e.code];
+    // Super/Windows keys: some engines give no usable `code` for them, only `key`
+    const sc = SC[e.code] ?? (["Meta", "OS", "Super"].includes(e.key) ? (e.location === 2 ? 0xe05c : 0xe05b) : undefined);
     if (sc === undefined) return;
     e.preventDefault();
     e.stopPropagation();
@@ -619,7 +624,12 @@
     display: flex;
     align-items: center;
     gap: 4px;
+    /* explicit width: with left: 50% the shrink-to-fit width would stop at half the screen
+       and the texts would overlap on narrow (or highly scaled) screens */
+    width: max-content;
     min-width: min(560px, 90vw);
+    max-width: calc(100% - 16px);
+    box-sizing: border-box;
     padding: 2px 4px;
     background: var(--chrome);
     border: 1px solid var(--chrome-border);
@@ -653,6 +663,11 @@
     color: var(--muted);
     font-size: 11px;
     white-space: nowrap;
+  }
+  .fsstat {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .fsbar .ico {
     display: flex;

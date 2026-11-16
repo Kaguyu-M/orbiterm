@@ -80,3 +80,36 @@ jobs:
       - name: Tests Rust
         working-directory: src-tauri
         run: cargo test --locked
+
+      # Launches the real app under Xvfb with the GStreamer H.264 decoders installed (the
+      # combination that once left the window blank) and fails if the interface is not drawn.
+      - name: Démarrage de l'interface sous Xvfb (Linux)
+        if: runner.os == 'Linux'
+        timeout-minutes: 30
+        working-directory: src-tauri
+        run: |
+          sudo apt-get install -y --no-install-recommends xvfb xauth imagemagick dbus-x11 \
+            gstreamer1.0-libav gstreamer1.0-plugins-bad gstreamer1.0-plugins-good
+          cargo build --locked --features tauri/custom-protocol
+          export ORBITERM_CONFIG_DIR="$RUNNER_TEMP/orbcfg" ORBITERM_LOG=info
+          mkdir -p "$ORBITERM_CONFIG_DIR"
+          xvfb-run -a -s "-screen 0 1280x800x24" dbus-run-session -- sh -c '
+            ./target/debug/orbiterm > "$RUNNER_TEMP/orb.log" 2>&1 & pid=$!
+            sleep 25
+            import -window root "$RUNNER_TEMP/shot.png"
+            kill -0 $pid || { echo "::error::l application s est arrêtée"; exit 1; }
+            kill $pid' || { cat "$RUNNER_TEMP/orb.log"; exit 1; }
+          sd=$(convert "$RUNNER_TEMP/shot.png" -crop 600x300+40+60 -colorspace Gray -format "%[fx:standard_deviation]" info:)
+          echo "écart-type de la zone de l'interface : $sd"
+          if awk "BEGIN{exit !($sd < 0.02)}"; then
+            echo "::error::fenêtre vide (interface non dessinée)"; cat "$RUNNER_TEMP/orb.log"; exit 1
+          fi
+          if grep -qiE "panicked|SIGABRT|crashed" "$RUNNER_TEMP/orb.log"; then cat "$RUNNER_TEMP/orb.log"; exit 1; fi
+
+      - name: Capture de l'interface (Linux)
+        if: runner.os == 'Linux' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: capture-xvfb
+          path: ${{ runner.temp }}/shot.png
+          if-no-files-found: ignore

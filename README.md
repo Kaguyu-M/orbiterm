@@ -54,7 +54,7 @@ sudo apt update && sudo apt install orbiterm
 **Fedora** (41 ou plus récent) :
 ```bash
 sudo curl -fsSLo /etc/yum.repos.d/orbiterm.repo https://kaguyu-m.github.io/orbiterm/orbiterm.repo
-sudo dnf install Orbiterm
+sudo dnf install orbiterm
 ```
 
 **Arch Linux / Omarchy** (dépôt pacman signé ; `gst-libav` pour le RDP en H.264) :
