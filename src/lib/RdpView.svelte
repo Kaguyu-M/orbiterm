@@ -100,7 +100,8 @@
   // display statistics (hidden session option rdp_stats = "1", also read by the automated tests)
   // svelte-ignore state_referenced_locally
   const showStats = tab.session.extra?.rdp_stats === "1";
-  const stat = { frames: 0, bytes: 0, total: 0, base: Infinity, lag: 0, maxLag: 0, since: 0 };
+  // wire: KiB received from the server (cumulative), mode: 0 bitmaps, 1 graphics pipeline, 2 with H.264
+  const stat = { frames: 0, bytes: 0, total: 0, base: Infinity, lag: 0, maxLag: 0, since: 0, wire: 0, wire0: 0, mode: 0 };
   let statText = $state("");
   function frameEnd(sent: number) {
     if (!ackQueued) {
@@ -118,8 +119,9 @@
     (window as unknown as { __orbitermRdpStats?: typeof stat }).__orbitermRdpStats = stat;
     if (showStats && now - stat.since >= 1000) {
       const s = (now - stat.since) / 1000;
-      statText = `${Math.round(stat.frames / s)} i/s · ${(stat.bytes / s / 1048576).toFixed(1)} Mo/s · retard ${Math.round(stat.maxLag)} ms · ${surf?.kind === "webgl" ? "GPU" : "2D"}`;
-      Object.assign(stat, { frames: 0, bytes: 0, maxLag: 0, since: now });
+      const codec = ["bitmaps", "GFX", "H.264"][stat.mode] ?? "?";
+      statText = `${Math.round(stat.frames / s)} i/s · réseau ${((stat.wire - stat.wire0) / s / 1024).toFixed(2)} Mo/s · ${codec} · retard ${Math.round(stat.maxLag)} ms · ${surf?.kind === "webgl" ? "GPU" : "2D"}`;
+      Object.assign(stat, { frames: 0, bytes: 0, maxLag: 0, since: now, wire0: stat.wire });
     }
   }
 
@@ -146,6 +148,10 @@
       stat.total += buf.byteLength;
     } else if (t === 8) {
       surf?.present();
+      if (buf.byteLength >= 10) {
+        stat.wire = dv.getUint32(5, true);
+        stat.mode = dv.getUint8(9);
+      }
       frameEnd(dv.getUint32(1, true));
     } else if (t === 6) {
       // counter read by the automated tests

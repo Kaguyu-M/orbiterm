@@ -1,6 +1,6 @@
 [package]
 name = "orbiterm"
-version = "0.8.8"
+version = "0.8.9"
 description = "Orbiterm - SSH terminal & SFTP browser"
 authors = ["Kaguyu-M"]
 license = "MIT"
@@ -56,6 +56,8 @@ ironrdp-pdu = "0.11"
 ironrdp-dvc = "0.10"
 ironrdp-displaycontrol = "0.10"
 ironrdp-core = "0.3"
+# graphics pipeline (RDPGFX): H.264, RemoteFX progressive, ClearCodec
+ironrdp-egfx = "0.5"
 # built-in servers
 libunftp = "0.24"
 unftp-sbe-fs = "0.4"
@@ -83,6 +85,8 @@ des = "0.8"
 flate2 = "1"
 
 [target.'cfg(windows)'.dependencies]
+# H.264 of the RDP graphics pipeline, decoded by Windows (Media Foundation)
+ironrdp-egfx-native = "0.2"
 winreg = "0.55"
 # in-app update: download of the installer (Windows only, the system TLS)
 reqwest = { version = "0.13", default-features = false, features = ["native-tls"] }

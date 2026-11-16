@@ -30,6 +30,7 @@ use ironrdp_core::WriteBuf;
 use ironrdp_displaycontrol::client::DisplayControlClient;
 use ironrdp_displaycontrol::pdu::MonitorLayoutEntry;
 use ironrdp_dvc::DrdynvcClient;
+use ironrdp_egfx::client::{GraphicsPipelineClient, GraphicsPipelineHandler};
 use ironrdp_graphics::image_processing::PixelFormat;
 use ironrdp_pdu::geometry::InclusiveRectangle;
 use ironrdp_pdu::input::fast_path::{FastPathInputEvent, KeyboardFlags, SynchronizeFlags};
@@ -106,8 +107,9 @@ impl Quality {
     }
 }
 
-/// Above this TCP connect time the link is treated as slow (a LAN answers in a few ms).
-const SLOW_LINK_RTT: Duration = Duration::from_millis(15);
+/// Above this TCP connect time the link is treated as slow: a LAN, even over Wi-Fi, answers in
+/// well under 40 ms; a VPN or the Internet usually above.
+const SLOW_LINK_RTT: Duration = Duration::from_millis(40);
 
 /// Whether the slow-link profile applies: `rtt` is the TCP connect time (None through a gateway).
 fn slow_link(q: Quality, rtt: Option<Duration>) -> bool {
@@ -384,6 +386,45 @@ fn client_name() -> String {
     n.chars().take(15).collect()
 }
 
+/// Graphics pipeline (RDPGFX), as used by the Windows client: the server encodes the desktop
+/// in H.264 (or RemoteFX progressive), far less data and server work than bitmap updates.
+/// Windows only for now (H.264 decoded by Media Foundation); ORBITERM_RDP_NOGFX=1 turns it off.
+fn gfx_enabled() -> bool {
+    cfg!(windows) && std::env::var_os("ORBITERM_RDP_NOGFX").is_none()
+}
+
+#[cfg(windows)]
+fn h264_decoder() -> Option<Box<dyn ironrdp_egfx::decode::H264Decoder>> {
+    use ironrdp_egfx::decode::YuvMatrix;
+    match ironrdp_egfx_native::MediaFoundationH264Decoder::new(YuvMatrix::Bt709Full) {
+        Ok(d) => Some(Box::new(d)),
+        Err(e) => {
+            // Windows N editions without the Media Feature Pack: RemoteFX progressive instead
+            log::warn!("RDP : décodeur H.264 de Windows indisponible ({e})");
+            None
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn h264_decoder() -> Option<Box<dyn ironrdp_egfx::decode::H264Decoder>> {
+    None
+}
+
+struct GfxEvents;
+impl GraphicsPipelineHandler for GfxEvents {}
+
+/// Picture coding in use, shown in the statistics: 0 bitmap updates, 1 graphics pipeline,
+/// 2 graphics pipeline with H.264.
+fn picture_mode(stage: &ironrdp_session::ActiveStage) -> u8 {
+    match stage.get_dvc::<GraphicsPipelineClient>() {
+        Some(c) if c.processor().is_active() => {
+            if c.processor().codec_capabilities().avc420 { 2 } else { 1 }
+        }
+        _ => 0,
+    }
+}
+
 fn connector_config(p: &RdpParams, slow: bool) -> AppResult<ironrdp_connector::Config> {
     let codecs = client_codecs_capabilities(&[]).map_err(|e| AppError::Conn(format!("codecs RDP : {e}")))?;
     use ironrdp_pdu::gcc::ConnectionType;
@@ -398,7 +439,9 @@ fn connector_config(p: &RdpParams, slow: bool) -> AppResult<ironrdp_connector::C
                 | PerformanceFlags::DISABLE_CURSOR_SHADOW,
         )
     } else {
-        (ConnectionType::Lan, 32, PerformanceFlags::default())
+        // local network: mstsc's "LAN" experience (window contents shown while dragged,
+        // font smoothing, desktop composition); IronRDP's default only drew window outlines
+        (ConnectionType::Lan, 32, PerformanceFlags::ENABLE_FONT_SMOOTHING | PerformanceFlags::ENABLE_DESKTOP_COMPOSITION)
     };
     Ok(ironrdp_connector::Config {
         credentials: Credentials::UsernamePassword { username: p.username.clone(), password: p.password.clone() },
@@ -428,7 +471,7 @@ fn connector_config(p: &RdpParams, slow: bool) -> AppResult<ironrdp_connector::C
         connection_type,
         remote_application_mode: false,
         rail_support_level: ironrdp_pdu::rdp::capability_sets::RailSupportLevel::empty(),
-        support_dyn_vc_gfx_protocol: false,
+        support_dyn_vc_gfx_protocol: gfx_enabled(),
         enable_audio_capture: false,
         bitmap: Some(BitmapConfig { color_depth, lossy_compression: true, codecs }),
         client_build: 0,
@@ -563,9 +606,12 @@ async fn establish(
     let slow = slow_link(p.quality, rtt);
     log::info!("RDP {}:{} : profil {}", p.host, p.port, if slow { "lien lent" } else { "réseau local" });
     let mut framed = ironrdp_tokio::TokioFramed::new(stream);
-    let mut connector = ClientConnector::new(connector_config(&p, slow)?, client_addr).with_static_channel(
-        DrdynvcClient::new().with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new()))),
-    );
+    let mut dvc = DrdynvcClient::new().with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new())));
+    if gfx_enabled() {
+        // IronRDP composes the pipeline's picture into the session image after each PDU
+        dvc = dvc.with_dynamic_channel(GraphicsPipelineClient::new(Box::new(GfxEvents), h264_decoder()));
+    }
+    let mut connector = ClientConnector::new(connector_config(&p, slow)?, client_addr).with_static_channel(dvc);
     let mut channels = Channels { clip: None, drive: false, audio: None };
     if p.clipboard {
         let (cliprdr, rx) = rdp_channels::clipboard();
@@ -872,8 +918,17 @@ fn emit(viewer: &mut Option<Viewer>, m: Message) {
     }
 }
 
+/// Statistics joined to each frame end.
+#[derive(Default, Clone, Copy)]
+struct Wire {
+    /// bytes received from the server
+    bytes: u64,
+    /// see [picture_mode]
+    mode: u8,
+}
+
 /// Sends the changed areas as one frame, closed by the marker the tab acknowledges.
-fn send_frame(viewer: &mut Option<Viewer>, image: &DecodedImage, dirty: &mut Dirty, started: std::time::Instant) {
+fn send_frame(viewer: &mut Option<Viewer>, image: &DecodedImage, dirty: &mut Dirty, started: std::time::Instant, wire: Wire) {
     for area in dirty.take() {
         if let Some(m) = rect_message(image, area) {
             emit(viewer, Message::binary(m));
@@ -881,6 +936,8 @@ fn send_frame(viewer: &mut Option<Viewer>, image: &DecodedImage, dirty: &mut Dir
     }
     let mut end = vec![8u8];
     end.extend_from_slice(&(started.elapsed().as_millis() as u32).to_le_bytes());
+    end.extend_from_slice(&((wire.bytes / 1024) as u32).to_le_bytes());
+    end.push(wire.mode);
     emit(viewer, Message::binary(end));
 }
 
@@ -979,6 +1036,9 @@ async fn active_session(
     .build();
 
     let mut viewer: Option<Viewer> = None;
+    let mut wire = Wire::default();
+    // size last announced to the tab (the graphics pipeline resizes the image itself)
+    let mut shown = (image.width(), image.height());
     let mut dirty = Dirty::default();
     // frame sent to the tab and not acknowledged yet
     let mut in_flight: Option<std::time::Instant> = None;
@@ -1062,7 +1122,19 @@ async fn active_session(
                     }
                     Err(e) => return Err(e.to_string()),
                 };
-                stage.process(&mut image, action, &payload, None).map_err(|e| e.to_string())?
+                wire.bytes += payload.len() as u64;
+                let out = stage.process(&mut image, action, &payload, None).map_err(|e| e.to_string())?;
+                if (image.width(), image.height()) != shown {
+                    shown = (image.width(), image.height());
+                    wire.mode = picture_mode(&stage);
+                    emit(&mut viewer, Message::binary(size_message(shown.0, shown.1)));
+                    in_flight = None;
+                    dirty.all(shown.0, shown.1);
+                }
+                if wire.mode == 0 && wire.bytes < 4 << 20 {
+                    wire.mode = picture_mode(&stage);
+                }
+                out
             }
             cmd = cmd_rx.recv() => match cmd {
                 None | Some(Cmd::Close) => {
@@ -1100,7 +1172,7 @@ async fn active_session(
                 Some(Cmd::In(WsIn::Ack)) => {
                     in_flight = None;
                     if paced && !dirty.is_empty() && viewer.is_some() {
-                        send_frame(&mut viewer, &image, &mut dirty, started);
+                        send_frame(&mut viewer, &image, &mut dirty, started, wire);
                         in_flight = Some(std::time::Instant::now());
                     }
                     Vec::new()
@@ -1169,7 +1241,7 @@ async fn active_session(
                         Some(t) => !paced || (t.elapsed() > Duration::from_millis(500) && viewer.as_ref().is_some_and(Viewer::idle)),
                     };
                     if free && !dirty.is_empty() && viewer.is_some() {
-                        send_frame(&mut viewer, &image, &mut dirty, started);
+                        send_frame(&mut viewer, &image, &mut dirty, started, wire);
                         in_flight = Some(std::time::Instant::now());
                     }
                     Vec::new()
@@ -1233,6 +1305,7 @@ async fn active_session(
                             stage.set_share_id(share_id);
                             stage.set_enable_server_pointer(enable_server_pointer);
                             emit(&mut viewer, Message::binary(size_message(desktop_size.width, desktop_size.height)));
+                            shown = (desktop_size.width, desktop_size.height);
                             dirty.clear();
                             break;
                         }
@@ -1280,7 +1353,8 @@ mod tests {
     fn slow_link_profile() {
         let ms = |n| Some(Duration::from_millis(n));
         assert!(!slow_link(Quality::Auto, ms(2)));
-        assert!(slow_link(Quality::Auto, ms(40)));
+        assert!(!slow_link(Quality::Auto, ms(25))); // home Wi-Fi
+        assert!(slow_link(Quality::Auto, ms(60)));
         assert!(slow_link(Quality::Auto, None)); // RD gateway
         assert!(!slow_link(Quality::Lan, ms(200)));
         assert!(slow_link(Quality::Slow, ms(1)));

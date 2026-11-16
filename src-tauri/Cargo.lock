@@ -3026,6 +3026,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironrdp-egfx-native"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "79e519ae2540f7fd655fdc752874ffc945fecf41709f464d71acb9f5cb4de9b6"
+dependencies = [
+ "ironrdp-egfx",
+ "tracing",
+ "windows",
+]
+
+[[package]]
 name = "ironrdp-error"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4342,7 +4353,7 @@ checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 
 [[package]]
 name = "orbiterm"
-version = "0.8.8"
+version = "0.8.9"
 dependencies = [
  "anyhow",
  "argon2",
@@ -4361,6 +4372,8 @@ dependencies = [
  "ironrdp-core",
  "ironrdp-displaycontrol",
  "ironrdp-dvc",
+ "ironrdp-egfx",
+ "ironrdp-egfx-native",
  "ironrdp-graphics",
  "ironrdp-mstsgu",
  "ironrdp-pdu",
