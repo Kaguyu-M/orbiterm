@@ -259,9 +259,12 @@ async fn ssh_server() {
         tokio::time::sleep(Duration::from_millis(30)).await;
     }
     tokio::time::sleep(Duration::from_millis(1500)).await;
-    conn.write(cmd).await.unwrap();
     let mut ok = false;
-    for _ in 0..200 {
+    // a cold PowerShell (CI runners) can drop what is typed before it is ready: type it again
+    for i in 0..600 {
+        if i % 100 == 0 {
+            conn.write(cmd).await.unwrap();
+        }
         if String::from_utf8_lossy(&out.lock().unwrap()).contains("42zz") {
             ok = true;
             break;
@@ -388,8 +391,9 @@ async fn telnet_server() {
     s.write_all(b"pw-telnet\r\n").await.unwrap();
     acc.clear();
     let mut buf = [0u8; 4096];
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
-    let mut sent = false;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(40);
+    // a cold PowerShell (CI runners) can drop what is typed before it is ready: type it again
+    let mut sent_at: Option<tokio::time::Instant> = None;
     // typed command echoed by the shell + its output; like a terminal, answer the
     // cursor position requests (Windows ConPTY waits for one before starting)
     while String::from_utf8_lossy(&acc).matches("orbi-telnet-ok").count() < 2 {
@@ -397,9 +401,9 @@ async fn telnet_server() {
             Ok(r) => r.unwrap(),
             Err(_) => {
                 assert!(tokio::time::Instant::now() < deadline, "sortie du shell : {:?}", String::from_utf8_lossy(&acc));
-                if !sent {
+                if sent_at.is_none_or(|t| t.elapsed() > Duration::from_secs(6)) {
                     s.write_all(b"echo orbi-telnet-ok\r\n").await.unwrap();
-                    sent = true;
+                    sent_at = Some(tokio::time::Instant::now());
                 }
                 continue;
             }
