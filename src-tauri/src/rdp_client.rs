@@ -85,6 +85,8 @@ pub struct RdpParams {
     pub quality: Quality,
     /// display scale of this computer in % (125, 150…), 100 = none (session option rdp_scale)
     pub scale: u32,
+    /// file of the persistent bitmap cache (session option rdp_cache = "0" turns it off)
+    pub bitmap_cache: Option<PathBuf>,
 }
 
 /// Session option "rdp_quality": what the server is asked to send.
@@ -628,6 +630,7 @@ pub async fn connect(p: RdpParams, prompter: HostKeyPrompter, on_close: CloseSin
     std::thread::Builder::new()
         .name("rdp-session".into())
         .spawn(move || {
+            multimedia_thread();
             let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
                 Ok(rt) => rt,
                 Err(e) => {
@@ -670,6 +673,45 @@ pub async fn connect(p: RdpParams, prompter: HostKeyPrompter, on_close: CloseSin
     Ok(RdpSession { port, token, cmd: cmd_tx, desktop })
 }
 
+/// Windows: the session thread (network, decoding, frames for the tab) gets the "Games"
+/// multimedia class, as the Windows client does for its own threads (AvSetMmThreadCharacteristics):
+/// the scheduler keeps it running while other programs load the processor.
+fn multimedia_thread() {
+    #[cfg(windows)]
+    {
+        let task: Vec<u16> = "Games\0".encode_utf16().collect();
+        let mut index = 0u32;
+        // SAFETY: NUL-terminated string and a valid out pointer; the registration ends with the thread.
+        let h = unsafe { windows_sys::Win32::System::Threading::AvSetMmThreadCharacteristicsW(task.as_ptr(), &mut index) };
+        if h.is_null() {
+            log::debug!("RDP : classe multimédia du thread refusée");
+        }
+    }
+}
+
+/// Typed text ("Coller le texte"): keyboard events sent per tick of the session loop (10 ms).
+/// Thousands of events at once overflow the input of the remote program (letters were lost in
+/// the Windows run box); 8 events = 4 characters every 10 ms, about 400 characters a second.
+const TYPING_EVENTS_PER_TICK: usize = 8;
+
+/// Frame acknowledgements of the graphics pipeline held longer than this are sent anyway
+/// (a tab that stopped drawing: window minimized, page busy).
+const ACK_HOLD_MAX: Duration = Duration::from_millis(250);
+
+/// The frame acknowledgements held by the graphics pipeline, encoded for the server.
+fn take_frame_acks(stage: &mut ironrdp_session::ActiveStage) -> Result<Option<Vec<u8>>, String> {
+    let Some(mut gfx) = stage.get_dvc_mut::<GraphicsPipelineClient>() else {
+        return Ok(None);
+    };
+    if gfx.processor().held_frame_acks() == 0 {
+        return Ok(None);
+    }
+    let id = gfx.channel_id();
+    let acks = gfx.processor_mut().take_frame_acks(ironrdp_egfx::pdu::QueueDepth::Unavailable);
+    let msgs = ironrdp_dvc::encode_dvc_messages(id, acks, ironrdp_svc::ChannelFlags::empty()).map_err(|e| e.to_string())?;
+    stage.encode_dvc_messages(msgs).map(Some).map_err(|e| e.to_string())
+}
+
 struct Channels {
     clip: Option<mpsc::UnboundedReceiver<ClipEvent>>,
     /// sound frames for the tab
@@ -691,7 +733,13 @@ async fn establish(
     let mut dvc = DrdynvcClient::new().with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new())));
     if gfx_enabled() {
         // IronRDP composes the pipeline's picture into the session image after each PDU
-        dvc = dvc.with_dynamic_channel(GraphicsPipelineClient::new(Box::new(GfxEvents), h264_decoder()));
+        let mut gfx = GraphicsPipelineClient::new(Box::new(GfxEvents), h264_decoder());
+        // frames are acknowledged once the tab has shown them (see `active_session`)
+        gfx.set_deferred_frame_ack(true);
+        if let Some(path) = &p.bitmap_cache {
+            gfx = gfx.with_persistent_cache(Box::new(crate::rdp_cache::FileCache::new(path.clone())));
+        }
+        dvc = dvc.with_dynamic_channel(gfx);
     }
     let mut connector = ClientConnector::new(connector_config(&p, slow)?, client_addr).with_static_channel(dvc);
     let mut channels = Channels { clip: None, drive: false, audio: None };
@@ -1153,9 +1201,105 @@ async fn active_session(
     // clipboard: our text (CRLF, as sent to the server), last text received from the server
     let mut local_clip: Option<String> = None;
     let mut remote_clip: Option<String> = None;
+    // graphics pipeline: frame acknowledgements held since (released once the tab has shown the
+    // frames, so the server encodes at the pace of the display), and "the tab just drew a frame"
+    let mut acks_held: Option<std::time::Instant> = None;
+    let mut tab_drew = false;
+    // text typed with "Coller le texte", sent a few characters per tick
+    let mut typing: std::collections::VecDeque<FastPathInputEvent> = std::collections::VecDeque::new();
 
     loop {
         let outputs = tokio::select! {
+            // keyboard and mouse first: a busy server connection never delays them
+            biased;
+            cmd = cmd_rx.recv() => match cmd {
+                None | Some(Cmd::Close) => {
+                    let out = stage.graceful_shutdown().map_err(|e| e.to_string())?;
+                    for o in out {
+                        if let ActiveStageOutput::ResponseFrame(f) = o {
+                            let _ = writer.write_all(&f).await;
+                        }
+                    }
+                    return Ok("session RDP fermée".into());
+                }
+                Some(Cmd::Viewer(ws)) => {
+                    let (s, mut stream) = (*ws).split();
+                    viewer = Some(Viewer::start(s));
+                    emit(&mut viewer, Message::binary(size_message(image.width(), image.height())));
+                    if let Some(p) = &last_pointer {
+                        emit(&mut viewer, Message::binary(p.clone()));
+                    }
+                    if let Some(m) = &link {
+                        emit(&mut viewer, Message::binary(m.clone()));
+                    }
+                    in_flight = None;
+                    dirty.all(image.width(), image.height());
+                    // viewer input → this loop (through the command channel)
+                    let tx = cmd_tx.clone();
+                    tokio::spawn(async move {
+                        while let Some(Ok(m)) = stream.next().await {
+                            if let Message::Text(t) = m
+                                && let Ok(i) = serde_json::from_str::<WsIn>(&t)
+                                && tx.send(Cmd::In(i)).is_err()
+                            {
+                                break;
+                            }
+                        }
+                    });
+                    Vec::new()
+                }
+                Some(Cmd::In(WsIn::Ack)) => {
+                    in_flight = None;
+                    tab_drew = true;
+                    if paced && !dirty.is_empty() && viewer.is_some() {
+                        send_frame(&mut viewer, &image, &mut dirty, started, wire);
+                        in_flight = Some(std::time::Instant::now());
+                    }
+                    Vec::new()
+                }
+                Some(Cmd::In(WsIn::Resize { w, h, s })) => {
+                    // debounced: applied 400 ms after the last resize of the tab
+                    let rescale = s != 0 && s != scale;
+                    if rescale {
+                        scale = s;
+                    }
+                    if w >= 200 && h >= 200 && ((w, h) != (image.width(), image.height()) || rescale) {
+                        pending_resize = Some((w, h, tokio::time::Instant::now() + Duration::from_millis(400)));
+                    }
+                    Vec::new()
+                }
+                Some(Cmd::In(WsIn::Clip { s })) => {
+                    // ignore the echo of what the server just gave us
+                    if remote_clip.as_deref() != Some(s.as_str()) && !s.is_empty() {
+                        let t = rdp_channels::to_remote(&s);
+                        if local_clip.as_deref() != Some(t.as_str()) {
+                            local_clip = Some(t);
+                            if let Some(cliprdr) = stage.get_svc_processor_mut::<CliprdrClient>()
+                                && cliprdr.is_ready()
+                            {
+                                let msgs = cliprdr
+                                    .initiate_copy(&[ClipboardFormat::new(CF_UNICODETEXT)])
+                                    .map_err(|e| e.to_string())?;
+                                let frame = stage.process_svc_processor_messages(msgs).map_err(|e| e.to_string())?;
+                                writer.write_all(&frame).await.map_err(|e| e.to_string())?;
+                            }
+                        }
+                    }
+                    Vec::new()
+                }
+                Some(Cmd::In(m @ WsIn::Text { .. })) => {
+                    typing.extend(input_events(m));
+                    Vec::new()
+                }
+                Some(Cmd::In(m)) => {
+                    let events = input_events(m);
+                    if events.is_empty() {
+                        Vec::new()
+                    } else {
+                        stage.process_fastpath_input(&mut image, &events).map_err(|e| e.to_string())?
+                    }
+                }
+            },
             a = async {
                 match audio_rx.as_mut() {
                     Some(rx) => rx.recv().await,
@@ -1237,90 +1381,16 @@ async fn active_session(
                 }
                 out
             }
-            cmd = cmd_rx.recv() => match cmd {
-                None | Some(Cmd::Close) => {
-                    let out = stage.graceful_shutdown().map_err(|e| e.to_string())?;
-                    for o in out {
-                        if let ActiveStageOutput::ResponseFrame(f) = o {
-                            let _ = writer.write_all(&f).await;
-                        }
-                    }
-                    return Ok("session RDP fermée".into());
-                }
-                Some(Cmd::Viewer(ws)) => {
-                    let (s, mut stream) = (*ws).split();
-                    viewer = Some(Viewer::start(s));
-                    emit(&mut viewer, Message::binary(size_message(image.width(), image.height())));
-                    if let Some(p) = &last_pointer {
-                        emit(&mut viewer, Message::binary(p.clone()));
-                    }
-                    if let Some(m) = &link {
-                        emit(&mut viewer, Message::binary(m.clone()));
-                    }
-                    in_flight = None;
-                    dirty.all(image.width(), image.height());
-                    // viewer input → this loop (through the command channel)
-                    let tx = cmd_tx.clone();
-                    tokio::spawn(async move {
-                        while let Some(Ok(m)) = stream.next().await {
-                            if let Message::Text(t) = m
-                                && let Ok(i) = serde_json::from_str::<WsIn>(&t)
-                                && tx.send(Cmd::In(i)).is_err()
-                            {
-                                break;
-                            }
-                        }
-                    });
-                    Vec::new()
-                }
-                Some(Cmd::In(WsIn::Ack)) => {
-                    in_flight = None;
-                    if paced && !dirty.is_empty() && viewer.is_some() {
-                        send_frame(&mut viewer, &image, &mut dirty, started, wire);
-                        in_flight = Some(std::time::Instant::now());
-                    }
-                    Vec::new()
-                }
-                Some(Cmd::In(WsIn::Resize { w, h, s })) => {
-                    // debounced: applied 400 ms after the last resize of the tab
-                    let rescale = s != 0 && s != scale;
-                    if rescale {
-                        scale = s;
-                    }
-                    if w >= 200 && h >= 200 && ((w, h) != (image.width(), image.height()) || rescale) {
-                        pending_resize = Some((w, h, tokio::time::Instant::now() + Duration::from_millis(400)));
-                    }
-                    Vec::new()
-                }
-                Some(Cmd::In(WsIn::Clip { s })) => {
-                    // ignore the echo of what the server just gave us
-                    if remote_clip.as_deref() != Some(s.as_str()) && !s.is_empty() {
-                        let t = rdp_channels::to_remote(&s);
-                        if local_clip.as_deref() != Some(t.as_str()) {
-                            local_clip = Some(t);
-                            if let Some(cliprdr) = stage.get_svc_processor_mut::<CliprdrClient>()
-                                && cliprdr.is_ready()
-                            {
-                                let msgs = cliprdr
-                                    .initiate_copy(&[ClipboardFormat::new(CF_UNICODETEXT)])
-                                    .map_err(|e| e.to_string())?;
-                                let frame = stage.process_svc_processor_messages(msgs).map_err(|e| e.to_string())?;
-                                writer.write_all(&frame).await.map_err(|e| e.to_string())?;
-                            }
-                        }
-                    }
-                    Vec::new()
-                }
-                Some(Cmd::In(m)) => {
-                    let events = input_events(m);
-                    if events.is_empty() {
-                        Vec::new()
-                    } else {
-                        stage.process_fastpath_input(&mut image, &events).map_err(|e| e.to_string())?
-                    }
-                }
-            },
             _ = flush.tick() => {
+                if !typing.is_empty() {
+                    let n = typing.len().min(TYPING_EVENTS_PER_TICK);
+                    let chunk: Vec<FastPathInputEvent> = typing.drain(..n).collect();
+                    for o in stage.process_fastpath_input(&mut image, &chunk).map_err(|e| e.to_string())? {
+                        if let ActiveStageOutput::ResponseFrame(f) = o {
+                            writer.write_all(&f).await.map_err(|e| e.to_string())?;
+                        }
+                    }
+                }
                 // shared folder: I/O completed by the backend's worker threads
                 if drive
                     && let Some(rdpdr) = stage.get_svc_processor_mut::<Rdpdr>()
@@ -1450,6 +1520,24 @@ async fn active_session(
                 _ => {}
             }
         }
+
+        // Frame acknowledgements (graphics pipeline): sent once the tab has drawn the frames, or
+        // right away when nothing waits to be drawn (no tab, nothing changed on screen), so the
+        // server never encodes pictures faster than they are shown (the Windows client delays
+        // its acknowledgements the same way).
+        if stage.get_dvc::<GraphicsPipelineClient>().is_some_and(|g| g.processor().held_frame_acks() > 0) {
+            let idle = in_flight.is_none() && dirty.is_empty();
+            let late = acks_held.is_some_and(|t| t.elapsed() > ACK_HOLD_MAX);
+            if viewer.is_none() || !paced || tab_drew || idle || late {
+                if let Some(f) = take_frame_acks(&mut stage)? {
+                    writer.write_all(&f).await.map_err(|e| e.to_string())?;
+                }
+                acks_held = None;
+            } else if acks_held.is_none() {
+                acks_held = Some(std::time::Instant::now());
+            }
+        }
+        tab_drew = false;
     }
 }
 

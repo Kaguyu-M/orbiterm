@@ -54,6 +54,7 @@ fn params(port: u16, password: &str, known: &std::path::Path) -> RdpParams {
         gateway: None,
         quality: orbiterm_lib::rdp_client::Quality::Auto,
         scale: 100,
+        bitmap_cache: None,
     }
 }
 

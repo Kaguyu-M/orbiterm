@@ -118,3 +118,6 @@ strip = true
 [patch.crates-io]
 # drive name encoding fix for Windows servers (see vendor/ironrdp-rdpdr/src/pdu/efs.rs, "Orbiterm patch")
 ironrdp-rdpdr = { path = "vendor/ironrdp-rdpdr" }
+# frame acknowledgements held until the tab has shown the frames (vendor/ironrdp-egfx/src/client.rs,
+# "Orbiterm patch"), as the Windows client paces the server to its display
+ironrdp-egfx = { path = "vendor/ironrdp-egfx" }

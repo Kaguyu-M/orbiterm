@@ -182,6 +182,17 @@ pub fn config_dir() -> AppResult<PathBuf> {
         .ok_or_else(|| AppError::Config("dossier de configuration introuvable".into()))
 }
 
+/// Directory for data that can be rebuilt (RDP bitmap cache): never exported with the
+/// configuration. Under `ORBITERM_CONFIG_DIR` when it is set.
+pub fn cache_dir() -> AppResult<PathBuf> {
+    if let Ok(dir) = std::env::var("ORBITERM_CONFIG_DIR") {
+        return Ok(PathBuf::from(dir).join("cache"));
+    }
+    directories::ProjectDirs::from("com", "Orbiterm", "Orbiterm")
+        .map(|d| d.cache_dir().to_path_buf())
+        .ok_or_else(|| AppError::Config("dossier de cache introuvable".into()))
+}
+
 impl Store {
     fn file(dir: &Path) -> PathBuf {
         dir.join("sessions.toml")

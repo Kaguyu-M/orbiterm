@@ -11,6 +11,7 @@ pub mod error;
 pub mod forward;
 pub mod ftp;
 pub mod rdp;
+pub mod rdp_cache;
 pub mod rdp_channels;
 pub mod rdp_client;
 #[cfg(windows)]

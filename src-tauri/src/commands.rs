@@ -837,6 +837,10 @@ pub async fn term_open(app: AppHandle, state: State<'_, AppState>, args: OpenArg
                     gateway: rd_gateway,
                     quality: rdp_client::Quality::parse(session.opt("rdp_quality")),
                     scale: if session.opt("rdp_scale") == "100" { 100 } else { args.scale.unwrap_or(100) },
+                    bitmap_cache: (session.opt("rdp_cache") != "0")
+                        .then(crate::config::cache_dir)
+                        .and_then(Result::ok)
+                        .map(|d| crate::rdp_cache::cache_file(&d.join("rdp"), &session.host, session.port, &session.username)),
                 };
                 let prompter = make_prompter(app.clone(), state.hostkey_waiters.clone());
                 match rdp_client::connect(params, prompter, on_close).await {
