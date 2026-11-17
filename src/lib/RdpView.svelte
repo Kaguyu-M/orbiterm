@@ -53,16 +53,27 @@
   let ws: WebSocket | null = null;
   let attachedTo: string | null = null;
 
-  // Graphics pipeline composited here (Windows): H.264 decoded by the graphics card (WebCodecs),
-  // surfaces composited in WebGL, like the Windows client. Asked of the backend when the tab
+  // Graphics pipeline composited here: surfaces composited in WebGL like the Windows client, with
+  // H.264 decoded by the graphics card (WebCodecs) on Windows, by GStreamer in the backend on
+  // Linux (YUV planes converted here). Asked of the backend when the tab
   // opens (session option rdp_gpu = "0" to keep the backend's picture); any failure gives the
   // picture back to the backend.
   let gpu: GpuCompositor | null = null;
   let gpuFrames = 0;
   let gpuPresent = false;
   let gpuNote = "";
+  /** Can the tab composite the pipeline? "" when it can, else why not. */
+  function gpuWhyNot(): string {
+    if (!app.prefs.rdpGpu) return "dessin GPU désactivé";
+    if (tab.session.extra?.rdp_gpu === "0") return "désactivé pour cette session";
+    const s = surface();
+    if (!s.gl2) return `pas de WebGL 2 (dessin ${s.kind})`;
+    // Windows: the tab decodes H.264 (WebCodecs); Linux: the backend decodes it (GStreamer)
+    if (!gpuCapable(s.gl2, IS_WINDOWS)) return "pas de décodeur WebCodecs";
+    return "";
+  }
   function gpuWanted(): boolean {
-    return IS_WINDOWS && app.prefs.rdpGpu && tab.session.extra?.rdp_gpu !== "0" && gpuCapable(surface().gl2 ?? null);
+    return gpuWhyNot() === "";
   }
   function setGpu(on: boolean) {
     gpu?.dispose();
@@ -201,6 +212,7 @@
   function gpuLabel(): string {
     if (gpu) {
       const s = gpu.stats;
+      if (!IS_WINDOWS) return "GPU (composition)";
       return `GPU H.264${s.pictures ? ` (décodage ${(s.decodeMs / s.pictures).toFixed(1)} ms)` : ""}`;
     }
     return (surf?.kind === "webgl" ? "GPU" : "2D") + (gpuNote ? ` (composition GPU arrêtée : ${gpuNote})` : "");
@@ -294,7 +306,8 @@
       // the session started with the scale of this screen
       sentScale = scaleNow();
       if (active) canvas.focus();
-      send({ t: "g", on: gpuWanted() });
+      const why = gpuWhyNot();
+      send({ t: "g", on: !why, why });
       setTimeout(requestFit, 300);
       syncClip();
     };

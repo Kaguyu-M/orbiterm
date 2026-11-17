@@ -19,12 +19,16 @@
 //! - `29` RGBA area (id, rect, pixels);
 //! - `30` H.264 (id, codec: 0 AVC420, 1 AVC444, 2 AVC444v2, views: bit 0 main, bit 1 auxiliary,
 //!   then for each view present: n, n × rect, length u32, Annex B bitstream);
+//! - `31` H.264 decoded here, AVC420 (Linux, the tab has no H.264 decoder): id, n, n × rect,
+//!   then the area sent (x, y, w, h, even x and y) and its YUV 4:2:0 planes, rows packed: Y (w × h),
+//!   U and V (ceil(w/2) × ceil(h/2)); the tab converts them as MS-RDPEGFX 3.3.8.3.1 does;
 //! - `32` end of a frame (frame id u32), turned by the session into its frame marker;
 //! - `33` several of the above in one WebSocket message: each as its length (u32) and bytes.
 
 use std::sync::{Arc, Mutex};
 
 use ironrdp_egfx::client::{BitmapUpdate, GpuAvc, GraphicsPipelineHandler, Surface};
+use ironrdp_egfx::decode::Yuv420Frame;
 use ironrdp_egfx::pdu::{
     CacheToSurfacePdu, Codec1Type, EvictCacheEntryPdu, MapSurfaceToScaledOutputPdu, Point, SolidFillPdu,
     SurfaceToCachePdu, SurfaceToSurfacePdu,
@@ -149,6 +153,40 @@ pub fn avc_message(avc: &GpuAvc<'_>) -> Vec<u8> {
     m
 }
 
+/// Message `31`, see the module documentation; `None` when no rectangle is inside the picture.
+pub fn yuv_message(surface_id: u16, rects: &[ExclusiveRectangle], picture: &Yuv420Frame) -> Option<Vec<u8>> {
+    let (pw, ph) = (picture.width(), picture.height());
+    let rects: Vec<_> = rects
+        .iter()
+        .map(|r| (r.left, r.top, r.right.min(pw), r.bottom.min(ph)))
+        .filter(|(l, t, r, b)| l < r && t < b)
+        .collect();
+    // the area sent: the rectangles' bounds, on whole 2x2 chroma blocks
+    let left = rects.iter().map(|r| r.0).min()? & !1;
+    let top = rects.iter().map(|r| r.1).min()? & !1;
+    let right = rects.iter().map(|r| r.2).max()?;
+    let bottom = rects.iter().map(|r| r.3).max()?;
+    let (w, h) = (usize::from(right - left), usize::from(bottom - top));
+    let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
+    let (l, t) = (usize::from(left), usize::from(top));
+    let mut m = Vec::with_capacity(13 + rects.len() * 8 + w * h + 2 * cw * ch);
+    m.push(31);
+    u16s(&mut m, &[surface_id, rects.len() as u16]);
+    for (rl, rt, rr, rb) in &rects {
+        u16s(&mut m, &[*rl, *rt, *rr, *rb]);
+    }
+    u16s(&mut m, &[left, top, w as u16, h as u16]);
+    for row in t..t + h {
+        m.extend_from_slice(picture.luma_row(row)?.get(l..l + w)?);
+    }
+    for plane in [Yuv420Frame::u_row, Yuv420Frame::v_row] {
+        for row in t / 2..t / 2 + ch {
+            m.extend_from_slice(plane(picture, row)?.get(l / 2..l / 2 + cw)?);
+        }
+    }
+    Some(m)
+}
+
 impl GraphicsPipelineHandler for GfxEvents {
     fn on_reset_graphics(&mut self, width: u32, height: u32) {
         self.push(|| {
@@ -266,6 +304,16 @@ impl GraphicsPipelineHandler for GfxEvents {
         self.push(|| avc_message(avc));
     }
 
+    fn on_gpu_yuv(&mut self, surface_id: u16, rects: &[ExclusiveRectangle], picture: &Yuv420Frame) -> bool {
+        match yuv_message(surface_id, rects, picture) {
+            Some(m) => {
+                self.push(|| m);
+                true
+            }
+            None => false,
+        }
+    }
+
     fn on_frame_complete(&mut self, frame_id: u32) {
         self.push(|| {
             let mut m = vec![END_FRAME];
@@ -289,6 +337,24 @@ mod tests {
             auxiliary: Some((&r, &[9, 8, 7])),
         });
         assert_eq!(m, [30, 7, 0, 2, 2, 1, 0, 1, 0, 2, 0, 3, 0, 4, 0, 3, 0, 0, 0, 9, 8, 7]);
+    }
+
+    #[test]
+    fn yuv_message_layout() {
+        // 6x4 picture, Y = row*10+col, U = 100+row*10+col, V = 200+...
+        let y: Vec<u8> = (0..4).flat_map(|r| (0..6).map(move |c| r * 10 + c)).collect();
+        let u: Vec<u8> = (0..2).flat_map(|r| (0..3).map(move |c| 100 + r * 10 + c)).collect();
+        let v: Vec<u8> = u.iter().map(|x| x + 100).collect();
+        let p = Yuv420Frame::new(6, 4, y, 6, u, v, 3).unwrap();
+        let r = [ExclusiveRectangle { left: 3, top: 1, right: 5, bottom: 9 }];
+        let m = yuv_message(4, &r, &p).unwrap();
+        // area x 2..5 (w 3), y 0..4 (h 4); chroma 2 × 2 from column 1
+        let head = [31, 4, 0, 1, 0, 3, 0, 1, 0, 5, 0, 4, 0, 2, 0, 0, 0, 3, 0, 4, 0];
+        assert_eq!(&m[..head.len()], head);
+        let body = &m[head.len()..];
+        assert_eq!(&body[..12], [2, 3, 4, 12, 13, 14, 22, 23, 24, 32, 33, 34]);
+        assert_eq!(&body[12..], [101, 102, 111, 112, 201, 202, 211, 212]);
+        assert!(yuv_message(4, &[ExclusiveRectangle { left: 7, top: 0, right: 9, bottom: 2 }], &p).is_none());
     }
 
     #[test]

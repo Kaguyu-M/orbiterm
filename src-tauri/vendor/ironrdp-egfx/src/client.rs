@@ -420,6 +420,14 @@ pub trait GraphicsPipelineHandler: Send {
     /// Orbiterm patch: an H.264 update passed through undecoded (see
     /// [`GraphicsPipelineClient::request_gpu_passthrough`]).
     fn on_gpu_avc(&mut self, _avc: &GpuAvc<'_>) {}
+
+    /// Orbiterm patch: GPU passthrough with H.264 decoded here ([`GraphicsPipelineClient::set_tab_decodes_avc`]
+    /// off): an AVC420 picture as YUV planes, to be converted by the handler; the given rectangles
+    /// of the surface take the pixels at the same place in the picture. Returns false to get the
+    /// RGBA bitmaps instead.
+    fn on_gpu_yuv(&mut self, _surface_id: u16, _rects: &[ExclusiveRectangle], _picture: &crate::decode::Yuv420Frame) -> bool {
+        false
+    }
 }
 
 /// Orbiterm patch: an AVC420 or AVC444 update of a surface, still H.264-coded.
@@ -508,6 +516,9 @@ pub struct GraphicsPipelineClient {
     /// Orbiterm patch: surface commands and H.264 streams go to the handler, which composites
     /// them itself (see [`Self::request_gpu_passthrough`]).
     gpu: bool,
+    /// Orbiterm patch: with the passthrough, the handler decodes H.264 itself (`on_gpu_avc`);
+    /// otherwise it is decoded here and given as YUV planes or bitmaps.
+    tab_avc: bool,
 }
 
 impl GraphicsPipelineClient {
@@ -543,6 +554,7 @@ impl GraphicsPipelineClient {
             offered_cache_keys: None,
             held_acks: None,
             gpu: false,
+            tab_avc: true,
         }
     }
 
@@ -707,6 +719,12 @@ impl GraphicsPipelineClient {
         self.gpu = on;
         self.compositor.set_passthrough(on);
         Some(pdu)
+    }
+
+    /// Orbiterm patch: whether the handler decodes H.264 itself during the GPU passthrough
+    /// (default) or gets it decoded (YUV planes through `on_gpu_yuv`, or bitmaps).
+    pub fn set_tab_decodes_avc(&mut self, tab: bool) {
+        self.tab_avc = tab;
     }
 
     /// Orbiterm patch: whether the GPU passthrough is on.
@@ -1204,7 +1222,7 @@ impl GraphicsPipelineClient {
             );
         }
 
-        if self.gpu && matches!(pdu.codec_id, Codec1Type::Avc420 | Codec1Type::Avc444 | Codec1Type::Avc444v2) {
+        if self.gpu && self.tab_avc && matches!(pdu.codec_id, Codec1Type::Avc420 | Codec1Type::Avc444 | Codec1Type::Avc444v2) {
             if let Err(error) = self.pass_avc(pdu.codec_id, pdu.surface_id, &pdu.bitmap_data) {
                 self.drop_update(pdu.codec_id, pdu.surface_id, pdu.bitmap_data.len(), &error);
             }
@@ -1393,7 +1411,21 @@ impl GraphicsPipelineClient {
 
         // A decoder returning YUV planes is converted with the transform MS-RDPEGFX
         // specifies, whatever matrix it would convert with itself.
-        let frame = if decoder.supports_yuv420() {
+        let frame = if self.gpu && decoder.supports_yuv420() {
+            // GPU passthrough: the handler converts the planes itself (Orbiterm patch)
+            let picture = decoder
+                .decode_yuv420(stream.data)
+                .map_err(|e| pdu_other_err!("H.264 decode", source: e))?;
+            let rects = if stream.rectangles.is_empty() {
+                std::slice::from_ref(dest_rect)
+            } else {
+                &stream.rectangles[..]
+            };
+            if self.handler.on_gpu_yuv(surface_id, rects, &picture) {
+                return Ok(());
+            }
+            Ok(picture.to_rgba())
+        } else if decoder.supports_yuv420() {
             decoder.decode_yuv420(stream.data).map(|picture| picture.to_rgba())
         } else {
             decoder.decode(stream.data)

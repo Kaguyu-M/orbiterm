@@ -1,5 +1,6 @@
-// Graphics pipeline composited by the tab (Windows): the backend forwards the surface commands
-// of the RDP graphics pipeline (MS-RDPEGFX) with H.264 still compressed (see rdp_gpu.rs).
+// Graphics pipeline composited by the tab: the backend forwards the surface commands of the RDP
+// graphics pipeline (MS-RDPEGFX) with H.264 still compressed on Windows, decoded to YUV planes
+// on Linux, where WebKitGTK has no usable H.264 decoder (see rdp_gpu.rs).
 // As in the Windows client, the graphics card does the work: WebCodecs decodes H.264 with the
 // hardware decoder, the picture goes to a WebGL texture without coming back to the processor,
 // and surfaces, copies and the bitmap cache are textures composited with framebuffer blits.
@@ -30,9 +31,56 @@ export interface GpuEvents {
   failed(reason: string): void;
 }
 
-/** Can this tab composite the pipeline? (WebGL 2 and the WebCodecs decoder) */
-export function gpuCapable(gl: WebGLRenderingContext | WebGL2RenderingContext | null): gl is WebGL2RenderingContext {
-  return typeof VideoDecoder !== "undefined" && typeof WebGL2RenderingContext !== "undefined" && gl instanceof WebGL2RenderingContext;
+/** for the GUI tests: the compositor fed with hand-made messages */
+(globalThis as { __orbitermGfxGpu?: unknown }).__orbitermGfxGpu = () =>
+  GpuCompositor;
+
+/**
+ * Can this tab composite the pipeline? WebGL 2, and the WebCodecs decoder when the tab decodes
+ * H.264 itself (Windows; on Linux the backend decodes it and sends the YUV planes).
+ */
+export function gpuCapable(
+  gl: WebGLRenderingContext | WebGL2RenderingContext | null,
+  decodes: boolean,
+): gl is WebGL2RenderingContext {
+  return (
+    (!decodes || typeof VideoDecoder !== "undefined") &&
+    typeof WebGL2RenderingContext !== "undefined" &&
+    gl instanceof WebGL2RenderingContext
+  );
+}
+
+// YUV 4:2:0 to RGB as MS-RDPEGFX 3.3.8.3.1 (the backend's own conversion, avc444.rs)
+const YUV_VS = `#version 300 es
+in vec2 p;
+void main() { gl_Position = vec4(p, 0.0, 1.0); }`;
+const YUV_FS = `#version 300 es
+precision highp float;
+precision highp int;
+uniform sampler2D ty;
+uniform sampler2D tu;
+uniform sampler2D tv;
+uniform ivec2 origin;
+out vec4 o;
+void main() {
+  ivec2 p = ivec2(gl_FragCoord.xy) - origin;
+  float y = floor(texelFetch(ty, p, 0).r * 255.0 + 0.5);
+  float u = floor(texelFetch(tu, p / 2, 0).r * 255.0 + 0.5) - 128.0;
+  float v = floor(texelFetch(tv, p / 2, 0).r * 255.0 + 0.5) - 128.0;
+  float l = 256.0 * y;
+  o = vec4(
+    clamp(floor((l + 403.0 * v) / 256.0), 0.0, 255.0),
+    clamp(floor((l - 48.0 * u - 120.0 * v) / 256.0), 0.0, 255.0),
+    clamp(floor((l + 475.0 * u) / 256.0), 0.0, 255.0),
+    255.0) / 255.0;
+}`;
+
+/** The YUV conversion program and its plane textures (made on the first use) */
+interface Yuv {
+  prog: WebGLProgram;
+  vao: WebGLVertexArrayObject;
+  origin: WebGLUniformLocation | null;
+  planes: WebGLTexture[];
 }
 
 export class GpuCompositor {
@@ -48,6 +96,7 @@ export class GpuCompositor {
   private lastOut = 0;
   private frame: Tex;
   private tmp: Tex | null = null;
+  private yuvGl: Yuv | null = null;
   private dead = false;
   /** statistics: H.264 pictures decoded, decode time (ms, total), dropped updates, bitmaps */
   readonly stats = { pictures: 0, decodeMs: 0, dropped: 0, bitmaps: 0 };
@@ -85,7 +134,13 @@ export class GpuCompositor {
   private attach(fb: WebGLFramebuffer, tex: WebGLTexture) {
     const gl = this.gl;
     gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
-    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    gl.framebufferTexture2D(
+      gl.FRAMEBUFFER,
+      gl.COLOR_ATTACHMENT0,
+      gl.TEXTURE_2D,
+      tex,
+      0,
+    );
     this.rfb = this.dfb = fb;
   }
 
@@ -97,18 +152,21 @@ export class GpuCompositor {
   }
 
   private read(fb: WebGLFramebuffer | null) {
-    if (this.rfb !== fb) this.gl.bindFramebuffer(this.gl.READ_FRAMEBUFFER, (this.rfb = fb));
+    if (this.rfb !== fb)
+      this.gl.bindFramebuffer(this.gl.READ_FRAMEBUFFER, (this.rfb = fb));
   }
 
   private draw(fb: WebGLFramebuffer | null) {
-    if (this.dfb !== fb) this.gl.bindFramebuffer(this.gl.DRAW_FRAMEBUFFER, (this.dfb = fb));
+    if (this.dfb !== fb)
+      this.gl.bindFramebuffer(this.gl.DRAW_FRAMEBUFFER, (this.dfb = fb));
   }
 
   /** Leaves the context as the 2D picture expects it (default framebuffer). */
   private release() {
     this.read(null);
     this.draw(null);
-    if (this.rowLength) this.gl.pixelStorei(this.gl.UNPACK_ROW_LENGTH, (this.rowLength = 0));
+    if (this.rowLength)
+      this.gl.pixelStorei(this.gl.UNPACK_ROW_LENGTH, (this.rowLength = 0));
   }
 
   // ------------------------------------------------------------------ queue
@@ -161,7 +219,7 @@ export class GpuCompositor {
   message(buf: ArrayBuffer): boolean {
     const dv = new DataView(buf);
     if (dv.getUint8(0) !== 33) return this.command(dv);
-    for (let o = 1; o + 4 <= buf.byteLength; ) {
+    for (let o = 1; o + 4 <= buf.byteLength;) {
       const len = dv.getUint32(o, true);
       this.command(new DataView(buf, o + 4, len));
       o += 4 + len;
@@ -172,9 +230,17 @@ export class GpuCompositor {
   private command(dv: DataView): boolean {
     const t = dv.getUint8(0);
     const u = (o: number) => dv.getUint16(o, true);
-    const rects = (o: number, n: number) => Array.from({ length: n }, (_, i) => [u(o + i * 8), u(o + i * 8 + 2), u(o + i * 8 + 4), u(o + i * 8 + 6)]);
-    const points = (o: number, n: number) => Array.from({ length: n }, (_, i) => [u(o + i * 4), u(o + i * 4 + 2)]);
-    const bytes = (o: number, len = dv.byteLength - o) => new Uint8Array(dv.buffer, dv.byteOffset + o, len);
+    const rects = (o: number, n: number) =>
+      Array.from({ length: n }, (_, i) => [
+        u(o + i * 8),
+        u(o + i * 8 + 2),
+        u(o + i * 8 + 4),
+        u(o + i * 8 + 6),
+      ]);
+    const points = (o: number, n: number) =>
+      Array.from({ length: n }, (_, i) => [u(o + i * 4), u(o + i * 4 + 2)]);
+    const bytes = (o: number, len = dv.byteLength - o) =>
+      new Uint8Array(dv.buffer, dv.byteOffset + o, len);
     switch (t) {
       case 20:
         this.push({ run: () => this.resetSurfaces() });
@@ -210,7 +276,9 @@ export class GpuCompositor {
         const [src, dst] = [u(1), u(3)];
         const [l, tp, r, b] = [u(5), u(7), u(9), u(11)];
         const pts = points(15, u(13));
-        this.push({ run: () => this.copy(src, dst, l, tp, r - l, b - tp, pts) });
+        this.push({
+          run: () => this.copy(src, dst, l, tp, r - l, b - tp, pts),
+        });
         return true;
       }
       case 26: {
@@ -250,6 +318,23 @@ export class GpuCompositor {
         this.avc(id, list, bytes(lenAt + 4, dv.getUint32(lenAt, true)));
         return true;
       }
+      case 31: {
+        const [id, n] = [u(1), u(3)];
+        const list = rects(5, n);
+        const at = 5 + n * 8;
+        const [x, y, w, h] = [u(at), u(at + 2), u(at + 4), u(at + 6)];
+        const cw = Math.ceil(w / 2),
+          ch = Math.ceil(h / 2);
+        const o = at + 8;
+        if (dv.byteLength < o + w * h + 2 * cw * ch) return true;
+        const planes = [
+          bytes(o, w * h),
+          bytes(o + w * h, cw * ch),
+          bytes(o + w * h + cw * ch, cw * ch),
+        ];
+        this.push({ run: () => this.yuv(id, list, x, y, w, h, planes) });
+        return true;
+      }
     }
     return false;
   }
@@ -282,7 +367,11 @@ export class GpuCompositor {
       },
       error: (e) => this.fail(`décodeur H.264 : ${e.message}`),
     });
-    this.decoder.configure({ codec, optimizeForLatency: true, hardwareAcceleration: "prefer-hardware" });
+    this.decoder.configure({
+      codec,
+      optimizeForLatency: true,
+      hardwareAcceleration: "prefer-hardware",
+    });
     this.needKey = true;
   }
 
@@ -314,12 +403,21 @@ export class GpuCompositor {
     const ts = ++this.seq;
     this.submitted.set(ts, performance.now());
     try {
-      this.decoder.decode(new EncodedVideoChunk({ type: au.key ? "key" : "delta", timestamp: ts, data: au.data }));
+      this.decoder.decode(
+        new EncodedVideoChunk({
+          type: au.key ? "key" : "delta",
+          timestamp: ts,
+          data: au.data,
+        }),
+      );
     } catch (e) {
       this.fail(`décodeur H.264 : ${e}`);
       return;
     }
-    this.push({ wait: ts, run: (frame) => frame && this.picture(id, list, frame) });
+    this.push({
+      wait: ts,
+      run: (frame) => frame && this.picture(id, list, frame),
+    });
   }
 
   /** A decoded picture: its regions go to the surface, at the same place. */
@@ -330,20 +428,142 @@ export class GpuCompositor {
     gl.bindTexture(gl.TEXTURE_2D, this.frame.tex);
     gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, frame);
-    gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.BROWSER_DEFAULT_WEBGL);
-    const fw = frame.displayWidth, fh = frame.displayHeight;
+    gl.pixelStorei(
+      gl.UNPACK_COLORSPACE_CONVERSION_WEBGL,
+      gl.BROWSER_DEFAULT_WEBGL,
+    );
+    const fw = frame.displayWidth,
+      fh = frame.displayHeight;
     if (fw !== this.frame.w || fh !== this.frame.h) {
       this.attach(this.frame.fb, this.frame.tex);
       this.frame.w = fw;
       this.frame.h = fh;
     }
-    for (const [l, t, r, b] of list) this.blit(this.frame, l, t, r - l, b - t, s, l, t);
+    for (const [l, t, r, b] of list)
+      this.blit(this.frame, l, t, r - l, b - t, s, l, t);
+  }
+
+  private yuvProgram(): Yuv {
+    if (this.yuvGl) return this.yuvGl;
+    const gl = this.gl;
+    const sh = (type: number, src: string) => {
+      const s = gl.createShader(type)!;
+      gl.shaderSource(s, src);
+      gl.compileShader(s);
+      if (!gl.getShaderParameter(s, gl.COMPILE_STATUS))
+        throw new Error(`shader : ${gl.getShaderInfoLog(s)}`);
+      return s;
+    };
+    const prog = gl.createProgram()!;
+    gl.attachShader(prog, sh(gl.VERTEX_SHADER, YUV_VS));
+    gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, YUV_FS));
+    gl.bindAttribLocation(prog, 0, "p");
+    gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS))
+      throw new Error(`programme : ${gl.getProgramInfoLog(prog)}`);
+    const vao = gl.createVertexArray()!;
+    gl.bindVertexArray(vao);
+    const buf = gl.createBuffer()!;
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.bufferData(
+      gl.ARRAY_BUFFER,
+      new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]),
+      gl.STATIC_DRAW,
+    );
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+    gl.bindVertexArray(null);
+    gl.useProgram(prog);
+    ["ty", "tu", "tv"].forEach((n, i) =>
+      gl.uniform1i(gl.getUniformLocation(prog, n), i + 1),
+    );
+    const planes = [0, 1, 2].map(() => {
+      const t = gl.createTexture()!;
+      gl.bindTexture(gl.TEXTURE_2D, t);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      return t;
+    });
+    this.yuvGl = {
+      prog,
+      vao,
+      origin: gl.getUniformLocation(prog, "origin"),
+      planes,
+    };
+    return this.yuvGl;
+  }
+
+  /** An AVC420 picture decoded by the backend: its YUV area converted into the surface's rectangles. */
+  private yuv(
+    id: number,
+    list: number[][],
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+    planes: Uint8Array[],
+  ) {
+    const s = this.surfaces.get(id);
+    if (!s || !w || !h) return;
+    this.stats.pictures++;
+    const gl = this.gl;
+    const p = this.yuvProgram();
+    if (this.rowLength)
+      gl.pixelStorei(gl.UNPACK_ROW_LENGTH, (this.rowLength = 0));
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    const sizes = [
+      [w, h],
+      [Math.ceil(w / 2), Math.ceil(h / 2)],
+      [Math.ceil(w / 2), Math.ceil(h / 2)],
+    ];
+    planes.forEach((data, i) => {
+      gl.activeTexture(gl.TEXTURE1 + i);
+      gl.bindTexture(gl.TEXTURE_2D, p.planes[i]);
+      gl.texImage2D(
+        gl.TEXTURE_2D,
+        0,
+        gl.R8,
+        sizes[i][0],
+        sizes[i][1],
+        0,
+        gl.RED,
+        gl.UNSIGNED_BYTE,
+        data,
+      );
+    });
+    gl.activeTexture(gl.TEXTURE0);
+    this.draw(s.fb);
+    gl.useProgram(p.prog);
+    gl.uniform2i(p.origin, x, y);
+    gl.bindVertexArray(p.vao);
+    gl.viewport(x, y, w, h);
+    gl.enable(gl.SCISSOR_TEST);
+    for (const [l, t, r, b] of list) {
+      const cl = Math.max(l, x),
+        ct = Math.max(t, y),
+        cr = Math.min(r, x + w, s.w),
+        cb = Math.min(b, y + h, s.h);
+      if (cr <= cl || cb <= ct) continue;
+      gl.scissor(cl, ct, cr - cl, cb - ct);
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    }
+    gl.disable(gl.SCISSOR_TEST);
+    gl.bindVertexArray(null);
   }
 
   // ------------------------------------------------------------------ surface commands
 
   /** Copies a w×h area of a texture to a surface, both clipped. */
-  private blit(src: Tex, sx: number, sy: number, w: number, h: number, dst: Surf, dx: number, dy: number) {
+  private blit(
+    src: Tex,
+    sx: number,
+    sy: number,
+    w: number,
+    h: number,
+    dst: Surf,
+    dx: number,
+    dy: number,
+  ) {
     if (dx < 0) [w, sx, dx] = [w + dx, sx - dx, 0];
     if (dy < 0) [h, sy, dy] = [h + dy, sy - dy, 0];
     w = Math.min(w, src.w - sx, dst.w - dx);
@@ -352,7 +572,18 @@ export class GpuCompositor {
     const gl = this.gl;
     this.read(src.fb);
     this.draw(dst.fb);
-    gl.blitFramebuffer(sx, sy, sx + w, sy + h, dx, dy, dx + w, dy + h, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+    gl.blitFramebuffer(
+      sx,
+      sy,
+      sx + w,
+      sy + h,
+      dx,
+      dy,
+      dx + w,
+      dy + h,
+      gl.COLOR_BUFFER_BIT,
+      gl.NEAREST,
+    );
   }
 
   private create(id: number, w: number, h: number) {
@@ -399,8 +630,17 @@ export class GpuCompositor {
     gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, x, y, w, h);
   }
 
-  private copy(srcId: number, dstId: number, x: number, y: number, w: number, h: number, pts: number[][]) {
-    const src = this.surfaces.get(srcId), dst = this.surfaces.get(dstId);
+  private copy(
+    srcId: number,
+    dstId: number,
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+    pts: number[][],
+  ) {
+    const src = this.surfaces.get(srcId),
+      dst = this.surfaces.get(dstId);
     if (!src || !dst) return;
     w = Math.min(w, src.w - x);
     h = Math.min(h, src.h - y);
@@ -411,7 +651,8 @@ export class GpuCompositor {
     }
     // a scroll: the area is read once, before any write (as the internal compositor does)
     if (!this.tmp || this.tmp.w < w || this.tmp.h < h) {
-      const tw = Math.max(w, this.tmp?.w ?? 0), th = Math.max(h, this.tmp?.h ?? 0);
+      const tw = Math.max(w, this.tmp?.w ?? 0),
+        th = Math.max(h, this.tmp?.h ?? 0);
       if (this.tmp) this.drop(this.tmp);
       this.tmp = this.target(tw, th);
     }
@@ -419,7 +660,14 @@ export class GpuCompositor {
     for (const [px, py] of pts) this.blit(this.tmp, 0, 0, w, h, dst, px, py);
   }
 
-  private toCache(id: number, slot: number, x: number, y: number, w: number, h: number) {
+  private toCache(
+    id: number,
+    slot: number,
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+  ) {
     const s = this.surfaces.get(id);
     if (!s) return;
     w = Math.min(w, s.w - x);
@@ -432,9 +680,11 @@ export class GpuCompositor {
   }
 
   private fromCache(slot: number, id: number, pts: number[][]) {
-    const tile = this.tiles.get(slot), s = this.surfaces.get(id);
+    const tile = this.tiles.get(slot),
+      s = this.surfaces.get(id);
     if (!tile || !s) return;
-    for (const [px, py] of pts) this.blit(tile, 0, 0, tile.w, tile.h, s, px, py);
+    for (const [px, py] of pts)
+      this.blit(tile, 0, 0, tile.w, tile.h, s, px, py);
   }
 
   private evict(slot: number) {
@@ -444,17 +694,36 @@ export class GpuCompositor {
     this.tiles.delete(slot);
   }
 
-  private bitmap(id: number, x: number, y: number, w: number, h: number, px: Uint8Array) {
+  private bitmap(
+    id: number,
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+    px: Uint8Array,
+  ) {
     const s = this.surfaces.get(id);
     if (!s || w <= 0 || h <= 0 || px.length < w * h * 4) return;
     this.stats.bitmaps++;
-    const cw = Math.min(w, s.w - x), ch = Math.min(h, s.h - y);
+    const cw = Math.min(w, s.w - x),
+      ch = Math.min(h, s.h - y);
     if (cw <= 0 || ch <= 0) return;
     const gl = this.gl;
     gl.bindTexture(gl.TEXTURE_2D, s.tex);
     const rl = cw === w ? 0 : w;
-    if (this.rowLength !== rl) gl.pixelStorei(gl.UNPACK_ROW_LENGTH, (this.rowLength = rl));
-    gl.texSubImage2D(gl.TEXTURE_2D, 0, x, y, cw, ch, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    if (this.rowLength !== rl)
+      gl.pixelStorei(gl.UNPACK_ROW_LENGTH, (this.rowLength = rl));
+    gl.texSubImage2D(
+      gl.TEXTURE_2D,
+      0,
+      x,
+      y,
+      cw,
+      ch,
+      gl.RGBA,
+      gl.UNSIGNED_BYTE,
+      px,
+    );
   }
 
   // ------------------------------------------------------------------ display
@@ -469,10 +738,22 @@ export class GpuCompositor {
     gl.clear(gl.COLOR_BUFFER_BIT);
     for (const s of this.surfaces.values()) {
       if (!s.map) continue;
-      const tw = s.map.tw || s.w, th = s.map.th || s.h;
+      const tw = s.map.tw || s.w,
+        th = s.map.th || s.h;
       gl.bindFramebuffer(gl.READ_FRAMEBUFFER, s.fb);
       // the textures hold the top row first, the canvas wants it last: flipped by the blit
-      gl.blitFramebuffer(0, 0, s.w, s.h, s.map.x, h - s.map.y, s.map.x + tw, h - s.map.y - th, gl.COLOR_BUFFER_BIT, tw === s.w && th === s.h ? gl.NEAREST : gl.LINEAR);
+      gl.blitFramebuffer(
+        0,
+        0,
+        s.w,
+        s.h,
+        s.map.x,
+        h - s.map.y,
+        s.map.x + tw,
+        h - s.map.y - th,
+        gl.COLOR_BUFFER_BIT,
+        tw === s.w && th === s.h ? gl.NEAREST : gl.LINEAR,
+      );
     }
     gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
     this.rfb = this.dfb = null;
@@ -492,6 +773,11 @@ export class GpuCompositor {
     for (const slot of [...this.tiles.keys()]) this.evict(slot);
     if (this.tmp) this.drop(this.tmp);
     this.drop(this.frame);
+    if (this.yuvGl) {
+      this.yuvGl.planes.forEach((t) => this.gl.deleteTexture(t));
+      this.gl.deleteVertexArray(this.yuvGl.vao);
+      this.gl.deleteProgram(this.yuvGl.prog);
+    }
     this.release();
   }
 }

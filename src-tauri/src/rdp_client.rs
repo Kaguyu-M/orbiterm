@@ -295,7 +295,12 @@ enum WsIn {
     },
     /// the tab composites the graphics pipeline itself (WebCodecs + WebGL), or no longer can
     #[serde(rename = "g")]
-    Gpu { on: bool },
+    Gpu {
+        on: bool,
+        /// why the tab cannot (logged)
+        #[serde(default)]
+        why: String,
+    },
 }
 
 enum Cmd {
@@ -790,6 +795,10 @@ async fn establish(
         let mut gfx = GraphicsPipelineClient::new(Box::new(crate::rdp_gpu::GfxEvents(queue)), h264_decoder());
         // frames are acknowledged once the tab has shown them (see `active_session`)
         gfx.set_deferred_frame_ack(true);
+        // WebKitGTK cannot decode H.264 (WebCodecs aborts its web process): GStreamer decodes
+        // it here and the tab gets the YUV planes
+        #[cfg(not(windows))]
+        gfx.set_tab_decodes_avc(false);
         if let Some(path) = &p.bitmap_cache {
             gfx = gfx.with_persistent_cache(Box::new(crate::rdp_cache::FileCache::new(path.clone())));
         }
@@ -1298,11 +1307,14 @@ async fn active_session(
                     let tx = cmd_tx.clone();
                     tokio::spawn(async move {
                         while let Some(Ok(m)) = stream.next().await {
-                            if let Message::Text(t) = m
-                                && let Ok(i) = serde_json::from_str::<WsIn>(&t)
-                                && tx.send(Cmd::In(i)).is_err()
-                            {
-                                break;
+                            let Message::Text(t) = m else { continue };
+                            match serde_json::from_str::<WsIn>(&t) {
+                                Ok(i) => {
+                                    if tx.send(Cmd::In(i)).is_err() {
+                                        break;
+                                    }
+                                }
+                                Err(e) => log::warn!("RDP : message de l'onglet ignoré ({e}) : {}", t.chars().take(120).collect::<String>()),
                             }
                         }
                     });
@@ -1348,7 +1360,12 @@ async fn active_session(
                     }
                     Vec::new()
                 }
-                Some(Cmd::In(WsIn::Gpu { on })) => {
+                Some(Cmd::In(WsIn::Gpu { on, why })) => {
+                    if why.is_empty() {
+                        log::info!("RDP : l'onglet demande la composition GPU : {on}");
+                    } else {
+                        log::info!("RDP : composition par l'onglet indisponible ({why})");
+                    }
                     want_gpu = Some((on, std::time::Instant::now()));
                     Vec::new()
                 }
@@ -1692,7 +1709,7 @@ mod tests {
         let p = |s: &str| serde_json::from_str::<WsIn>(s).map_err(|e| e.to_string());
         assert!(matches!(p(r#"{"t":"a"}"#), Ok(WsIn::Ack { n: 0 })), "{:?}", p(r#"{"t":"a"}"#));
         assert!(matches!(p(r#"{"t":"a","n":7}"#), Ok(WsIn::Ack { n: 7 })));
-        assert!(matches!(p(r#"{"t":"g","on":true}"#), Ok(WsIn::Gpu { on: true })));
+        assert!(matches!(p(r#"{"t":"g","on":true}"#), Ok(WsIn::Gpu { on: true, .. })));
     }
 
     #[test]
