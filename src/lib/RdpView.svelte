@@ -33,6 +33,7 @@
   import { app, type Tab } from "./app.svelte";
   import RemoteInfo from "./RemoteInfo.svelte";
   import { createSurface, type Surface } from "./surface";
+  import { GpuCompositor, gpuCapable } from "./gfxgpu";
 
   let { tab, active }: { tab: Tab; active: boolean } = $props();
 
@@ -51,6 +52,54 @@
   }
   let ws: WebSocket | null = null;
   let attachedTo: string | null = null;
+
+  // Graphics pipeline composited here (Windows): H.264 decoded by the graphics card (WebCodecs),
+  // surfaces composited in WebGL, like the Windows client. Asked of the backend when the tab
+  // opens (session option rdp_gpu = "0" to keep the backend's picture); any failure gives the
+  // picture back to the backend.
+  let gpu: GpuCompositor | null = null;
+  let gpuFrames = 0;
+  let gpuPresent = false;
+  let gpuNote = "";
+  function gpuWanted(): boolean {
+    return IS_WINDOWS && app.prefs.rdpGpu && tab.session.extra?.rdp_gpu !== "0" && gpuCapable(surface().gl2 ?? null);
+  }
+  function setGpu(on: boolean) {
+    gpu?.dispose();
+    gpu = null;
+    gpuFrames = 0;
+    const gl = surf?.gl2;
+    if (on && gl) {
+      gpu = new GpuCompositor(gl, {
+        frameDone: gpuFrameDone,
+        failed: (reason) => {
+          console.warn("RDP : composition GPU arrêtée :", reason);
+          gpuNote = reason;
+          gpu = null;
+          send({ t: "g", on: false });
+        },
+      });
+    } else if (surf && desk.w) {
+      surf.resize(desk.w, desk.h);
+    }
+    (window as unknown as { __orbitermRdpRenderer?: string }).__orbitermRdpRenderer = gpu ? "gfx-gpu" : surf?.kind; // tests
+  }
+  function gpuFrameDone(sent: number) {
+    gpuFrames++;
+    frameStats(sent);
+    if (document.hidden) {
+      // nothing is shown: acknowledged at once, so the server goes on
+      send({ t: "a", n: gpuFrames });
+      return;
+    }
+    if (gpuPresent) return;
+    gpuPresent = true;
+    requestAnimationFrame(() => {
+      gpuPresent = false;
+      gpu?.present(desk.w, desk.h);
+      send({ t: "a", n: gpuFrames });
+    });
+  }
   let desk = $state({ w: 0, h: 0 });
   let view = $state({ w: 0, h: 0 }); // canvas CSS size
   let connected = $state(false);
@@ -128,6 +177,9 @@
         send({ t: "a" });
       });
     }
+    frameStats(sent);
+  }
+  function frameStats(sent: number) {
     const now = performance.now();
     // `sent` is the backend's clock: it restarts on reconnection, so a lag no frame can
     // really have (over a minute) means the reference is stale, not that the image is late
@@ -141,16 +193,25 @@
       const s = (now - stat.since) / 1000;
       const codec = ["bitmaps", "GFX", "H.264"][stat.mode] ?? "?";
       const link = stat.rtt < 0 ? "" : ` · lien ${stat.rtt} ms${stat.kbps ? `, ${stat.kbps >= 10000 ? Math.round(stat.kbps / 1000) : (stat.kbps / 1000).toFixed(1)} Mbit/s` : ""}`;
-      statText = `${Math.round(stat.frames / s)} i/s · réseau ${((stat.wire - stat.wire0) / s / 1024).toFixed(2)} Mo/s · ${codec}${link} · retard ${Math.round(stat.maxLag)} ms · ${surf?.kind === "webgl" ? "GPU" : "2D"}`;
+      statText = `${Math.round(stat.frames / s)} i/s · réseau ${((stat.wire - stat.wire0) / s / 1024).toFixed(2)} Mo/s · ${codec}${link} · retard ${Math.round(stat.maxLag)} ms · ${gpuLabel()}`;
       Object.assign(stat, { frames: 0, bytes: 0, maxLag: 0, since: now, wire0: stat.wire });
     }
+  }
+
+  function gpuLabel(): string {
+    if (gpu) {
+      const s = gpu.stats;
+      return `GPU H.264${s.pictures ? ` (décodage ${(s.decodeMs / s.pictures).toFixed(1)} ms)` : ""}`;
+    }
+    return (surf?.kind === "webgl" ? "GPU" : "2D") + (gpuNote ? ` (composition GPU arrêtée : ${gpuNote})` : "");
   }
 
   function onMessage(ev: MessageEvent) {
     if (typeof ev.data === "string") {
       try {
         const m = JSON.parse(ev.data);
-        if (m.t === "clip" && typeof m.s === "string") {
+        if (m.t === "g") setGpu(!!m.on);
+        else if (m.t === "clip" && typeof m.s === "string") {
           lastClip = m.s;
           clipWrite(m.s);
         }
@@ -162,7 +223,20 @@
     const buf = ev.data as ArrayBuffer;
     const dv = new DataView(buf);
     const t = dv.getUint8(0);
-    if (t === 1 && surf) {
+    if (gpu && t >= 20 && t <= 33) {
+      gpu.message(buf);
+      return;
+    }
+    if (gpu && t === 8) {
+      if (buf.byteLength >= 10) {
+        stat.wire = dv.getUint32(5, true);
+        stat.mode = dv.getUint8(9);
+      }
+      gpu.endFrame(dv.getUint32(1, true));
+      return;
+    }
+    if (t >= 20 && t <= 33) return; // commands for a compositor that stopped
+    if (t === 1 && surf && !gpu) {
       const x = dv.getUint16(1, true), y = dv.getUint16(3, true), w = dv.getUint16(5, true), h = dv.getUint16(7, true);
       surf.put(x, y, w, h, new Uint8Array(buf, 9, w * h * 4));
       stat.bytes += buf.byteLength;
@@ -206,6 +280,7 @@
 
   async function attach(connId: string) {
     ws?.close();
+    setGpu(false);
     connected = false;
     status = "Ouverture du bureau à distance…";
     const v = await api.rdpUrl(connId);
@@ -219,6 +294,7 @@
       // the session started with the scale of this screen
       sentScale = scaleNow();
       if (active) canvas.focus();
+      send({ t: "g", on: gpuWanted() });
       setTimeout(requestFit, 300);
       syncClip();
     };
@@ -292,6 +368,7 @@
       ro.disconnect();
       mq?.removeEventListener("change", onScale);
       ws?.close();
+      gpu?.dispose();
       sound.close();
       // tab closed in full screen: give the window back
       if (full) (multimon ? spanMonitors(false) : getCurrentWindow().setFullscreen(false)).catch(() => {});

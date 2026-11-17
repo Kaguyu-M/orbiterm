@@ -6,9 +6,11 @@
 //! - backend → tab (binary): `1` rect (x, y, w, h: u16 LE, then RGBA), `2` desktop size (w, h),
 //!   `3` cursor (hot x, hot y, w, h, RGBA), `4` default cursor, `5` hidden cursor,
 //!   `8` end of a frame (time in ms: u32 LE);
+//!   with the graphics pipeline composited by the tab, the surface commands of [crate::rdp_gpu];
 //! - backend → tab (JSON text): `{"t":"clip","s":…}` text copied on the remote computer;
 //! - tab → backend (JSON text): keyboard scancodes, mouse, wheel, resize, Ctrl+Alt+Del,
-//!   local clipboard text, frame acknowledgement.
+//!   local clipboard text, frame acknowledgement, `{"t":"g","on":…}` graphics pipeline composited
+//!   by the tab or not (answered with the mode in use, same message).
 //!
 //! Frames are paced by the tab: the next one is only sent once the previous one has been drawn
 //! (`{"t":"a"}`). Meanwhile the changed areas accumulate, so a slow display skips images
@@ -30,7 +32,7 @@ use ironrdp_core::WriteBuf;
 use ironrdp_displaycontrol::client::DisplayControlClient;
 use ironrdp_displaycontrol::pdu::MonitorLayoutEntry;
 use ironrdp_dvc::DrdynvcClient;
-use ironrdp_egfx::client::{GraphicsPipelineClient, GraphicsPipelineHandler};
+use ironrdp_egfx::client::GraphicsPipelineClient;
 use ironrdp_graphics::image_processing::PixelFormat;
 use ironrdp_pdu::geometry::InclusiveRectangle;
 use ironrdp_pdu::input::fast_path::{FastPathInputEvent, KeyboardFlags, SynchronizeFlags};
@@ -284,9 +286,16 @@ enum WsIn {
     /// the local clipboard changed (text)
     #[serde(rename = "clip")]
     Clip { s: String },
-    /// the last frame has been drawn: the next one may be sent
+    /// the last frame has been drawn: the next one may be sent; `n`: frames of the graphics
+    /// pipeline shown since the tab took it over (composited by the tab)
     #[serde(rename = "a")]
-    Ack,
+    Ack {
+        #[serde(default)]
+        n: u64,
+    },
+    /// the tab composites the graphics pipeline itself (WebCodecs + WebGL), or no longer can
+    #[serde(rename = "g")]
+    Gpu { on: bool },
 }
 
 enum Cmd {
@@ -436,9 +445,6 @@ fn h264_decoder() -> Option<Box<dyn ironrdp_egfx::decode::H264Decoder>> {
 fn h264_decoder() -> Option<Box<dyn ironrdp_egfx::decode::H264Decoder>> {
     None
 }
-
-struct GfxEvents;
-impl GraphicsPipelineHandler for GfxEvents {}
 
 /// Picture coding in use, shown in the statistics: 0 bitmap updates, 1 graphics pipeline,
 /// 2 graphics pipeline with H.264.
@@ -697,23 +703,67 @@ const TYPING_EVENTS_PER_TICK: usize = 8;
 /// Frame acknowledgements of the graphics pipeline held longer than this are sent anyway
 /// (a tab that stopped drawing: window minimized, page busy).
 const ACK_HOLD_MAX: Duration = Duration::from_millis(250);
+/// Same, for frames the tab composites: it decodes every one of them, so it is never far behind.
+const GPU_ACK_HOLD_MAX: Duration = Duration::from_millis(1000);
 
 /// The frame acknowledgements held by the graphics pipeline, encoded for the server.
-fn take_frame_acks(stage: &mut ironrdp_session::ActiveStage) -> Result<Option<Vec<u8>>, String> {
+fn take_frame_acks(stage: &mut ironrdp_session::ActiveStage, keep: usize) -> Result<Option<Vec<u8>>, String> {
     let Some(mut gfx) = stage.get_dvc_mut::<GraphicsPipelineClient>() else {
         return Ok(None);
     };
-    if gfx.processor().held_frame_acks() == 0 {
+    if gfx.processor().held_frame_acks() <= keep {
         return Ok(None);
     }
     let id = gfx.channel_id();
-    let acks = gfx.processor_mut().take_frame_acks(ironrdp_egfx::pdu::QueueDepth::Unavailable);
+    let acks = gfx.processor_mut().take_frame_acks(keep, ironrdp_egfx::pdu::QueueDepth::Unavailable);
     let msgs = ironrdp_dvc::encode_dvc_messages(id, acks, ironrdp_svc::ChannelFlags::empty()).map_err(|e| e.to_string())?;
     stage.encode_dvc_messages(msgs).map(Some).map_err(|e| e.to_string())
 }
 
+/// Graphics pipeline composited by the tab (`on`) or here: switches through a protocol reset
+/// (the server sends the whole desktop again). With the mode already in use and `on`, the reset
+/// alone (a new tab needs the whole desktop). Returns the bytes to send and whether the reset was
+/// requested (else they only hold frame acknowledgements and the mode stays), `None` when
+/// there is nothing to send; `Err` while the channel is not ready.
+fn gpu_switch(stage: &mut ironrdp_session::ActiveStage, on: bool) -> Result<Option<(Vec<u8>, bool)>, ()> {
+    let Some(mut gfx) = stage.get_dvc_mut::<GraphicsPipelineClient>() else {
+        return Ok(None);
+    };
+    // ready: capabilities confirmed and a first frame received (the server's start is over)
+    if !gfx.processor().is_active() || gfx.processor().total_frames_decoded() == 0 {
+        return Err(());
+    }
+    let id = gfx.channel_id();
+    let p = gfx.processor_mut();
+    let reset = p.gpu_passthrough() != on || on;
+    if !reset {
+        return Ok(None);
+    }
+    // the frames received so far are acknowledged first: the server answers a reset only once
+    // no frame waits for its acknowledgement
+    let mut msgs = p.take_frame_acks(0, ironrdp_egfx::pdu::QueueDepth::Unavailable);
+    let pdu = if p.gpu_passthrough() == on { p.request_protocol_reset() } else { p.request_gpu_passthrough(on) };
+    let switched = pdu.is_some();
+    if let Some(pdu) = pdu {
+        msgs.push(Box::new(pdu));
+    }
+    if msgs.is_empty() {
+        return Ok(None);
+    }
+    let frame = ironrdp_dvc::encode_dvc_messages(id, msgs, ironrdp_svc::ChannelFlags::empty())
+        .ok()
+        .and_then(|m| stage.encode_dvc_messages(m).ok());
+    Ok(frame.map(|f| (f, switched)))
+}
+
+fn gpu_on(stage: &ironrdp_session::ActiveStage) -> bool {
+    stage.get_dvc::<GraphicsPipelineClient>().is_some_and(|g| g.processor().gpu_passthrough())
+}
+
 struct Channels {
     clip: Option<mpsc::UnboundedReceiver<ClipEvent>>,
+    /// commands of the graphics pipeline for a tab that composites it (see [crate::rdp_gpu])
+    gpu: Option<crate::rdp_gpu::GpuQueue>,
     /// sound frames for the tab
     audio: Option<mpsc::UnboundedReceiver<Vec<u8>>>,
     drive: bool,
@@ -731,9 +781,13 @@ async fn establish(
     log::info!("RDP {}:{} : profil {}", p.host, p.port, if slow { "lien lent" } else { "réseau local" });
     let mut framed = ironrdp_tokio::TokioFramed::new(stream);
     let mut dvc = DrdynvcClient::new().with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new())));
+    let mut gpu_queue = None;
     if gfx_enabled() {
-        // IronRDP composes the pipeline's picture into the session image after each PDU
-        let mut gfx = GraphicsPipelineClient::new(Box::new(GfxEvents), h264_decoder());
+        // IronRDP composes the pipeline's picture into the session image after each PDU, unless
+        // the tab composites it (the handler then records the commands for the tab)
+        let queue = crate::rdp_gpu::GpuQueue::default();
+        gpu_queue = Some(queue.clone());
+        let mut gfx = GraphicsPipelineClient::new(Box::new(crate::rdp_gpu::GfxEvents(queue)), h264_decoder());
         // frames are acknowledged once the tab has shown them (see `active_session`)
         gfx.set_deferred_frame_ack(true);
         if let Some(path) = &p.bitmap_cache {
@@ -742,7 +796,7 @@ async fn establish(
         dvc = dvc.with_dynamic_channel(gfx);
     }
     let mut connector = ClientConnector::new(connector_config(&p, slow)?, client_addr).with_static_channel(dvc);
-    let mut channels = Channels { clip: None, drive: false, audio: None };
+    let mut channels = Channels { clip: None, gpu: gpu_queue, drive: false, audio: None };
     if p.clipboard {
         let (cliprdr, rx) = rdp_channels::clipboard();
         connector.attach_static_channel(cliprdr);
@@ -1006,7 +1060,7 @@ fn input_events(m: WsIn) -> Vec<FastPathInputEvent> {
                 }
             })
             .collect(),
-        WsIn::Resize { .. } | WsIn::Clip { .. } | WsIn::Ack => vec![],
+        WsIn::Resize { .. } | WsIn::Clip { .. } | WsIn::Ack { .. } | WsIn::Gpu { .. } => vec![],
     }
 }
 
@@ -1197,7 +1251,7 @@ async fn active_session(
     let mut last_pointer: Option<Vec<u8>> = None;
     // last network measurement of the server (message for the tab)
     let mut link: Option<Vec<u8>> = None;
-    let Channels { clip: mut clip_rx, drive, audio: mut audio_rx } = channels;
+    let Channels { clip: mut clip_rx, gpu: gpu_queue, drive, audio: mut audio_rx } = channels;
     // clipboard: our text (CRLF, as sent to the server), last text received from the server
     let mut local_clip: Option<String> = None;
     let mut remote_clip: Option<String> = None;
@@ -1207,6 +1261,12 @@ async fn active_session(
     let mut tab_drew = false;
     // text typed with "Coller le texte", sent a few characters per tick
     let mut typing: std::collections::VecDeque<FastPathInputEvent> = std::collections::VecDeque::new();
+    // graphics pipeline composited by the tab: mode asked by the tab (and since when), frames
+    // sent to it and frames it has shown
+    let mut want_gpu: Option<(bool, std::time::Instant)> = None;
+    let mut gpu = false;
+    let mut gpu_sent: u64 = 0;
+    let mut gpu_shown: u64 = 0;
 
     loop {
         let outputs = tokio::select! {
@@ -1248,10 +1308,11 @@ async fn active_session(
                     });
                     Vec::new()
                 }
-                Some(Cmd::In(WsIn::Ack)) => {
+                Some(Cmd::In(WsIn::Ack { n })) => {
                     in_flight = None;
                     tab_drew = true;
-                    if paced && !dirty.is_empty() && viewer.is_some() {
+                    gpu_shown = gpu_shown.max(n);
+                    if !gpu && paced && !dirty.is_empty() && viewer.is_some() {
                         send_frame(&mut viewer, &image, &mut dirty, started, wire);
                         in_flight = Some(std::time::Instant::now());
                     }
@@ -1285,6 +1346,10 @@ async fn active_session(
                             }
                         }
                     }
+                    Vec::new()
+                }
+                Some(Cmd::In(WsIn::Gpu { on })) => {
+                    want_gpu = Some((on, std::time::Instant::now()));
                     Vec::new()
                 }
                 Some(Cmd::In(m @ WsIn::Text { .. })) => {
@@ -1434,7 +1499,11 @@ async fn active_session(
         for out in outputs {
             match out {
                 ActiveStageOutput::ResponseFrame(f) => writer.write_all(&f).await.map_err(|e| e.to_string())?,
-                ActiveStageOutput::GraphicsUpdate(r) => dirty.add(&r),
+                ActiveStageOutput::GraphicsUpdate(r) => {
+                    if !gpu {
+                        dirty.add(&r);
+                    }
+                }
                 ActiveStageOutput::PointerDefault => {
                     last_pointer = Some(vec![4]);
                     emit(&mut viewer, Message::binary(vec![4u8]));
@@ -1521,15 +1590,89 @@ async fn active_session(
             }
         }
 
+        // graphics pipeline composited by the tab: switch asked by the tab, once the channel is ready
+        if let Some((on, since)) = want_gpu {
+            let on = on && gpu_queue.is_some();
+            let answer = match gpu_switch(&mut stage, on) {
+                Ok(Some((f, switched))) => {
+                    writer.write_all(&f).await.map_err(|e| e.to_string())?;
+                    Some(if switched { on } else { gpu_on(&stage) })
+                }
+                Ok(None) => Some(gpu_on(&stage)),
+                // channel not ready yet (connection, reset in progress): asked again later
+                Err(()) if since.elapsed() < Duration::from_secs(10) => None,
+                Err(()) => Some(gpu_on(&stage)),
+            };
+            if let Some(now_on) = answer {
+                want_gpu = None;
+                gpu = now_on;
+                if let Some(q) = &gpu_queue
+                    && let Ok(mut q) = q.lock()
+                {
+                    q.on = now_on;
+                    q.clear();
+                }
+                gpu_sent = 0;
+                gpu_shown = 0;
+                acks_held = None;
+                log::info!("RDP : image composée par {}", if now_on { "l'onglet (GPU)" } else { "le moteur" });
+                emit(&mut viewer, Message::text(serde_json::json!({ "t": "g", "on": now_on }).to_string()));
+                if !now_on {
+                    in_flight = None;
+                    dirty.all(image.width(), image.height());
+                }
+            }
+        }
+        if gpu && let Some(q) = &gpu_queue {
+            let (msgs, overflow) = match q.lock() {
+                Ok(mut q) => {
+                    let overflow = std::mem::take(&mut q.overflow);
+                    (q.take(), overflow)
+                }
+                Err(_) => (Vec::new(), false),
+            };
+            // the commands of a frame go in one message (a WebSocket message costs far more
+            // than its bytes to the tab), closed by the frame marker
+            let mut batch = crate::rdp_gpu::Batch::default();
+            for m in msgs {
+                if m.first() == Some(&crate::rdp_gpu::END_FRAME) {
+                    if let Some(b) = batch.take() {
+                        emit(&mut viewer, Message::binary(b));
+                    }
+                    gpu_sent += 1;
+                    let mut end = vec![8u8];
+                    end.extend_from_slice(&(started.elapsed().as_millis() as u32).to_le_bytes());
+                    end.extend_from_slice(&((wire.bytes / 1024) as u32).to_le_bytes());
+                    end.push(wire.mode);
+                    emit(&mut viewer, Message::binary(end));
+                } else {
+                    batch.push(&m);
+                }
+            }
+            if let Some(b) = batch.take() {
+                emit(&mut viewer, Message::binary(b));
+            }
+            if overflow {
+                // the tab no longer reads: the whole desktop again once it does
+                want_gpu = Some((true, std::time::Instant::now()));
+            }
+        }
+
         // Frame acknowledgements (graphics pipeline): sent once the tab has drawn the frames, or
         // right away when nothing waits to be drawn (no tab, nothing changed on screen), so the
         // server never encodes pictures faster than they are shown (the Windows client delays
-        // its acknowledgements the same way).
+        // its acknowledgements the same way). Composited by the tab, the frames it has not shown
+        // yet stay unacknowledged.
         if stage.get_dvc::<GraphicsPipelineClient>().is_some_and(|g| g.processor().held_frame_acks() > 0) {
-            let idle = in_flight.is_none() && dirty.is_empty();
-            let late = acks_held.is_some_and(|t| t.elapsed() > ACK_HOLD_MAX);
+            let idle = !gpu && in_flight.is_none() && dirty.is_empty();
+            let late = acks_held.is_some_and(|t| t.elapsed() > if gpu { GPU_ACK_HOLD_MAX } else { ACK_HOLD_MAX });
             if viewer.is_none() || !paced || tab_drew || idle || late {
-                if let Some(f) = take_frame_acks(&mut stage)? {
+                let keep = if gpu && viewer.is_some() && paced && !late {
+                    usize::try_from(gpu_sent.saturating_sub(gpu_shown)).unwrap_or(usize::MAX)
+                } else {
+                    0
+                };
+                if let Some(f) = take_frame_acks(&mut stage, keep)? {
                     writer.write_all(&f).await.map_err(|e| e.to_string())?;
                 }
                 acks_held = None;
@@ -1543,6 +1686,15 @@ async fn active_session(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn tab_messages() {
+        use super::WsIn;
+        let p = |s: &str| serde_json::from_str::<WsIn>(s).map_err(|e| e.to_string());
+        assert!(matches!(p(r#"{"t":"a"}"#), Ok(WsIn::Ack { n: 0 })), "{:?}", p(r#"{"t":"a"}"#));
+        assert!(matches!(p(r#"{"t":"a","n":7}"#), Ok(WsIn::Ack { n: 7 })));
+        assert!(matches!(p(r#"{"t":"g","on":true}"#), Ok(WsIn::Gpu { on: true })));
+    }
+
     #[test]
     fn multi_monitor_layout() {
         use ironrdp_pdu::gcc::MonitorFlags;

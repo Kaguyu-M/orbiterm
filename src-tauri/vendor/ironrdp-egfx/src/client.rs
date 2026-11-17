@@ -416,6 +416,26 @@ pub trait GraphicsPipelineHandler: Send {
     ///
     /// This is a catch-all for any GfxPdu variant not matched above.
     fn on_unhandled_pdu(&mut self, _pdu: &GfxPdu) {}
+
+    /// Orbiterm patch: an H.264 update passed through undecoded (see
+    /// [`GraphicsPipelineClient::request_gpu_passthrough`]).
+    fn on_gpu_avc(&mut self, _avc: &GpuAvc<'_>) {}
+}
+
+/// Orbiterm patch: an AVC420 or AVC444 update of a surface, still H.264-coded.
+///
+/// `main` is the 4:2:0 view (luma and subsampled chroma), `auxiliary` the AVC444 view holding
+/// the other chroma samples ([MS-RDPEGFX] 2.2.4.5 and 2.2.4.6). Each comes with its `regionRects`
+/// and its H.264 bitstream (Annex B). Both views go through one decoder, `main` first.
+///
+/// [MS-RDPEGFX]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/da5c75f9-cd99-450c-98c4-014a496942b0
+#[derive(Debug)]
+pub struct GpuAvc<'a> {
+    pub surface_id: u16,
+    /// `Avc420`, `Avc444` or `Avc444v2`
+    pub codec_id: Codec1Type,
+    pub main: Option<(&'a [ExclusiveRectangle], &'a [u8])>,
+    pub auxiliary: Option<(&'a [ExclusiveRectangle], &'a [u8])>,
 }
 
 // ============================================================================
@@ -485,6 +505,9 @@ pub struct GraphicsPipelineClient {
     /// Orbiterm patch: frame acknowledgements held until the application has shown the frames
     /// (see [`Self::set_deferred_frame_ack`]); `None` acknowledges each frame at once.
     held_acks: Option<Vec<(u32, u32)>>,
+    /// Orbiterm patch: surface commands and H.264 streams go to the handler, which composites
+    /// them itself (see [`Self::request_gpu_passthrough`]).
+    gpu: bool,
 }
 
 impl GraphicsPipelineClient {
@@ -519,6 +542,7 @@ impl GraphicsPipelineClient {
             cache_import_attempted: false,
             offered_cache_keys: None,
             held_acks: None,
+            gpu: false,
         }
     }
 
@@ -538,13 +562,15 @@ impl GraphicsPipelineClient {
         self.held_acks.as_ref().map_or(0, Vec::len)
     }
 
-    /// Orbiterm patch: the held acknowledgements, oldest first, each reporting `queue_depth`.
+    /// Orbiterm patch: the held acknowledgements, oldest first, each reporting `queue_depth`,
+    /// except the `keep` newest (frames the application has not shown yet).
     #[expect(clippy::as_conversions, reason = "Box<GfxPdu> to Box<dyn DvcEncode> coercion")]
-    pub fn take_frame_acks(&mut self, queue_depth: QueueDepth) -> Vec<DvcMessage> {
+    pub fn take_frame_acks(&mut self, keep: usize, queue_depth: QueueDepth) -> Vec<DvcMessage> {
         let Some(held) = self.held_acks.as_mut() else {
             return Vec::new();
         };
-        held.drain(..)
+        let n = held.len().saturating_sub(keep);
+        held.drain(..n)
             .map(|(frame_id, total_frames_decoded)| {
                 Box::new(GfxPdu::FrameAcknowledge(FrameAcknowledgePdu {
                     queue_depth,
@@ -647,6 +673,46 @@ impl GraphicsPipelineClient {
         }
         // ZGFX history still decodes packets already in flight before confirmation.
         Some(pdu)
+    }
+
+    /// Orbiterm patch: switch the GPU passthrough on or off, through a protocol reset.
+    ///
+    /// With the passthrough on, H.264 updates are not decoded: they reach
+    /// [`GraphicsPipelineHandler::on_gpu_avc`] as they arrived, and the handler composites every
+    /// surface command itself (surfaces, solid fills, copies, bitmap cache, the bitmaps of the
+    /// other codecs from [`GraphicsPipelineHandler::on_bitmap_updated`]). The internal compositor
+    /// then lacks the H.264 pictures, so it skips the commands that read surfaces, and the
+    /// persistent cache is neither offered nor saved.
+    ///
+    /// The switch goes through [`Self::request_protocol_reset`], so the server sends the whole
+    /// desktop again in the new mode. With the passthrough on, the capabilities also carry
+    /// `AVC_THIN_CLIENT`: the server then codes the whole desktop with H.264 (decoded by the
+    /// graphics card) rather than mixing in RemoteFX Progressive, which only the processor decodes.
+    /// Returns the PDU to send, or `None` when the mode is already the requested one or the
+    /// server's version cannot reset (the mode is left unchanged).
+    #[must_use]
+    pub fn request_gpu_passthrough(&mut self, on: bool) -> Option<GfxPdu> {
+        if self.gpu == on {
+            return None;
+        }
+        let before = self.negotiated_caps.clone();
+        if let Some(caps) = self.negotiated_caps.as_mut() {
+            set_thin_client(caps, on);
+        }
+        // reset in the old mode: its cache contents decide whether the cache is saved
+        let Some(pdu) = self.request_protocol_reset() else {
+            self.negotiated_caps = before;
+            return None;
+        };
+        self.gpu = on;
+        self.compositor.set_passthrough(on);
+        Some(pdu)
+    }
+
+    /// Orbiterm patch: whether the GPU passthrough is on.
+    #[must_use]
+    pub fn gpu_passthrough(&self) -> bool {
+        self.gpu
     }
 
     /// Get codec capabilities determined from negotiation
@@ -782,8 +848,10 @@ impl GraphicsPipelineClient {
             // Surface operations
             GfxPdu::SolidFill(pdu) => {
                 trace!(surface_id = pdu.surface_id, "SolidFill");
-                self.compositor
-                    .solid_fill(pdu.surface_id, &pdu.fill_pixel, &pdu.rectangles);
+                if !self.gpu {
+                    self.compositor
+                        .solid_fill(pdu.surface_id, &pdu.fill_pixel, &pdu.rectangles);
+                }
                 self.handler.on_solid_fill(&pdu);
                 Ok(vec![])
             }
@@ -793,12 +861,14 @@ impl GraphicsPipelineClient {
                     dst = pdu.destination_surface_id,
                     "SurfaceToSurface"
                 );
-                self.compositor.surface_to_surface(
-                    pdu.source_surface_id,
-                    pdu.destination_surface_id,
-                    &pdu.source_rectangle,
-                    &pdu.destination_points,
-                );
+                if !self.gpu {
+                    self.compositor.surface_to_surface(
+                        pdu.source_surface_id,
+                        pdu.destination_surface_id,
+                        &pdu.source_rectangle,
+                        &pdu.destination_points,
+                    );
+                }
                 self.handler.on_surface_to_surface(&pdu);
                 Ok(vec![])
             }
@@ -810,8 +880,10 @@ impl GraphicsPipelineClient {
                     cache_slot = pdu.cache_slot,
                     "SurfaceToCache"
                 );
-                self.compositor
-                    .surface_to_cache(pdu.surface_id, pdu.cache_slot, pdu.cache_key, &pdu.source_rectangle);
+                if !self.gpu {
+                    self.compositor
+                        .surface_to_cache(pdu.surface_id, pdu.cache_slot, pdu.cache_key, &pdu.source_rectangle);
+                }
                 self.handler.on_surface_to_cache(&pdu);
                 Ok(vec![])
             }
@@ -821,14 +893,18 @@ impl GraphicsPipelineClient {
                     surface_id = pdu.surface_id,
                     "CacheToSurface"
                 );
-                self.compositor
-                    .cache_to_surface(pdu.cache_slot, pdu.surface_id, &pdu.destination_points);
+                if !self.gpu {
+                    self.compositor
+                        .cache_to_surface(pdu.cache_slot, pdu.surface_id, &pdu.destination_points);
+                }
                 self.handler.on_cache_to_surface(&pdu);
                 Ok(vec![])
             }
             GfxPdu::EvictCacheEntry(pdu) => {
                 trace!(cache_slot = pdu.cache_slot, "EvictCacheEntry");
-                self.compositor.evict_cache_entry(pdu.cache_slot);
+                if !self.gpu {
+                    self.compositor.evict_cache_entry(pdu.cache_slot);
+                }
                 self.handler.on_evict_cache_entry(&pdu);
                 Ok(vec![])
             }
@@ -1128,6 +1204,13 @@ impl GraphicsPipelineClient {
             );
         }
 
+        if self.gpu && matches!(pdu.codec_id, Codec1Type::Avc420 | Codec1Type::Avc444 | Codec1Type::Avc444v2) {
+            if let Err(error) = self.pass_avc(pdu.codec_id, pdu.surface_id, &pdu.bitmap_data) {
+                self.drop_update(pdu.codec_id, pdu.surface_id, pdu.bitmap_data.len(), &error);
+            }
+            return Ok(());
+        }
+
         let result = match pdu.codec_id {
             Codec1Type::Avc420 => self.decode_avc420(pdu.surface_id, &pdu.destination_rectangle, &pdu.bitmap_data),
             Codec1Type::ClearCodec => {
@@ -1268,6 +1351,35 @@ impl GraphicsPipelineClient {
                 "Dropping an undecodable surface update"
             );
         }
+    }
+
+    /// Orbiterm patch: hand an H.264 update to the handler undecoded.
+    fn pass_avc(&mut self, codec_id: Codec1Type, surface_id: u16, bitmap_data: &[u8]) -> PduResult<()> {
+        let mut cursor = ReadCursor::new(bitmap_data);
+        if codec_id == Codec1Type::Avc420 {
+            let stream = Avc420BitmapStream::decode(&mut cursor).map_err(|e| decode_err!(e))?;
+            self.handler.on_gpu_avc(&GpuAvc {
+                surface_id,
+                codec_id,
+                main: Some((&stream.rectangles, stream.data)),
+                auxiliary: None,
+            });
+            return Ok(());
+        }
+        let stream = Avc444BitmapStream::decode(&mut cursor).map_err(|e| decode_err!(e))?;
+        let one = (stream.stream1.rectangles.as_slice(), stream.stream1.data);
+        let (main, auxiliary) = match stream.encoding {
+            Encoding::LUMA => (Some(one), None),
+            Encoding::CHROMA => (None, Some(one)),
+            _ => (Some(one), stream.stream2.as_ref().map(|s| (s.rectangles.as_slice(), s.data))),
+        };
+        self.handler.on_gpu_avc(&GpuAvc {
+            surface_id,
+            codec_id,
+            main,
+            auxiliary,
+        });
+        Ok(())
     }
 
     fn decode_avc420(&mut self, surface_id: u16, dest_rect: &ExclusiveRectangle, bitmap_data: &[u8]) -> PduResult<()> {
@@ -1772,6 +1884,10 @@ impl GraphicsPipelineClient {
     /// [3.3.5.16]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/adf5cc51-d0b1-4533-987f-16296bbe6966
     #[expect(clippy::as_conversions, reason = "Box<GfxPdu> to Box<dyn DvcEncode> coercion")]
     fn cache_import_offer(&mut self) -> Option<DvcMessage> {
+        // Orbiterm patch: the handler holds the cache in passthrough, imported tiles would miss there
+        if self.gpu {
+            return None;
+        }
         let store = self.persistent_cache.as_mut()?;
         // The cache limits depend on the confirmed flags, so without them nothing is offered.
         self.negotiated_caps.as_ref()?;
@@ -1901,6 +2017,10 @@ impl GraphicsPipelineClient {
     /// An empty cache is not saved, so a session that ends before the server cached anything
     /// keeps the entries a previous session stored.
     fn save_persistent_cache(&mut self) {
+        // Orbiterm patch: in passthrough the internal cache does not hold the tiles
+        if self.gpu {
+            return;
+        }
         let Some(store) = self.persistent_cache.as_mut() else {
             return;
         };
@@ -1996,6 +2116,19 @@ impl GraphicsPipelineClient {
 }
 
 impl_as_any!(GraphicsPipelineClient);
+
+/// Orbiterm patch: `AVC_THIN_CLIENT` set or cleared in a capability set that has it (10.3 and later).
+fn set_thin_client(caps: &mut CapabilitySet, on: bool) {
+    match caps {
+        CapabilitySet::V10_3 { flags } => flags.set(CapabilitiesV103Flags::AVC_THIN_CLIENT, on),
+        CapabilitySet::V10_4 { flags }
+        | CapabilitySet::V10_5 { flags }
+        | CapabilitySet::V10_6 { flags }
+        | CapabilitySet::V10_6Err { flags } => flags.set(CapabilitiesV104Flags::AVC_THIN_CLIENT, on),
+        CapabilitySet::V10_7 { flags } => flags.set(CapabilitiesV107Flags::AVC_THIN_CLIENT, on),
+        _ => {}
+    }
+}
 
 impl DvcProcessor for GraphicsPipelineClient {
     fn channel_name(&self) -> &str {

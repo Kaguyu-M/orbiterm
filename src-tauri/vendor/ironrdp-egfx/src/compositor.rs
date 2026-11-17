@@ -214,6 +214,8 @@ struct CachedTile {
 /// command and drains completed frames via [`drain_output`](Self::drain_output).
 #[derive(Debug, Default)]
 pub(crate) struct Compositor {
+    /// Orbiterm patch: see [`Compositor::set_passthrough`]
+    passthrough: bool,
     surfaces: BTreeMap<u16, Surface>,
     cache: BTreeMap<u16, CachedTile>,
     /// Advances on every cache store or paste; orders cache tiles by recency.
@@ -237,6 +239,11 @@ pub(crate) struct Compositor {
 
 impl Compositor {
     /// Discard channel pixels while retaining the last announced output extent.
+    /// Orbiterm patch: decoded bitmaps are not composited here, the application does it.
+    pub(crate) fn set_passthrough(&mut self, on: bool) {
+        self.passthrough = on;
+    }
+
     pub(crate) fn reset_protocol(&mut self) {
         *self = Self {
             output_width: self.output_width,
@@ -463,6 +470,10 @@ impl Compositor {
     /// `rgba` is expected to be `dest.width() * dest.height() * 4` bytes; short or
     /// long buffers are handled defensively by the row-wise blit.
     pub(crate) fn apply_bitmap(&mut self, surface_id: u16, dest: &ExclusiveRectangle, rgba: &[u8]) {
+        // Orbiterm patch: the application composites the surfaces (GPU passthrough)
+        if self.passthrough {
+            return;
+        }
         let x = dest.left;
         let y = dest.top;
         let w = dest.right.saturating_sub(dest.left);

@@ -5,6 +5,8 @@
 
 export interface Surface {
   readonly kind: "webgl" | "2d";
+  /** WebGL 2 context of the canvas, shared with the compositor of the graphics pipeline */
+  readonly gl2?: WebGL2RenderingContext;
   /** new desktop size (clears the picture) */
   resize(w: number, h: number): void;
   /** RGBA pixels of an area, rows of w * 4 bytes */
@@ -24,7 +26,11 @@ class Canvas2D implements Surface {
   }
   put(x: number, y: number, w: number, h: number, rgba: Uint8Array) {
     // WebSocket frames are plain ArrayBuffers
-    const px = new Uint8ClampedArray(rgba.buffer as ArrayBuffer, rgba.byteOffset, w * h * 4);
+    const px = new Uint8ClampedArray(
+      rgba.buffer as ArrayBuffer,
+      rgba.byteOffset,
+      w * h * 4,
+    );
     this.ctx?.putImageData(new ImageData(px, w, h), x, y);
   }
   present() {}
@@ -44,6 +50,9 @@ void main() { gl_FragColor = vec4(texture2D(t, uv).rgb, 1.0); }`;
 class WebGL implements Surface {
   readonly kind = "webgl";
   private tex: WebGLTexture | null = null;
+  private prog: WebGLProgram | null = null;
+  private buf: WebGLBuffer | null = null;
+  private loc = 0;
   private dirty = false;
   private lost = false;
   private size = { w: 0, h: 0 };
@@ -67,7 +76,10 @@ class WebGL implements Surface {
     });
   }
 
-  static create(canvas: HTMLCanvasElement, onRestore: () => void): WebGL | null {
+  static create(
+    canvas: HTMLCanvasElement,
+    onRestore: () => void,
+  ): WebGL | null {
     const opts: WebGLContextAttributes = {
       alpha: false,
       antialias: false,
@@ -77,10 +89,36 @@ class WebGL implements Surface {
       preserveDrawingBuffer: false,
       powerPreference: "high-performance",
     };
-    const gl = (canvas.getContext("webgl", opts) ?? canvas.getContext("experimental-webgl", opts)) as WebGLRenderingContext | null;
+    // WebGL 2 when available: the tab can then composite the graphics pipeline (gfxgpu.ts)
+    const gl = (canvas.getContext("webgl2", opts) ??
+      canvas.getContext("webgl", opts) ??
+      canvas.getContext(
+        "experimental-webgl",
+        opts,
+      )) as WebGLRenderingContext | null;
     if (!gl) return null;
     const s = new WebGL(canvas, gl, onRestore);
     return s.init() ? s : null;
+  }
+
+  get gl2(): WebGL2RenderingContext | undefined {
+    return typeof WebGL2RenderingContext !== "undefined" &&
+      this.gl instanceof WebGL2RenderingContext
+      ? this.gl
+      : undefined;
+  }
+
+  /** Binds what drawing needs: the compositor of the graphics pipeline shares the context. */
+  private bind() {
+    const gl = this.gl;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.useProgram(this.prog);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.buf);
+    gl.enableVertexAttribArray(this.loc);
+    gl.vertexAttribPointer(this.loc, 2, gl.FLOAT, false, 0, 0);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.tex);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
   }
 
   private init(): boolean {
@@ -92,7 +130,8 @@ class WebGL implements Surface {
       gl.compileShader(sh);
       return gl.getShaderParameter(sh, gl.COMPILE_STATUS) ? sh : null;
     };
-    const vs = shader(gl.VERTEX_SHADER, VS), fs = shader(gl.FRAGMENT_SHADER, FS);
+    const vs = shader(gl.VERTEX_SHADER, VS),
+      fs = shader(gl.FRAGMENT_SHADER, FS);
     const prog = gl.createProgram();
     if (!vs || !fs || !prog) return false;
     gl.attachShader(prog, vs);
@@ -100,9 +139,16 @@ class WebGL implements Surface {
     gl.linkProgram(prog);
     if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) return false;
     gl.useProgram(prog);
-    gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+    this.prog = prog;
+    this.buf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.buf);
+    gl.bufferData(
+      gl.ARRAY_BUFFER,
+      new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]),
+      gl.STATIC_DRAW,
+    );
     const loc = gl.getAttribLocation(prog, "p");
+    this.loc = loc;
     gl.enableVertexAttribArray(loc);
     gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
     gl.uniform1i(gl.getUniformLocation(prog, "t"), 0);
@@ -123,29 +169,56 @@ class WebGL implements Surface {
     this.canvas.width = w;
     this.canvas.height = h;
     if (this.lost) return;
+    this.bind();
     gl.viewport(0, 0, w, h);
-    gl.bindTexture(gl.TEXTURE_2D, this.tex);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.texImage2D(
+      gl.TEXTURE_2D,
+      0,
+      gl.RGBA,
+      w,
+      h,
+      0,
+      gl.RGBA,
+      gl.UNSIGNED_BYTE,
+      null,
+    );
     this.dirty = true;
   }
 
   put(x: number, y: number, w: number, h: number, rgba: Uint8Array) {
     if (this.lost) return;
     const gl = this.gl;
-    gl.texSubImage2D(gl.TEXTURE_2D, 0, x, y, w, h, gl.RGBA, gl.UNSIGNED_BYTE, rgba.subarray(0, w * h * 4));
+    this.bind();
+    gl.texSubImage2D(
+      gl.TEXTURE_2D,
+      0,
+      x,
+      y,
+      w,
+      h,
+      gl.RGBA,
+      gl.UNSIGNED_BYTE,
+      rgba.subarray(0, w * h * 4),
+    );
     this.dirty = true;
   }
 
   present() {
     if (!this.dirty || this.lost) return;
     this.dirty = false;
+    this.bind();
+    this.gl.viewport(0, 0, this.size.w, this.size.h);
     this.gl.drawArrays(this.gl.TRIANGLE_STRIP, 0, 4);
   }
 }
 
 /** WebGL when available (and not disabled), else the 2D canvas. `onRestore`: the GPU
  * context came back after a loss, the whole desktop must be sent again. */
-export function createSurface(canvas: HTMLCanvasElement, allowGpu: boolean, onRestore: () => void): Surface {
+export function createSurface(
+  canvas: HTMLCanvasElement,
+  allowGpu: boolean,
+  onRestore: () => void,
+): Surface {
   if (allowGpu) {
     try {
       const s = WebGL.create(canvas, onRestore);
