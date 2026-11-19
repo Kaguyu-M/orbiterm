@@ -348,7 +348,8 @@ async fn silent_rdp_server_times_out() {
     let r = connect(params(port, "test", &dir.path().join("k")), prompter(seen), on_close).await;
     let e = r.err().expect("must fail");
     assert!(e.to_string().contains("ne répond pas à la négociation"), "{e}");
-    assert!(t0.elapsed() < Duration::from_secs(30));
+    // the negotiation gives up after 20 s; a loaded CI runner went past 30 s once (30.01 s)
+    assert!(t0.elapsed() < Duration::from_secs(45), "{:?}", t0.elapsed());
 }
 
 /// The server ending the session by itself (logoff) is reported as a normal end, so the
