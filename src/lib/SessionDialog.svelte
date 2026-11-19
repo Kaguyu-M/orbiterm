@@ -252,6 +252,11 @@
                 <option value="lan">Réseau local : meilleure image</option>
                 <option value="slow">Lien lent / VPN : plus réactif (couleurs 16 bits, sans fond d'écran ni lissage des polices)</option>
               </select>
+              <label class="lbl" for="rudp">Transport</label>
+              <select id="rudp" value={x("rdp_udp", "1")} onchange={(e) => setX("rdp_udp", e.currentTarget.value)} data-rdp-udp>
+                <option value="1">UDP quand le serveur le propose (plus fluide sur VPN et Wi-Fi), sinon TCP</option>
+                <option value="0">TCP seulement</option>
+              </select>
               <label class="lbl" for="rscale">Échelle de l'affichage</label>
               <select id="rscale" value={x("rdp_scale", "auto")} onchange={(e) => setX("rdp_scale", e.currentTarget.value)} data-rdp-scale>
                 <option value="auto">Automatique (celle de cet écran : 125 %, 150 %…)</option>

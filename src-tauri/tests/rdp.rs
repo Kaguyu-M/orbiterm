@@ -55,6 +55,8 @@ fn params(port: u16, password: &str, known: &std::path::Path) -> RdpParams {
         quality: orbiterm_lib::rdp_client::Quality::Auto,
         scale: 100,
         bitmap_cache: None,
+        // advertised: a server that does not answer it keeps the session on TCP
+        udp: true,
     }
 }
 

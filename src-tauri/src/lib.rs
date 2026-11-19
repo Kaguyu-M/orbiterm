@@ -15,6 +15,7 @@ pub mod rdp_cache;
 pub mod rdp_channels;
 pub mod rdp_client;
 pub mod rdp_gpu;
+pub mod rdp_udp;
 #[cfg(windows)]
 mod keyhook;
 #[cfg(target_os = "linux")]

@@ -178,7 +178,8 @@
   const showStats = tab.session.extra?.rdp_stats === "1";
   // wire: KiB received from the server (cumulative), mode: 0 bitmaps, 1 graphics pipeline, 2 with H.264
   // rtt / kbps: the link as measured by the server (automatic quality), -1 = not measured
-  const stat = { frames: 0, bytes: 0, total: 0, base: Infinity, lag: 0, maxLag: 0, since: 0, wire: 0, wire0: 0, mode: 0, rtt: -1, kbps: 0 };
+  // udp: the picture travels over the UDP transport (else TCP)
+  const stat = { frames: 0, bytes: 0, total: 0, base: Infinity, lag: 0, maxLag: 0, since: 0, wire: 0, wire0: 0, mode: 0, rtt: -1, kbps: 0, udp: false };
   let statText = $state("");
   function frameEnd(sent: number) {
     if (!ackQueued) {
@@ -204,7 +205,7 @@
       const s = (now - stat.since) / 1000;
       const codec = ["bitmaps", "GFX", "H.264"][stat.mode] ?? "?";
       const link = stat.rtt < 0 ? "" : ` · lien ${stat.rtt} ms${stat.kbps ? `, ${stat.kbps >= 10000 ? Math.round(stat.kbps / 1000) : (stat.kbps / 1000).toFixed(1)} Mbit/s` : ""}`;
-      statText = `${Math.round(stat.frames / s)} i/s · réseau ${((stat.wire - stat.wire0) / s / 1024).toFixed(2)} Mo/s · ${codec}${link} · retard ${Math.round(stat.maxLag)} ms · ${gpuLabel()}`;
+      statText = `${Math.round(stat.frames / s)} i/s · réseau ${((stat.wire - stat.wire0) / s / 1024).toFixed(2)} Mo/s ${stat.udp ? "UDP" : "TCP"} · ${codec}${link} · retard ${Math.round(stat.maxLag)} ms · ${gpuLabel()}`;
       Object.assign(stat, { frames: 0, bytes: 0, maxLag: 0, since: now, wire0: stat.wire });
     }
   }
@@ -223,6 +224,7 @@
       try {
         const m = JSON.parse(ev.data);
         if (m.t === "g") setGpu(!!m.on);
+        else if (m.t === "udp") stat.udp = !!m.on;
         else if (m.t === "clip" && typeof m.s === "string") {
           lastClip = m.s;
           clipWrite(m.s);

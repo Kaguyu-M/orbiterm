@@ -3355,6 +3355,50 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironrdp-rdpemt"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "85c30b11380f6b8004f47c81e49aea75301f7642184f387b2fcd9d6d28172ad7"
+dependencies = [
+ "ironrdp-core",
+ "ironrdp-error",
+ "subtle",
+ "tracing",
+]
+
+[[package]]
+name = "ironrdp-rdpeudp"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "25a695088eac95eb1f06d62ae366800f19d6ebf92eaa991e92fd341aff96b636"
+dependencies = [
+ "bitflags 2.13.2",
+ "ironrdp-core",
+ "ironrdp-error",
+ "tracing",
+]
+
+[[package]]
+name = "ironrdp-rdpeudp-tokio"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7785fb57f1d0a90a40e588b811492f270879fbb755646d73064a441eb7b3f723"
+dependencies = [
+ "bytes",
+ "ironrdp-async",
+ "ironrdp-core",
+ "ironrdp-error",
+ "ironrdp-pdu",
+ "ironrdp-rdpemt",
+ "ironrdp-rdpeudp",
+ "ironrdp-tls",
+ "sha2 0.10.9",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
+]
+
+[[package]]
 name = "ironrdp-rdpsnd"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3405,8 +3449,10 @@ version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "63dcf5982519d8bd18eb102ffbba1933d25744f3e0f2c59f794b4b7fe0ef0f84"
 dependencies = [
+ "rustls-native-certs",
  "tokio",
  "tokio-native-tls",
+ "tokio-rustls",
  "x509-cert",
 ]
 
@@ -4620,6 +4666,9 @@ dependencies = [
  "ironrdp-pdu",
  "ironrdp-rdpdr",
  "ironrdp-rdpdr-native",
+ "ironrdp-rdpemt",
+ "ironrdp-rdpeudp",
+ "ironrdp-rdpeudp-tokio",
  "ironrdp-rdpsnd",
  "ironrdp-session",
  "ironrdp-svc",
@@ -4659,6 +4708,7 @@ dependencies = [
  "windows-sys 0.61.2",
  "winreg 0.55.0",
  "x11rb",
+ "x509-cert",
 ]
 
 [[package]]

@@ -7,7 +7,8 @@
 //!   `3` cursor (hot x, hot y, w, h, RGBA), `4` default cursor, `5` hidden cursor,
 //!   `8` end of a frame (time in ms: u32 LE);
 //!   with the graphics pipeline composited by the tab, the surface commands of [crate::rdp_gpu];
-//! - backend → tab (JSON text): `{"t":"clip","s":…}` text copied on the remote computer;
+//! - backend → tab (JSON text): `{"t":"clip","s":…}` text copied on the remote computer,
+//!   `{"t":"udp","on":…}` the picture travels over the UDP transport (see [crate::rdp_udp]) or not;
 //! - tab → backend (JSON text): keyboard scancodes, mouse, wheel, resize, Ctrl+Alt+Del,
 //!   local clipboard text, frame acknowledgement, `{"t":"g","on":…}` graphics pipeline composited
 //!   by the tab or not (answered with the mode in use, same message).
@@ -59,6 +60,7 @@ use ironrdp_rdpdr::Rdpdr;
 use crate::error::{AppError, AppResult};
 use crate::rdp_channels::{self, CF_UNICODETEXT, ClipEvent};
 use crate::known_hosts::HostKeyStatus;
+use crate::rdp_udp::Out;
 use crate::ssh::{CloseSink, HostKeyPrompter, HostKeyQuestion, ended};
 
 pub struct RdpParams {
@@ -89,6 +91,8 @@ pub struct RdpParams {
     pub scale: u32,
     /// file of the persistent bitmap cache (session option rdp_cache = "0" turns it off)
     pub bitmap_cache: Option<PathBuf>,
+    /// offer the UDP transport (session option rdp_udp = "0" turns it off); TCP otherwise
+    pub udp: bool,
 }
 
 /// Session option "rdp_quality": what the server is asked to send.
@@ -143,8 +147,8 @@ type Stream = Box<dyn AsyncReadWrite + Unpin + Send + Sync>;
 const NEGOTIATION_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Opens the transport to the RDP server: a TCP connection, or a tunnel through the gateway.
-/// Also returns the TCP connect time (round trip), None through a gateway.
-async fn open_transport(p: &RdpParams) -> AppResult<(Stream, SocketAddr, Option<Duration>)> {
+/// Also returns the TCP connect time (round trip) and the server's address, None through a gateway.
+async fn open_transport(p: &RdpParams) -> AppResult<(Stream, SocketAddr, Option<Duration>, Option<SocketAddr>)> {
     let Some(gw) = &p.gateway else {
         let unreachable = || AppError::Conn(format!("{}:{} ne répond pas", p.host, p.port));
         let started = std::time::Instant::now();
@@ -178,7 +182,8 @@ async fn open_transport(p: &RdpParams) -> AppResult<(Stream, SocketAddr, Option<
             log::warn!("RDP : keepalive TCP impossible : {e}");
         }
         let addr = stream.local_addr()?;
-        return Ok((Box::new(stream), addr, Some(rtt)));
+        let peer = stream.peer_addr().ok();
+        return Ok((Box::new(stream), addr, Some(rtt), peer));
     };
     use ironrdp_mstsgu::{GwClient, GwConnectTarget, GwErrorKind};
     let target = GwConnectTarget {
@@ -201,7 +206,7 @@ async fn open_transport(p: &RdpParams) -> AppResult<(Stream, SocketAddr, Option<
     .await
     .map_err(|_| AppError::Conn(format!("passerelle {} : délai dépassé", gw.endpoint)))?;
     match r {
-        Ok((client, addr)) => Ok((Box::new(client), addr, None)),
+        Ok((client, addr)) => Ok((Box::new(client), addr, None, None)),
         Err(e) => Err(match e.kind() {
             GwErrorKind::HttpStatus(401) | GwErrorKind::HttpStatus(403) => AppError::JumpAuthFailed,
             kind => {
@@ -556,7 +561,13 @@ fn connector_config(p: &RdpParams, slow: bool) -> AppResult<ironrdp_connector::C
         enable_audio_playback: p.sound,
         request_data: None,
         pointer_software_rendering: false,
-        multitransport_flags: None,
+        // reliable UDP (MS-RDPEUDP + TLS), the channels moved onto it by Soft-Sync, as mstsc
+        // does (the lossy transport is not implemented; Windows forces it to TCP by default anyway)
+        multitransport_flags: (p.udp && crate::rdp_udp::allowed()).then_some(
+            ironrdp_pdu::gcc::MultiTransportFlags::TRANSPORT_TYPE_UDP_FECR
+                | ironrdp_pdu::gcc::MultiTransportFlags::TRANSPORT_TYPE_UDP_PREFERRED
+                | ironrdp_pdu::gcc::MultiTransportFlags::SOFT_SYNC_TCP_TO_UDP,
+        ),
         // no bulk compression: xrdp then compresses even the share-data PDUs of the
         // Deactivation-Reactivation sequence, which IronRDP cannot decode there (the
         // session dropped right after the logon on Kali / xrdp)
@@ -674,7 +685,10 @@ pub async fn connect(p: RdpParams, prompter: HostKeyPrompter, on_close: CloseSin
                 }
                 let reason = match active_session(framed, result, channels, loop_tx, cmd_rx, scale).await {
                     Ok(r) => r,
-                    Err(e) => crate::ssh::lost(format!("connexion RDP interrompue : {e}")),
+                    Err(e) => {
+                        log::warn!("RDP : connexion interrompue : {e}");
+                        crate::ssh::lost(format!("connexion RDP interrompue : {e}"))
+                    }
                 };
                 on_close(reason);
             });
@@ -712,17 +726,36 @@ const ACK_HOLD_MAX: Duration = Duration::from_millis(250);
 const GPU_ACK_HOLD_MAX: Duration = Duration::from_millis(1000);
 
 /// The frame acknowledgements held by the graphics pipeline, encoded for the server.
-fn take_frame_acks(stage: &mut ironrdp_session::ActiveStage, keep: usize) -> Result<Option<Vec<u8>>, String> {
+fn take_frame_acks(stage: &mut ironrdp_session::ActiveStage, keep: usize) -> Result<Out, String> {
     let Some(mut gfx) = stage.get_dvc_mut::<GraphicsPipelineClient>() else {
-        return Ok(None);
+        return Ok(Out::Nothing);
     };
     if gfx.processor().held_frame_acks() <= keep {
-        return Ok(None);
+        return Ok(Out::Nothing);
     }
     let id = gfx.channel_id();
     let acks = gfx.processor_mut().take_frame_acks(keep, ironrdp_egfx::pdu::QueueDepth::Unavailable);
     let msgs = ironrdp_dvc::encode_dvc_messages(id, acks, ironrdp_svc::ChannelFlags::empty()).map_err(|e| e.to_string())?;
-    stage.encode_dvc_messages(msgs).map(Some).map_err(|e| e.to_string())
+    crate::rdp_udp::route(stage, id, msgs)
+}
+
+/// Sends what [crate::rdp_udp::route] encoded, on TCP or through the UDP tunnel.
+async fn send_out<W: ironrdp_tokio::FramedWrite>(
+    out: Out,
+    writer: &mut W,
+    udp: Option<&ironrdp_rdpeudp_tokio::UdpTransport>,
+) -> Result<(), String> {
+    match out {
+        Out::Nothing => Ok(()),
+        Out::Tcp(f) => writer.write_all(&f).await.map_err(|e| e.to_string()),
+        Out::Udp(pdus) => {
+            let udp = udp.ok_or("canal routé vers un transport UDP fermé")?;
+            for pdu in pdus {
+                udp.send(pdu).await.map_err(|e| format!("transport UDP : {e}"))?;
+            }
+            Ok(())
+        }
+    }
 }
 
 /// Graphics pipeline composited by the tab (`on`) or here: switches through a protocol reset
@@ -730,7 +763,7 @@ fn take_frame_acks(stage: &mut ironrdp_session::ActiveStage, keep: usize) -> Res
 /// alone (a new tab needs the whole desktop). Returns the bytes to send and whether the reset was
 /// requested (else they only hold frame acknowledgements and the mode stays), `None` when
 /// there is nothing to send; `Err` while the channel is not ready.
-fn gpu_switch(stage: &mut ironrdp_session::ActiveStage, on: bool) -> Result<Option<(Vec<u8>, bool)>, ()> {
+fn gpu_switch(stage: &mut ironrdp_session::ActiveStage, on: bool) -> Result<Option<(Out, bool)>, ()> {
     let Some(mut gfx) = stage.get_dvc_mut::<GraphicsPipelineClient>() else {
         return Ok(None);
     };
@@ -757,7 +790,7 @@ fn gpu_switch(stage: &mut ironrdp_session::ActiveStage, on: bool) -> Result<Opti
     }
     let frame = ironrdp_dvc::encode_dvc_messages(id, msgs, ironrdp_svc::ChannelFlags::empty())
         .ok()
-        .and_then(|m| stage.encode_dvc_messages(m).ok());
+        .and_then(|m| crate::rdp_udp::route(stage, id, m).ok());
     Ok(frame.map(|f| (f, switched)))
 }
 
@@ -772,6 +805,8 @@ struct Channels {
     /// sound frames for the tab
     audio: Option<mpsc::UnboundedReceiver<Vec<u8>>>,
     drive: bool,
+    /// UDP transport the dynamic channels may move onto (see crate::rdp_udp)
+    udp: Option<ironrdp_rdpeudp_tokio::UdpTransport>,
 }
 
 async fn establish(
@@ -781,7 +816,7 @@ async fn establish(
     if p.username.trim().is_empty() {
         return Err(AppError::Config("RDP : indique le nom d'utilisateur dans les paramètres de la session".into()));
     }
-    let (stream, client_addr, rtt) = open_transport(&p).await?;
+    let (stream, client_addr, rtt, peer) = open_transport(&p).await?;
     let slow = slow_link(p.quality, rtt);
     log::info!("RDP {}:{} : profil {}", p.host, p.port, if slow { "lien lent" } else { "réseau local" });
     let mut framed = ironrdp_tokio::TokioFramed::new(stream);
@@ -805,7 +840,7 @@ async fn establish(
         dvc = dvc.with_dynamic_channel(gfx);
     }
     let mut connector = ClientConnector::new(connector_config(&p, slow)?, client_addr).with_static_channel(dvc);
-    let mut channels = Channels { clip: None, gpu: gpu_queue, drive: false, audio: None };
+    let mut channels = Channels { clip: None, gpu: gpu_queue, drive: false, audio: None, udp: None };
     if p.clipboard {
         let (cliprdr, rx) = rdp_channels::clipboard();
         connector.attach_static_channel(cliprdr);
@@ -864,9 +899,14 @@ async fn establish(
     let upgraded = ironrdp_tokio::mark_as_upgraded(should_upgrade, &mut connector);
     let erased: Box<dyn AsyncReadWrite + Unpin + Send + Sync> = Box::new(tls);
     let mut framed: Framed = ironrdp_tokio::TokioFramed::new_with_leftover(erased, leftover);
+    // UDP transport offered by the server (see crate::rdp_udp): opened to the address of the TCP
+    // connection, the session stays on TCP when it cannot be
+    let mut udp: Option<ironrdp_rdpeudp_tokio::UdpTransport> = None;
+    let udp_peer = peer.filter(|_| p.udp && crate::rdp_udp::allowed());
+    let host = p.host.clone();
     let result = tokio::time::timeout(
         Duration::from_secs(40),
-        ironrdp_tokio::connect_finalize(
+        ironrdp_tokio::connect_finalize_with_multitransport(
             upgraded,
             connector,
             &mut framed,
@@ -874,12 +914,25 @@ async fn establish(
             ServerName::new(p.host.clone()),
             public_key,
             None,
+            async |request: ironrdp_pdu::rdp::multitransport::MultitransportRequestPdu, soft_sync: bool| {
+                // one tunnel at a time (the second request, if any, is the lossy transport)
+                let opened = match udp_peer {
+                    Some(peer) if udp.is_none() => crate::rdp_udp::open(&request, soft_sync, peer, &host, &fp).await,
+                    _ => None,
+                };
+                let ok = opened.is_some();
+                if ok {
+                    udp = opened;
+                }
+                Ok(crate::rdp_udp::result(ok))
+            },
         ),
     )
     .await
     .map_err(|_| AppError::Conn("le serveur RDP ne termine pas la connexion".into()))?
     .and_then(|o| o.into_connected())
     .map_err(map_connect_err)?;
+    channels.udp = udp;
 
     Ok((framed, result, channels))
 }
@@ -1260,7 +1313,15 @@ async fn active_session(
     let mut last_pointer: Option<Vec<u8>> = None;
     // last network measurement of the server (message for the tab)
     let mut link: Option<Vec<u8>> = None;
-    let Channels { clip: mut clip_rx, gpu: gpu_queue, drive, audio: mut audio_rx } = channels;
+    let Channels { clip: mut clip_rx, gpu: gpu_queue, drive, audio: mut audio_rx, mut udp } = channels;
+    // the response accepting the tunnel has gone out: the server may now move channels onto it
+    if udp.is_some() {
+        stage.enable_reliable_udp_dvc_tunnel().map_err(|e| e.to_string())?;
+    }
+    let mut udp_logged = false;
+    let mut udp_meter = crate::rdp_udp::Meter::default();
+    // transport last announced to the tab
+    let mut udp_shown = false;
     // clipboard: our text (CRLF, as sent to the server), last text received from the server
     let mut local_clip: Option<String> = None;
     let mut remote_clip: Option<String> = None;
@@ -1300,6 +1361,9 @@ async fn active_session(
                     }
                     if let Some(m) = &link {
                         emit(&mut viewer, Message::binary(m.clone()));
+                    }
+                    if udp_shown {
+                        emit(&mut viewer, Message::text(serde_json::json!({ "t": "udp", "on": true }).to_string()));
                     }
                     in_flight = None;
                     dirty.all(image.width(), image.height());
@@ -1463,6 +1527,68 @@ async fn active_session(
                 }
                 out
             }
+            m = async {
+                match udp.as_mut() {
+                    Some(t) => t.recv_message().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                let Some(m) = m else {
+                    // the tunnel closed: channels moved onto it are lost (the tab reconnects);
+                    // before Soft-Sync, the session just goes on over TCP
+                    if stage.reliable_udp_dvc_tunnel_in_use() {
+                        return Err("transport UDP interrompu".into());
+                    }
+                    log::info!("RDP : transport UDP fermé avant usage, la session reste en TCP");
+                    udp = None;
+                    let _ = stage.disable_reliable_udp_dvc_tunnel();
+                    continue;
+                };
+                if !udp_logged {
+                    udp_logged = true;
+                    log::info!("RDP : premières données reçues par le transport UDP");
+                }
+                // network measurements of the server, in the message's sub-headers
+                let (replies, measured) = udp_meter.on_message(&m);
+                if !replies.is_empty()
+                    && let Some(t) = &udp
+                {
+                    let reply = ironrdp_rdpeudp_tokio::TunnelMessage { sub_headers: replies, data: Vec::new() };
+                    t.send_message(reply).await.map_err(|e| format!("transport UDP : {e}"))?;
+                }
+                if let Some((rtt, kbps)) = measured {
+                    link = Some(link_message(rtt, kbps));
+                    if let Some(l) = &link {
+                        emit(&mut viewer, Message::binary(l.clone()));
+                    }
+                }
+                let data = m.data;
+                if data.is_empty() {
+                    continue;
+                }
+                wire.bytes += data.len() as u64;
+                let (batch, out) = stage
+                    .process_dvc_tunnel(&mut image, ironrdp_dvc::pdu::SoftSyncTunnelType::RELIABLE_UDP, &data)
+                    .map_err(|e| {
+                        let head: Vec<String> = data.iter().take(48).map(|b| format!("{b:02x}")).collect();
+                        log::warn!("RDP : message UDP illisible ({} octets : {}) : {e:#?}", data.len(), head.join(" "));
+                        e.to_string()
+                    })?;
+                let id = batch.channel_id();
+                let replies = crate::rdp_udp::route(&mut stage, id, batch.into_messages())?;
+                send_out(replies, &mut writer, udp.as_ref()).await?;
+                if (image.width(), image.height()) != shown {
+                    shown = (image.width(), image.height());
+                    wire.mode = picture_mode(&stage);
+                    emit(&mut viewer, Message::binary(size_message(shown.0, shown.1)));
+                    in_flight = None;
+                    dirty.all(shown.0, shown.1);
+                }
+                if wire.mode == 0 && wire.bytes < 4 << 20 {
+                    wire.mode = picture_mode(&stage);
+                }
+                out
+            }
             _ = flush.tick() => {
                 if !typing.is_empty() {
                     let n = typing.len().min(TYPING_EVENTS_PER_TICK);
@@ -1492,8 +1618,13 @@ async fn active_session(
                         Some(sf) => (Some(sf), Some(physical_mm(w as u16, h as u16, sf))),
                         None => (Some(100), None),
                     };
-                    match stage.encode_resize(w, h, sf, dims) {
-                        Some(Ok(frame)) => vec![ActiveStageOutput::ResponseFrame(frame)],
+                    match stage.prepare_resize(w, h, sf, dims) {
+                        Some(Ok(batch)) => {
+                            let id = batch.channel_id();
+                            let out = crate::rdp_udp::route(&mut stage, id, batch.into_messages())?;
+                            send_out(out, &mut writer, udp.as_ref()).await?;
+                            Vec::new()
+                        }
                         Some(Err(e)) => return Err(e.to_string()),
                         None => Vec::new(), // server without dynamic resolution: keep the size, the tab scales
                     }
@@ -1612,7 +1743,7 @@ async fn active_session(
             let on = on && gpu_queue.is_some();
             let answer = match gpu_switch(&mut stage, on) {
                 Ok(Some((f, switched))) => {
-                    writer.write_all(&f).await.map_err(|e| e.to_string())?;
+                    send_out(f, &mut writer, udp.as_ref()).await?;
                     Some(if switched { on } else { gpu_on(&stage) })
                 }
                 Ok(None) => Some(gpu_on(&stage)),
@@ -1689,15 +1820,22 @@ async fn active_session(
                 } else {
                     0
                 };
-                if let Some(f) = take_frame_acks(&mut stage, keep)? {
-                    writer.write_all(&f).await.map_err(|e| e.to_string())?;
-                }
+                let f = take_frame_acks(&mut stage, keep)?;
+                send_out(f, &mut writer, udp.as_ref()).await?;
                 acks_held = None;
             } else if acks_held.is_none() {
                 acks_held = Some(std::time::Instant::now());
             }
         }
         tab_drew = false;
+
+        // the server moved the channels onto the UDP tunnel (Soft-Sync): shown in the statistics
+        let on_udp = udp.is_some() && stage.reliable_udp_dvc_tunnel_in_use();
+        if on_udp != udp_shown {
+            udp_shown = on_udp;
+            log::info!("RDP : image transportée par {}", if on_udp { "UDP" } else { "TCP" });
+            emit(&mut viewer, Message::text(serde_json::json!({ "t": "udp", "on": on_udp }).to_string()));
+        }
     }
 }
 

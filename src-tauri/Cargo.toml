@@ -80,6 +80,13 @@ ironrdp-svc = "0.10"
 ironrdp-rdpsnd = "0.11"
 # RD Gateway (MS-TSGU over HTTPS)
 ironrdp-mstsgu = { version = "0.1", features = ["native-tls"] }
+# UDP transport of the remote desktop (MS-RDPEUDP + TLS + MS-RDPEMT tunnel), as mstsc uses it:
+# a lost packet no longer freezes the whole picture the way TCP does (VPN, Wi-Fi). TLS of the
+# UDP channel: rustls with aws-lc, the provider rustls already uses here (reqwest, libunftp)
+ironrdp-rdpeudp-tokio = { version = "0.2", features = ["rustls-aws-lc-rs"] }
+ironrdp-rdpeudp = "0.1"
+ironrdp-rdpemt = "0.1"
+x509-cert = "0.3"
 tempfile = "3"
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 # VNC server

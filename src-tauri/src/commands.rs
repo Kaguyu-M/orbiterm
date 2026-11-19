@@ -841,6 +841,8 @@ pub async fn term_open(app: AppHandle, state: State<'_, AppState>, args: OpenArg
                         .then(crate::config::cache_dir)
                         .and_then(Result::ok)
                         .map(|d| crate::rdp_cache::cache_file(&d.join("rdp"), &session.host, session.port, &session.username)),
+                    // straight to the server only: UDP cannot follow an SSH or RD gateway
+                    udp: session.opt("rdp_udp") != "0" && host == session.host && port == session.port,
                 };
                 let prompter = make_prompter(app.clone(), state.hostkey_waiters.clone());
                 match rdp_client::connect(params, prompter, on_close).await {
