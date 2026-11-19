@@ -1034,17 +1034,15 @@ class App {
   }
 
   /**
-   * The computer woke up (or the network came back): desktops that may have lost their
-   * connection while asleep reconnect now instead of waiting for the network timeout.
+   * The computer woke up (or the network came back): planned reconnections go now, and open
+   * desktops check their connection (event `orbiterm-probe`, see RdpView). A dead connection
+   * fails on that write and reconnects as a lost one; a live one is left alone. `slept` is only
+   * a guess (a gap in the page's clock): Windows and WebView2 also slow a hidden window's
+   * timers down to once a minute, and reconnecting then cut the session every minute.
    */
   onWake(slept: boolean) {
-    for (const t of this.tabs) {
-      if (t.retry?.at) this.retryNow(t);
-      else if (slept && !t.retry && t.state === "open" && t.session.kind === "rdp" && this.autoReconnects(t)) {
-        t.retry = { attempt: 0, at: 1, reason: "sortie de veille" };
-        this.retryNow(t);
-      }
-    }
+    for (const t of this.tabs) if (t.retry?.at) this.retryNow(t);
+    if (slept) window.dispatchEvent(new Event("orbiterm-probe"));
   }
 
   reconnect(tab: Tab) {

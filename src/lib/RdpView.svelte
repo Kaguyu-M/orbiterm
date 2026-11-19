@@ -377,7 +377,14 @@
     const wake = () => sound.resume();
     box.addEventListener("pointerdown", wake);
     box.addEventListener("keydown", wake);
+    // the computer may have slept (see app.onWake): a pointer move to where it already is
+    // makes the backend write, which fails at once on a connection that did not survive
+    const probe = () => {
+      if (lastPos) send({ t: "m", ...lastPos });
+    };
+    window.addEventListener("orbiterm-probe", probe);
     return () => {
+      window.removeEventListener("orbiterm-probe", probe);
       ro.disconnect();
       mq?.removeEventListener("change", onScale);
       ws?.close();
@@ -398,9 +405,10 @@
     return { x: Math.max(0, Math.min(desk.w - 1, x)), y: Math.max(0, Math.min(desk.h - 1, y)) };
   }
   let moveQueued: { x: number; y: number } | null = null;
+  let lastPos: { x: number; y: number } | null = null;
   function onMove(e: PointerEvent) {
     const first = !moveQueued;
-    moveQueued = pos(e);
+    moveQueued = lastPos = pos(e);
     if (first)
       requestAnimationFrame(() => {
         if (moveQueued) send({ t: "m", ...moveQueued });
