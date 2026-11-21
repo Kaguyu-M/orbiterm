@@ -549,24 +549,42 @@
   // Windows shortcuts (session option rdp_keys): "full" in full screen only (mstsc), "always", "never"
   // svelte-ignore state_referenced_locally
   const keysMode = tab.session.extra?.rdp_keys || "full";
+  // the whole window in full screen by another way (F11 on another tab, a window manager…)
+  // counts as full screen too: the remote desktop then fills the screen all the same
+  let winFull = $state(false);
   const capturing = $derived(
-    connected && focused && active && !!tab.connId && (keysMode === "always" || (keysMode === "full" && full)),
+    connected && focused && active && !!tab.connId && (keysMode === "always" || (keysMode === "full" && (full || winFull))),
   );
+  // capture on / off one after the other: sent at once, a quick focus change at the start of
+  // full screen (blur, focus) could see "off" handled after "on" and leave the keys local
+  let captureChain: Promise<unknown> = Promise.resolve();
+  function setCapture(id: string, on: boolean) {
+    captureChain = captureChain.then(() => api.rdpCaptureKeys(id, on)).catch(() => {});
+  }
   $effect(() => {
     const id = tab.connId;
     if (!capturing || !id) return;
-    api.rdpCaptureKeys(id, true).catch(() => {});
-    return () => {
-      api.rdpCaptureKeys(id, false).catch(() => {});
-    };
+    setCapture(id, true);
+    return () => setCapture(id, false);
   });
-  // Ctrl+Alt+Pause (caught by the keyboard hook) leaves full screen, as in mstsc
   onMount(() => {
+    // Ctrl+Alt+Pause (caught by the keyboard hook) leaves full screen, as in mstsc
     const un = listen<{ conn_id: string; action: string }>("rdp-hotkey", (e) => {
       if (e.payload.conn_id === tab.connId && e.payload.action === "leave-full" && full) toggleFull();
     });
+    const w = getCurrentWindow();
+    const sync = () => w.isFullscreen().then((f) => (winFull = f)).catch(() => {});
+    sync();
+    const unResize = w.onResized(sync);
+    // F11 / menu "Plein écran" on this tab: the remote desktop's own full screen
+    const onAsk = () => {
+      if (active && connected) toggleFull();
+    };
+    window.addEventListener("orbiterm-rdp-full", onAsk);
     return () => {
       un.then((f) => f());
+      unResize.then((f) => f());
+      window.removeEventListener("orbiterm-rdp-full", onAsk);
     };
   });
 

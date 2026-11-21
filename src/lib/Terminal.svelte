@@ -28,6 +28,7 @@
   import { api, type TerminalSettings } from "./api";
   import { attach } from "./bus";
   import type { Prefs } from "./app.svelte";
+  import { actionOf } from "./shortcuts";
 
   let {
     tabKey,
@@ -207,15 +208,19 @@
     };
     const paste = () => clipRead().then((t) => t && term!.paste(t));
 
-    // Copy on Ctrl+Shift+C, paste on Ctrl+Shift+V / Shift+Insert (Ctrl+C stays "interrupt").
+    // Copy / paste / search on the user's shortcuts (by default Ctrl+Shift+C, Ctrl+Shift+V or
+    // Shift+Insert, Ctrl+Shift+F; Ctrl+C stays "interrupt").
     term.attachCustomKeyEventHandler((ev) => {
-      const pasteKey = (ev.shiftKey && !ev.ctrlKey && ev.code === "Insert") || (ev.ctrlKey && ev.shiftKey && ev.code === "KeyV");
-      const copyKey = ev.ctrlKey && ev.shiftKey && ev.code === "KeyC";
-      if (ev.ctrlKey && ev.shiftKey && ev.code === "KeyF") {
+      const action = actionOf(prefs.keys, ev);
+      const pasteKey = action === "paste";
+      const copyKey = action === "copy";
+      if (action === "search") {
         if (ev.type === "keydown") openSearch();
         ev.preventDefault();
         return false;
       }
+      // the other shortcuts of the application (tabs, zoom…) are not typed into the shell
+      if (action && !pasteKey && !copyKey) return false;
       if (!pasteKey && !copyKey) return true;
       // The WebView would also paste natively ("paste as plain text" on Ctrl+Shift+V,
       // Shift+Insert): xterm then received the text a second time. Only our handler acts.

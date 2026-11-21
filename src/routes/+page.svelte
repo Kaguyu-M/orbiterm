@@ -13,7 +13,9 @@
   import { listen } from "@tauri-apps/api/event";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { theme } from "$lib/theme.svelte";
-  import { api, describe, forwardLabel, protocol, viewOf, type HostKeyPrompt, type ServerKind } from "$lib/api";
+  import { api, describe, forwardLabel, IS_WINDOWS, protocol, viewOf, type HostKeyPrompt, type ServerKind } from "$lib/api";
+  import { actionOf, menuLabel, type ActionId } from "$lib/shortcuts";
+  import ShortcutsDialog from "$lib/ShortcutsDialog.svelte";
   import BrowserView from "$lib/BrowserView.svelte";
   import EditorView from "$lib/EditorView.svelte";
   import DiffView from "$lib/DiffView.svelte";
@@ -86,6 +88,12 @@
   const term = () => (app.active ? terminals.get(app.active.key) : undefined);
 
   async function toggleFullscreen() {
+    // a remote desktop goes to its own full screen (connection bar, Windows key and Alt+Tab
+    // sent to the remote computer, as with the Windows Remote Desktop client)
+    if (app.active?.session.kind === "rdp" && app.active.state === "open") {
+      window.dispatchEvent(new Event("orbiterm-rdp-full"));
+      return;
+    }
     const w = getCurrentWindow();
     await w.setFullscreen(!(await w.isFullscreen()));
   }
@@ -146,7 +154,7 @@
     return [
       ...splitItems(),
       { sep: true },
-      { label: "Barre latérale", checked: app.prefs.sidebar, shortcut: "Ctrl+Maj+B", action: () => togglePref("sidebar") },
+      { label: "Barre latérale", checked: app.prefs.sidebar, shortcut: sc("sidebar"), action: () => togglePref("sidebar") },
       { label: "Barre d'outils", checked: app.prefs.toolbar, action: () => togglePref("toolbar") },
       { label: "Barre de menus", checked: app.prefs.menubar, action: () => togglePref("menubar") },
       { label: "Barre d'état", checked: app.prefs.statusbar, action: () => togglePref("statusbar") },
@@ -154,11 +162,11 @@
       { label: "Mode sombre", checked: document.documentElement.dataset.theme === "dark", action: toggleDark },
       ...UI_THEMES.map((t) => ({ label: `Thème : ${t.label}`, checked: (app.prefs.uiTheme ?? "system") === t.id, action: () => setUiTheme(t.id) })),
       { sep: true as const },
-      { label: "Plein écran", icon: "view", shortcut: "F11", action: toggleFullscreen },
+      { label: "Plein écran", icon: "view", shortcut: sc("fullscreen"), action: toggleFullscreen },
       { sep: true },
-      { label: "Agrandir le texte", shortcut: "Ctrl+Maj+=", disabled: !app.active, action: () => term()?.zoom(1) },
-      { label: "Réduire le texte", shortcut: "Ctrl+Maj+-", disabled: !app.active, action: () => term()?.zoom(-1) },
-      { label: "Taille normale", shortcut: "Ctrl+Maj+0", disabled: !app.active, action: () => term()?.zoom(0) },
+      { label: "Agrandir le texte", shortcut: sc("zoomIn"), disabled: !app.active, action: () => term()?.zoom(1) },
+      { label: "Réduire le texte", shortcut: sc("zoomOut"), disabled: !app.active, action: () => term()?.zoom(-1) },
+      { label: "Taille normale", shortcut: sc("zoomReset"), disabled: !app.active, action: () => term()?.zoom(0) },
     ];
   }
 
@@ -166,17 +174,17 @@
     {
       label: "Terminal",
       items: () => [
-        { label: "Ouvrir un nouveau terminal local", icon: "terminal", shortcut: "Ctrl+Maj+T", action: () => app.startLocalTerminal() },
+        { label: "Ouvrir un nouveau terminal local", icon: "terminal", shortcut: sc("newTerminal"), action: () => app.startLocalTerminal() },
         ...app.shells.slice(1).map((sh) => ({
           label: `Nouveau terminal : ${sh.label}`,
           icon: sh.id.startsWith("wsl:") ? "wsl" : "shell",
           action: () => app.startLocalTerminal(sh.id),
         })),
         { sep: true },
-        { label: "Copier", icon: "copy", shortcut: "Ctrl+Maj+C", disabled: !app.active, action: () => term()?.copy() },
-        { label: "Coller", shortcut: "Ctrl+Maj+V", disabled: !app.active, action: () => term()?.paste() },
+        { label: "Copier", icon: "copy", shortcut: sc("copy"), disabled: !app.active, action: () => term()?.copy() },
+        { label: "Coller", shortcut: sc("paste"), disabled: !app.active, action: () => term()?.paste() },
         { label: "Tout sélectionner", disabled: !app.active, action: () => term()?.selectAll() },
-        { label: "Rechercher…", icon: "search", shortcut: "Ctrl+Maj+F", disabled: !app.active, action: () => term()?.search() },
+        { label: "Rechercher…", icon: "search", shortcut: sc("search"), disabled: !app.active, action: () => term()?.search() },
         { label: "Effacer l'historique", disabled: !app.active, action: () => term()?.clear() },
         { sep: true },
         { label: "MultiExec (saisie dans tous les terminaux)", icon: "multiexec", checked: app.multiExec, disabled: !app.tabs.length, action: () => app.toggleMultiExec() },
@@ -185,7 +193,7 @@
         { label: "Dupliquer l'onglet", icon: "copy", disabled: !app.active, action: () => app.active && app.duplicateTab(app.active) },
         { label: "Reconnecter", icon: "refresh", disabled: !app.active, action: () => app.active && app.reconnect(app.active) },
         { label: "Ouvrir une session SFTP séparée", icon: "sftp", disabled: app.active?.session.kind !== "ssh", action: () => app.active && app.openSeparateSftp(app.active) },
-        { label: "Fermer l'onglet", icon: "close", shortcut: "Ctrl+Maj+W", disabled: !app.active, action: () => app.active && app.closeTab(app.active) },
+        { label: "Fermer l'onglet", icon: "close", shortcut: sc("closeTab"), disabled: !app.active, action: () => app.active && app.closeTab(app.active) },
         { sep: true },
         { label: "Quitter", icon: "exit", action: quit },
       ],
@@ -193,7 +201,7 @@
     {
       label: "Sessions",
       items: () => [
-        { label: "Nouvelle session", icon: "session", shortcut: "Ctrl+Maj+N", action: () => app.newSession() },
+        { label: "Nouvelle session", icon: "session", shortcut: sc("newSession"), action: () => app.newSession() },
         { label: "Nouveau dossier", icon: "newfolder", action: () => app.newFolder("") },
         { label: "Connexion rapide…", icon: "search", action: focusQuick },
         { sep: true },
@@ -224,7 +232,7 @@
         })),
         { sep: true },
         { label: "Éditeur de texte (nouveau fichier)", icon: "edit", action: () => app.openEditor("") },
-        { label: "Ouvrir un fichier dans l'éditeur…", icon: "file", shortcut: "Ctrl+Maj+O", action: openInEditor },
+        { label: "Ouvrir un fichier dans l'éditeur…", icon: "file", shortcut: sc("openEditor"), action: openInEditor },
         { label: "Comparer deux fichiers…", icon: "split", action: () => app.openDiff("", "", "files") },
         { label: "Comparer deux dossiers…", icon: "folder", action: () => app.openDiff("", "", "dirs") },
         { label: "Générateur de clés SSH…", icon: "key", action: () => (app.netTool = "keygen") },
@@ -429,39 +437,31 @@
     window.addEventListener("pointerup", up);
   }
 
+  // shortcut labels of the menus: the user's own (Aide → Raccourcis clavier)
+  const sc = (id: ActionId) => menuLabel(app.prefs.keys, id, IS_WINDOWS);
+
+  // copy / paste / search belong to the terminal that has the keyboard (Terminal.svelte)
+  const PAGE_ACTIONS: Partial<Record<ActionId, () => void>> = {
+    closeTab: () => app.active && app.closeTab(app.active),
+    newTerminal: () => app.startLocalTerminal(),
+    openEditor: () => openInEditor(),
+    newSession: () => app.newSession(),
+    sidebar: () => togglePref("sidebar"),
+    zoomIn: () => term()?.zoom(1),
+    zoomOut: () => term()?.zoom(-1),
+    zoomReset: () => term()?.zoom(0),
+    nextTab: () => app.nextTab(1),
+    prevTab: () => app.nextTab(-1),
+    fullscreen: () => toggleFullscreen(),
+  };
+
   function keys(e: KeyboardEvent) {
-    const cs = e.ctrlKey && e.shiftKey;
-    if (cs && e.code === "KeyW" && app.active) {
-      e.preventDefault();
-      app.closeTab(app.active);
-    } else if (cs && e.code === "KeyT") {
-      e.preventDefault();
-      app.startLocalTerminal();
-    } else if (cs && e.code === "KeyO") {
-      e.preventDefault();
-      openInEditor();
-    } else if (cs && e.code === "KeyN") {
-      e.preventDefault();
-      app.newSession();
-    } else if (cs && e.code === "KeyB") {
-      e.preventDefault();
-      togglePref("sidebar");
-    } else if (cs && (e.code === "Equal" || e.code === "NumpadAdd")) {
-      e.preventDefault();
-      term()?.zoom(1);
-    } else if (cs && (e.code === "Minus" || e.code === "NumpadSubtract")) {
-      e.preventDefault();
-      term()?.zoom(-1);
-    } else if (cs && (e.code === "Digit0" || e.code === "Numpad0")) {
-      e.preventDefault();
-      term()?.zoom(0);
-    } else if (e.ctrlKey && e.code === "Tab") {
-      e.preventDefault();
-      app.nextTab(e.shiftKey ? -1 : 1);
-    } else if (e.code === "F11") {
-      e.preventDefault();
-      toggleFullscreen();
-    }
+    if (shortcuts) return; // the shortcuts dialog is open (it may be recording a key)
+    const id = actionOf(app.prefs.keys, e);
+    const run = id && PAGE_ACTIONS[id];
+    if (!run) return;
+    e.preventDefault();
+    run();
   }
 
   // ------------------------------------------------------------ split screen
@@ -897,27 +897,7 @@
 {/if}
 
 {#if shortcuts}
-  <Modal title="Raccourcis clavier" onclose={() => (shortcuts = false)} width="480px">
-    <table class="keys">
-      <tbody>
-        <tr><td>Ctrl+Maj+T</td><td>Nouveau terminal local</td></tr>
-        <tr><td>Ctrl+Maj+N</td><td>Nouvelle session</td></tr>
-        <tr><td>Ctrl+Maj+O</td><td>Ouvrir un fichier dans l’éditeur</td></tr>
-        <tr><td>Ctrl+S / Ctrl+F / Ctrl+G</td><td>Éditeur : enregistrer / rechercher / aller à la ligne</td></tr>
-        <tr><td>Ctrl+Maj+W</td><td>Fermer l'onglet</td></tr>
-        <tr><td>Ctrl+Tab / Ctrl+Maj+Tab</td><td>Onglet suivant / précédent</td></tr>
-        <tr><td>Ctrl+Maj+C / Ctrl+Maj+V</td><td>Copier / coller</td></tr>
-        <tr><td>Sélection / clic droit</td><td>Copie automatique / coller</td></tr>
-        <tr><td>Maj+Inser</td><td>Coller</td></tr>
-        <tr><td>Ctrl+Maj+= / - / 0</td><td>Taille du texte</td></tr>
-        <tr><td>Ctrl+Maj+B</td><td>Afficher / masquer la barre latérale</td></tr>
-        <tr><td>F11</td><td>Plein écran</td></tr>
-      </tbody>
-    </table>
-    {#snippet actions()}
-      <button class="primary dlg" onclick={() => (shortcuts = false)}>OK</button>
-    {/snippet}
-  </Modal>
+  <ShortcutsDialog onclose={() => (shortcuts = false)} />
 {/if}
 
 <style>
@@ -1597,12 +1577,5 @@
   .dlg {
     min-width: 90px;
     justify-content: center;
-  }
-  .keys td {
-    padding: 3px 12px 3px 0;
-  }
-  .keys td:first-child {
-    font-family: var(--mono);
-    white-space: nowrap;
   }
 </style>

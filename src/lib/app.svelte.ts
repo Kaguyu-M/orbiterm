@@ -20,6 +20,7 @@ import {
   type ServerKind,
   type ServerStatus,
 } from "./api";
+import type { KeyMap } from "./shortcuts";
 
 import { terminals } from "./Terminal.svelte";
 
@@ -132,6 +133,8 @@ export interface Prefs {
   closeOnEnd: boolean;
   /** draw remote desktops with the GPU (WebGL); off = 2D canvas */
   rdpGpu: boolean;
+  /** keyboard shortcuts the user changed (see shortcuts.ts), the others keep their default */
+  keys: KeyMap;
 }
 
 export const DEFAULT_PREFS: Prefs = {
@@ -162,6 +165,7 @@ export const DEFAULT_PREFS: Prefs = {
   updateSkip: "",
   closeOnEnd: true,
   rdpGpu: true,
+  keys: {},
   keepalive: 30,
   sshX11: false,
   sshCompression: false,

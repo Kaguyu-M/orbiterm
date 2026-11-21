@@ -1247,9 +1247,11 @@ pub async fn rdp_capture_keys(window: tauri::WebviewWindow, state: State<'_, App
     {
         use crate::keyhook::{self, HookEvent};
         if !on {
+            log::info!("raccourcis Windows : rendus à cet ordinateur");
             keyhook::release_for(&conn_id);
             return Ok(());
         }
+        log::info!("raccourcis Windows : envoyés à l'ordinateur distant");
         let Conn::Rdp(s) = state.conn(&conn_id).await? else {
             return Err(AppError::NotFound(conn_id));
         };
