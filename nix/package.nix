@@ -41,7 +41,7 @@ rustPlatform.buildRustPackage (finalAttrs: {
   npmDeps = fetchNpmDeps {
     name = "${finalAttrs.pname}-${finalAttrs.version}-npm-deps";
     inherit (finalAttrs) src;
-    hash = "sha256-zRNtFL4HWSDxQKwvVq7cwEp37T8SuybVnLO/b1z9Q8g=";
+    hash = "sha256-6/U4164NI6UOmdm7PguxcuD7hH1ja7myfM8MoO07MUc=";
   };
 
   cargoRoot = "src-tauri";
