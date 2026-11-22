@@ -1,6 +1,7 @@
 //! Orbiterm backend entry point.
 
 pub mod agent;
+pub mod banner;
 pub mod browser;
 pub mod bundle;
 pub mod commands;

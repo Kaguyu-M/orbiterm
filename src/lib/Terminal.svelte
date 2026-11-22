@@ -22,7 +22,7 @@
   import { FitAddon } from "@xterm/addon-fit";
   import { WebLinksAddon } from "@xterm/addon-web-links";
   import { SearchAddon } from "@xterm/addon-search";
-  import { highlightLines, LineTracker, linesText } from "./highlight";
+  import { CursorPrompt, highlightLines, LineTracker, linesText } from "./highlight";
   import { openUrl } from "@tauri-apps/plugin-opener";
   import "@xterm/xterm/css/xterm.css";
   import { api, type TerminalSettings } from "./api";
@@ -178,6 +178,7 @@
     term.open(host);
     // completed lines: keywords in colour (error / warning / success) and session log
     hlLines = new LineTracker(term, false);
+    const cursorPrompt = new CursorPrompt();
     logLines = new LineTracker(term, true);
     let scanQueued = false;
     term.onWriteParsed(() => {
@@ -188,6 +189,7 @@
         if (!term) return;
         const r = hlLines!.take();
         if (r && prefs.termHighlight) highlightLines(term, r, settings.theme);
+        cursorPrompt.update(term, settings.theme, prefs.termHighlight);
         flushLog(false);
       });
     });

@@ -578,6 +578,8 @@ async fn open_ssh(
         keepalive: session.opt("keepalive").trim().parse().unwrap_or(30),
         agent: use_agent,
         agent_forward: session.opt_bool("agent_forward"),
+        // global setting injected by the UI
+        banner: session.opt_bool("banner").then_some(session.sftp_enabled),
     };
     let prompter = make_prompter(app.clone(), state.hostkey_waiters.clone());
     match SshConnection::connect(params, prompter, on_data, on_close).await {
@@ -726,7 +728,7 @@ pub async fn term_open(app: AppHandle, state: State<'_, AppState>, args: OpenArg
         state.store.lock().await.session(&args.session.id).cloned().unwrap_or(args.session.clone())
     };
     // global settings injected by the UI
-    for k in ["keepalive", "ssh_agent", "agent_forward"] {
+    for k in ["keepalive", "ssh_agent", "agent_forward", "banner"] {
         if let Some(v) = args.session.extra.get(k) {
             session.extra.insert(k.into(), v.clone());
         }

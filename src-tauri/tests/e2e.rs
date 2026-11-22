@@ -417,3 +417,33 @@ async fn sftp_touch_and_chmod() {
     assert!(!std::fs::metadata(f.root.path().join("vide.txt")).unwrap().permissions().readonly());
     conn.disconnect().await;
 }
+
+/// The welcome box comes before the server's output and tells whether X11 was accepted.
+#[tokio::test]
+async fn welcome_box_before_the_shell_output() {
+    let f = fixture().await;
+    for x11 in [false, true] {
+        let mut p = params(&f, server::PASSWORD);
+        p.banner = Some(true);
+        if x11 {
+            p.x11_display = Some("127.0.0.1:0".into());
+        }
+        let out: Output = Default::default();
+        let o = out.clone();
+        let asked = Arc::new(AtomicUsize::new(0));
+        let conn = SshConnection::connect(p, prompter(true, asked), Arc::new(move |b| o.lock().unwrap().extend(b)), Arc::new(|_| {}))
+            .await
+            .unwrap();
+        wait_for(&out, "Bienvenue").await;
+        let text = String::from_utf8_lossy(&out.lock().unwrap()).to_string();
+        let start = text.find("Session SSH vers").expect("box shown");
+        assert!(start < text.find("Bienvenue").unwrap(), "box after the server output");
+        let line = text.lines().find(|l| l.contains("Redirection X11")).unwrap().to_string();
+        if x11 {
+            assert!(line.contains('✓') && !line.contains('✗'), "{line}");
+        } else {
+            assert!(line.contains("désactivée"), "{line}");
+        }
+        conn.disconnect().await;
+    }
+}

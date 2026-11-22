@@ -113,6 +113,8 @@ export interface Prefs {
   sshSftp: boolean;
   /** information bar (CPU, RAM…) under SSH terminals */
   sshMonitor: boolean;
+  /** welcome box (X11, compression, SFTP browser…) at the top of SSH terminals */
+  sshBanner: boolean;
   /** log in with the keys of the SSH agents before asking for a password */
   sshAgent: boolean;
   /** forward the SSH agent to the servers */
@@ -167,6 +169,7 @@ export const DEFAULT_PREFS: Prefs = {
   rdpGpu: true,
   keys: {},
   keepalive: 30,
+  sshBanner: true,
   sshX11: false,
   sshCompression: false,
   sshSftp: true,
@@ -940,7 +943,7 @@ class App {
         snap.extra = { ...snap.extra, ssh_agent: this.prefs.sshAgent ? "1" : "", agent_forward: this.prefs.agentForward ? "1" : "" };
       }
       if (snap.kind === "ssh") {
-        snap.extra = { ...snap.extra, keepalive: String(this.prefs.keepalive) };
+        snap.extra = { ...snap.extra, keepalive: String(this.prefs.keepalive), banner: this.prefs.sshBanner ? "1" : "" };
         // like the original: the X server is started on demand for X11 sessions
         const x = this.xserver;
         if (snap.extra.x11 === "1" && this.prefs.xAutoStart && x && !x.running && x.kind && x.kind !== "native")

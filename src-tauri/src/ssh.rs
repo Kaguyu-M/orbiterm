@@ -126,6 +126,8 @@ pub struct ConnectParams {
     pub agent: bool,
     /// forward the agent to the server
     pub agent_forward: bool,
+    /// welcome box written before the server output (Some = shown; value = SFTP browser on)
+    pub banner: Option<bool>,
 }
 
 impl ConnectParams {
@@ -146,6 +148,7 @@ impl ConnectParams {
             keepalive: 30,
             agent: false,
             agent_forward: false,
+            banner: None,
         }
     }
 }
@@ -475,6 +478,18 @@ impl SshConnection {
         on_close: CloseSink,
     ) -> AppResult<Arc<SshConnection>> {
         let config = client_config(p.compression, p.keepalive);
+        let banner_info = p.banner.map(|sftp_browser| crate::banner::BannerInfo {
+            user: p.username.clone(),
+            host: p.host.clone(),
+            port: p.port,
+            jump: p.jump.as_ref().map(|j| match j.port {
+                22 => format!("{}@{}", j.username, j.host),
+                port => format!("{}@{}:{port}", j.username, j.host),
+            }),
+            compression: p.compression,
+            sftp_browser,
+            agent_forward: p.agent_forward,
+        });
         let shared = Arc::new(Shared::default());
         let shell_tag = uuid::Uuid::new_v4().simple().to_string();
 
@@ -517,14 +532,19 @@ impl SshConnection {
                     shared.agent_forward.store(true, std::sync::atomic::Ordering::Relaxed);
                     let _ = channel.agent_forward(false).await;
                 }
+                use crate::banner::X11State;
+                let mut x11_state = X11State::Off;
                 if let Some(display) = &p.x11_display {
                     if let Some((target, screen)) = x11::parse_display(display) {
                         let (fake, fake_hex) = x11::fake_cookie();
                         let real = x11::real_cookie(display);
                         *shared.x11.lock().unwrap() = Some(X11Fwd { target, fake, real });
                         channel.request_x11(true, false, x11::COOKIE_PROTO, fake_hex, screen).await?;
+                        // the server's answer comes back first on the channel (see below)
+                        x11_state = X11State::Accepted;
                     } else {
                         log::warn!("X11: invalid display {display}");
+                        x11_state = X11State::BadDisplay;
                     }
                 }
                 // LC_* variables are accepted by default by OpenSSH servers (AcceptEnv LANG LC_*)
@@ -537,8 +557,35 @@ impl SshConnection {
                 let (mut reader, writer) = channel.split();
                 tokio::spawn(async move {
                     let mut exit: Option<u32> = None;
+                    // The X11 request is the first one with a reply: its success / failure
+                    // arrives before any output, then the box can say whether X11 works.
+                    let mut x11_wait = x11_state == X11State::Accepted;
+                    let mut banner = banner_info;
+                    if !x11_wait && let Some(b) = banner.take() {
+                        on_data(crate::banner::render(&b, x11_state).into_bytes());
+                    }
                     loop {
-                        match reader.wait().await {
+                        let msg = reader.wait().await;
+                        if x11_wait {
+                            match msg {
+                                Some(ChannelMsg::Success | ChannelMsg::Failure) => {
+                                    x11_wait = false;
+                                    if let Some(b) = banner.take() {
+                                        let ok = matches!(msg, Some(ChannelMsg::Success));
+                                        let st = if ok { X11State::Accepted } else { X11State::Refused };
+                                        on_data(crate::banner::render(&b, st).into_bytes());
+                                    }
+                                    continue;
+                                }
+                                // output before the answer (unexpected): no box in the middle of it
+                                Some(ChannelMsg::Data { .. } | ChannelMsg::ExtendedData { .. }) | None => {
+                                    x11_wait = false;
+                                    banner = None;
+                                }
+                                _ => {}
+                            }
+                        }
+                        match msg {
                             Some(ChannelMsg::Data { data }) => on_data(data.to_vec()),
                             Some(ChannelMsg::ExtendedData { data, .. }) => on_data(data.to_vec()),
                             Some(ChannelMsg::ExitStatus { exit_status }) => exit = Some(exit_status),

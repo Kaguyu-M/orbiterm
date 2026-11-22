@@ -197,7 +197,7 @@
         <label class="chk"><input type="checkbox" bind:checked={p.copyOnSelect} /> Copier automatiquement le texte sélectionné</label>
         <label class="chk"><input type="checkbox" bind:checked={p.rightClickPaste} /> Coller avec le clic droit</label>
         <label class="chk"><input type="checkbox" bind:checked={p.visualBell} /> Sonnerie visuelle (le terminal clignote)</label>
-        <label class="chk" title="error, échec, refusé en rouge ; warning, attention en ambre ; ok, réussi en vert"><input type="checkbox" bind:checked={p.termHighlight} /> Mettre en couleur les mots-clés (erreur, avertissement, succès)</label>
+        <label class="chk" title="error, échec, stopped en rouge ; warning, disabled en ambre ; ok, running, active en vert ; adresses IP et MAC en cyan ; dates et heures en violet ; liens en bleu ; invite du shell (utilisateur, hôte, dossier) quand le serveur ne la colore pas"><input type="checkbox" bind:checked={p.termHighlight} /> Mettre en couleur les mots-clés, adresses, dates et l'invite du shell</label>
       </fieldset>
       <fieldset>
         <legend>Journalisation</legend>
@@ -217,6 +217,7 @@
           <input id="ka" class="num" type="number" min="0" max="3600" bind:value={p.keepalive} />
           <span>secondes (0 = désactivé)</span>
         </div>
+        <label class="chk" title="Connexion directe ou par rebond, compression, navigateur SFTP, redirection X11 (acceptée ou refusée par le serveur), transfert d'agent"><input type="checkbox" bind:checked={p.sshBanner} /> Afficher un encadré d'accueil en haut du terminal (état de la connexion)</label>
         <label class="chk"><input type="checkbox" bind:checked={p.sshMonitor} /> Afficher les informations du serveur sous le terminal (CPU, mémoire, disque, réseau…)</label>
       </fieldset>
       <fieldset data-agent>
