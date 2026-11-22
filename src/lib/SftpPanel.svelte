@@ -5,6 +5,7 @@
   import { listen } from "@tauri-apps/api/event";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import { api, asApiError, formatSize, remoteJoin, remoteParent, type Entry } from "./api";
+  import { doneText, newMeter, percent, runningText, update, type Meter } from "./transfer";
   import Icon from "./Icon.svelte";
   import Modal from "./Modal.svelte";
   import { app } from "./app.svelte";
@@ -58,7 +59,8 @@
   let dropHover = $state(false);
   let panel: HTMLDivElement;
 
-  type Transfer = { id: string; label: string; done: number; total: number; state: "run" | "ok" | "err"; msg?: string };
+  // meter: bytes, speed and time left (transfer.ts); summary: shown once finished
+  type Transfer = { id: string; label: string; meter: Meter; state: "run" | "ok" | "err"; msg?: string; summary?: string };
   let transfers: Transfer[] = $state([]);
 
   /** every selected path (`selected` is the row a Shift+click extends from) */
@@ -164,9 +166,14 @@
   }
 
   function newTransfer(label: string): Transfer {
-    const t: Transfer = { id: crypto.randomUUID(), label, done: 0, total: 0, state: "run" };
+    const t: Transfer = { id: crypto.randomUUID(), label, meter: newMeter(performance.now()), state: "run" };
     transfers = [t, ...transfers].slice(0, 20);
     return transfers[0];
+  }
+
+  function finish(t: Transfer) {
+    t.state = "ok";
+    t.summary = doneText(t.meter, performance.now());
   }
 
   /** Automated GUI tests replace the native folder / file pickers: window.__orbitermSftpPick = { dir, files, folder }. */
@@ -187,7 +194,7 @@
         const r = await api.sftpDownloadDir(connId, e.path, dir, t.id);
         t.msg = `${r.files} fichier(s), ${formatSize(r.bytes)}${r.skipped ? ` — ${r.skipped} lien(s) ignoré(s)` : ""}`;
       } else await api.sftpDownload(connId, e.path, dir, t.id);
-      t.state = "ok";
+      finish(t);
       onlocalchange?.();
     } catch (err) {
       t.state = "err";
@@ -206,7 +213,7 @@
           const r = await api.sftpUploadDir(connId, f, target, t.id);
           t.msg = `${r.files} fichier(s), ${formatSize(r.bytes)}${r.skipped ? ` — ${r.skipped} élément(s) ignoré(s)` : ""}`;
         } else await api.sftpUpload(connId, f, target, t.id);
-        t.state = "ok";
+        finish(t);
       } catch (err) {
         t.state = "err";
         t.msg = asApiError(err).message;
@@ -392,10 +399,7 @@
     const unsubs: Array<() => void> = [];
     listen<{ transfer_id: string; done: number; total: number }>("transfer-progress", (ev) => {
       const t = transfers.find((x) => x.id === ev.payload.transfer_id);
-      if (t) {
-        t.done = ev.payload.done;
-        t.total = ev.payload.total;
-      }
+      if (t) update(t.meter, ev.payload.done, ev.payload.total, performance.now());
     }).then((u) => unsubs.push(u));
     listen<{ conn_id: string; remote: string; ok: boolean; message: string }>("external-saved", (ev) => {
       if (ev.payload.conn_id !== connId) return;
@@ -503,14 +507,24 @@
   {#if transfers.length}
     <div class="transfers">
       {#each transfers.slice(0, 4) as t (t.id)}
-        <div class="tr" class:err={t.state === "err"} title={t.msg ?? ""}>
-          <span class="tl">{t.label}</span>
+        <div class="tr" class:err={t.state === "err"} title={t.msg ?? ""} data-transfer={t.state}>
+          <div class="trow">
+            <span class="tl">{t.label}</span>
+            {#if t.state === "run"}
+              <span class="pct">{percent(t.meter)} %</span>
+            {:else if t.state === "ok"}
+              <span class="ok">✓</span>
+            {:else}
+              <span>✗</span>
+            {/if}
+          </div>
           {#if t.state === "run"}
-            <progress max={t.total || 1} value={t.done}></progress>
-          {:else if t.state === "ok"}
-            <span class="ok">✓</span>
-          {:else}
-            <span>✗</span>
+            <progress max={t.meter.total || 1} value={t.meter.done}></progress>
+            <div class="tstat" data-transfer-stats>{runningText(t.meter)}</div>
+          {:else if t.state === "ok" && t.summary}
+            <div class="tstat">{t.summary}{t.msg ? ` — ${t.msg}` : ""}</div>
+          {:else if t.state === "err" && t.msg}
+            <div class="tstat">{t.msg}</div>
           {/if}
         </div>
       {/each}
@@ -735,10 +749,24 @@
     padding: 4px 8px;
   }
   .tr {
+    padding: 2px 0;
+  }
+  .trow {
     display: flex;
     gap: 6px;
     align-items: center;
-    height: 20px;
+  }
+  .pct {
+    font-variant-numeric: tabular-nums;
+    font-size: 11.5px;
+  }
+  .tstat {
+    color: var(--muted);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .tr.err {
     color: var(--danger);
@@ -750,7 +778,9 @@
     white-space: nowrap;
   }
   .tr progress {
-    width: 80px;
+    display: block;
+    width: 100%;
+    height: 6px;
   }
   .ok {
     color: var(--ok);
