@@ -62,7 +62,9 @@ use crate::rdp_channels::{self, CF_UNICODETEXT, ClipEvent};
 use crate::known_hosts::HostKeyStatus;
 use crate::rdp_udp::Out;
 use crate::ssh::{CloseSink, HostKeyPrompter, HostKeyQuestion, ended};
+use ironrdp_pdu::rdp::server_redirection::{ServerRedirectionFlags, ServerRedirectionPdu};
 
+#[derive(Clone)]
 pub struct RdpParams {
     pub host: String,
     pub port: u16,
@@ -232,6 +234,16 @@ async fn open_transport(p: &RdpParams) -> AppResult<(Stream, SocketAddr, Option<
             }
         }),
     }
+}
+
+/// Hexadecimal dump (16 bytes per line) of the first `max` bytes, for diagnostics.
+fn hex_dump(data: &[u8], max: usize) -> String {
+    data[..data.len().min(max)]
+        .chunks(16)
+        .enumerate()
+        .map(|(i, c)| format!("{:04x}: {}", i * 16, c.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" ")))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn hostname_for_gateway() -> String {
@@ -662,7 +674,7 @@ pub async fn connect(p: RdpParams, prompter: HostKeyPrompter, on_close: CloseSin
             };
             rt.block_on(async move {
                 let scale = p.scale;
-                let (framed, result, channels) = match establish(p, prompter).await {
+                let (framed, result, channels) = match establish_following(&p, &prompter, None).await {
                     Ok(v) => v,
                     Err(e) => {
                         let _ = ready_tx.send(Err(e));
@@ -683,11 +695,35 @@ pub async fn connect(p: RdpParams, prompter: HostKeyPrompter, on_close: CloseSin
                 if ready_tx.send(Ok((port, token, desktop))).is_err() {
                     return;
                 }
-                let reason = match active_session(framed, result, channels, loop_tx, cmd_rx, scale).await {
-                    Ok(r) => r,
-                    Err(e) => {
-                        log::warn!("RDP : connexion interrompue : {e}");
-                        crate::ssh::lost(format!("connexion RDP interrompue : {e}"))
+                let mut cmd_rx = cmd_rx;
+                let mut session = Some((framed, result, channels));
+                let mut viewer = None;
+                let mut hops = 0;
+                let reason = loop {
+                    let Some((framed, result, channels)) = session.take() else { break String::new() };
+                    let mut redirected = None;
+                    let r = active_session(framed, result, channels, loop_tx.clone(), &mut cmd_rx, scale, viewer.take(), &mut redirected).await;
+                    match (r, redirected) {
+                        (Ok(_), Some((pdu, v))) => {
+                            hops += 1;
+                            if hops > MAX_REDIRECTIONS {
+                                break crate::ssh::lost("le serveur RDP redirige la connexion en boucle");
+                            }
+                            viewer = v;
+                            match establish_following(&p, &prompter, Some(pdu)).await {
+                                Ok(c) => session = Some(c),
+                                Err(e) => {
+                                    log::warn!("RDP : redirection impossible : {e}");
+                                    break crate::ssh::lost(format!("redirection RDP impossible : {e}"));
+                                }
+                            }
+                        }
+                        (Ok(r), _) => break r,
+                        (Err(e), _) => {
+                            log::warn!("RDP : connexion interrompue : {e}");
+                            log::debug!("RDP : détail de l'erreur : {e:?}");
+                            break crate::ssh::lost(format!("connexion RDP interrompue : {e}"));
+                        }
                     }
                 };
                 on_close(reason);
@@ -809,10 +845,48 @@ struct Channels {
     udp: Option<ironrdp_rdpeudp_tokio::UdpTransport>,
 }
 
+/// How the connection sequence ended.
+enum Established {
+    Connected(Box<(Framed, ironrdp_connector::ConnectionResult, Channels)>),
+    /// the server sent the client elsewhere before the session started
+    Redirected(Box<ServerRedirectionPdu>),
+}
+
+/// The Server Redirection PDU asks for RDSTLS: its password cookie is encrypted for the target.
+fn wants_rdstls(r: &ServerRedirectionPdu) -> bool {
+    r.flags.contains(ServerRedirectionFlags::PASSWORD_IS_PK_ENCRYPTED) && r.redirection_guid.is_some() && r.password.is_some()
+}
+
+/// Load-balancing information of a redirection, as the X.224 routing token (the encoder adds
+/// the CR LF the server may already have put).
+fn routing_token(lb: &[u8]) -> Option<String> {
+    let lb = lb.strip_suffix(b"\r\n").unwrap_or(lb);
+    let lb = lb.strip_suffix(b"\0").unwrap_or(lb);
+    String::from_utf8(lb.to_vec()).ok().filter(|s| !s.is_empty())
+}
+
 async fn establish(
-    p: RdpParams,
+    mut p: RdpParams,
     prompter: HostKeyPrompter,
-) -> AppResult<(Framed, ironrdp_connector::ConnectionResult, Channels)> {
+    redirect: Option<&ServerRedirectionPdu>,
+) -> AppResult<Established> {
+    if let Some(r) = redirect {
+        // GNOME Remote Desktop sends the client back to the same address (login screen, then the
+        // user's session); a target address is only followed without an RD Gateway
+        if let Some(addr) = r.target_net_address.as_deref().map(str::trim).filter(|a| !a.is_empty())
+            && p.gateway.is_none()
+            && addr != p.host
+        {
+            log::info!("RDP : redirection vers {addr}");
+            p.host = addr.to_string();
+        }
+        if let Some(u) = r.username.as_deref().filter(|u| !u.is_empty()) {
+            p.username = u.to_string();
+        }
+        if let Some(d) = r.domain.as_deref().filter(|d| !d.is_empty()) {
+            p.domain = Some(d.to_string());
+        }
+    }
     if p.username.trim().is_empty() {
         return Err(AppError::Config("RDP : indique le nom d'utilisateur dans les paramètres de la session".into()));
     }
@@ -839,7 +913,32 @@ async fn establish(
         }
         dvc = dvc.with_dynamic_channel(gfx);
     }
-    let mut connector = ClientConnector::new(connector_config(&p, slow)?, client_addr).with_static_channel(dvc);
+    use ironrdp_pdu::gcc::{ClientClusterData, RedirectionFlags, RedirectionVersion};
+    let mut connector = ClientConnector::new(connector_config(&p, slow)?, client_addr)
+        .with_static_channel(dvc)
+        // the client follows Server Redirection PDUs (GNOME Remote Desktop's remote login only
+        // hands the session over to clients that announce it, as mstsc does)
+        .with_cluster_data(ClientClusterData {
+            flags: if redirect.is_some() {
+                RedirectionFlags::REDIRECTION_SUPPORTED | RedirectionFlags::REDIRECTED_SESSION_FIELD_VALID
+            } else {
+                RedirectionFlags::REDIRECTION_SUPPORTED
+            },
+            redirection_version: RedirectionVersion::V4,
+            redirected_session_id: redirect.map_or(0, |r| r.session_id),
+        });
+    let rdstls = redirect.filter(|r| wants_rdstls(r));
+    if let Some(r) = redirect {
+        if let Some(token) = r.load_balance_info.as_deref().and_then(routing_token) {
+            connector = connector.with_load_balance_info(token);
+        }
+        if let Some(cookie) = &r.password {
+            connector = connector.with_redirection_password_cookie(cookie.clone());
+        }
+        if rdstls.is_some() {
+            connector = connector.with_rdstls();
+        }
+    }
     let mut channels = Channels { clip: None, gpu: gpu_queue, drive: false, audio: None, udp: None };
     if p.clipboard {
         let (cliprdr, rx) = rdp_channels::clipboard();
@@ -869,7 +968,7 @@ async fn establish(
         .map_err(|_| AppError::Conn(format!("{}:{} : le serveur RDP ne répond pas à la négociation", p.host, p.port)))?
         .map_err(map_connect_err)?;
     let (initial, leftover) = framed.into_inner();
-    let (tls, cert) = tokio::time::timeout(NEGOTIATION_TIMEOUT, ironrdp_tls::upgrade(initial, &p.host))
+    let (mut tls, cert) = tokio::time::timeout(NEGOTIATION_TIMEOUT, ironrdp_tls::upgrade(initial, &p.host))
         .await
         .map_err(|_| AppError::Conn(format!("{}:{} : le passage en TLS n'aboutit pas", p.host, p.port)))?
         .map_err(|e| AppError::Conn(format!("TLS : {e}")))?;
@@ -894,6 +993,21 @@ async fn establish(
             }
             cert_learn(&p.known_hosts, &p.cert_host, p.cert_port, &fp)?;
         }
+    }
+
+    // redirected connection: RDSTLS replaces CredSSP (the server checks the cookies it issued)
+    if let Some(r) = rdstls {
+        let creds = crate::rdstls::Credentials {
+            redirection_guid: r.redirection_guid.as_deref().unwrap_or_default(),
+            username: &p.username,
+            domain: p.domain.as_deref().unwrap_or_default(),
+            password: r.password.as_deref().unwrap_or_default(),
+        };
+        tokio::time::timeout(NEGOTIATION_TIMEOUT, crate::rdstls::authenticate(&mut tls, &creds))
+            .await
+            .map_err(|_| AppError::Conn("RDSTLS : le serveur ne répond pas".into()))?
+            .map_err(AppError::Conn)?;
+        log::info!("RDP : reconnexion RDSTLS acceptée");
     }
 
     let upgraded = ironrdp_tokio::mark_as_upgraded(should_upgrade, &mut connector);
@@ -930,12 +1044,35 @@ async fn establish(
     )
     .await
     .map_err(|_| AppError::Conn("le serveur RDP ne termine pas la connexion".into()))?
-    .and_then(|o| o.into_connected())
     .map_err(map_connect_err)?;
+    let result = match result {
+        ironrdp_connector::ConnectionOutcome::Connected(r) => r,
+        ironrdp_connector::ConnectionOutcome::Redirected(r) => return Ok(Established::Redirected(r)),
+    };
     channels.udp = udp;
 
-    Ok((framed, result, channels))
+    Ok(Established::Connected(Box::new((framed, result, channels))))
 }
+
+/// Connects, following the server's redirections (at most a few: a loop would never end).
+async fn establish_following(
+    p: &RdpParams,
+    prompter: &HostKeyPrompter,
+    mut redirect: Option<Box<ServerRedirectionPdu>>,
+) -> AppResult<(Framed, ironrdp_connector::ConnectionResult, Channels)> {
+    for _ in 0..MAX_REDIRECTIONS {
+        match establish(p.clone(), prompter.clone(), redirect.as_deref()).await? {
+            Established::Connected(c) => return Ok(*c),
+            Established::Redirected(r) => {
+                log::info!("RDP : redirection pendant la connexion : {r:?}");
+                redirect = Some(r);
+            }
+        }
+    }
+    Err(AppError::Conn("le serveur RDP redirige la connexion en boucle".into()))
+}
+
+const MAX_REDIRECTIONS: usize = 4;
 
 async fn accept_viewers(listener: TcpListener, want: String, cmd: mpsc::UnboundedSender<Cmd>) {
     use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
@@ -1273,8 +1410,10 @@ async fn active_session(
     result: ironrdp_connector::ConnectionResult,
     channels: Channels,
     cmd_tx: mpsc::UnboundedSender<Cmd>,
-    mut cmd_rx: mpsc::UnboundedReceiver<Cmd>,
+    cmd_rx: &mut mpsc::UnboundedReceiver<Cmd>,
     initial_scale: u32,
+    initial_viewer: Option<Viewer>,
+    redirected: &mut Option<(Box<ServerRedirectionPdu>, Option<Viewer>)>,
 ) -> Result<String, String> {
     log::info!(
         "RDP : canal de messages (mesure du réseau par le serveur) : {}",
@@ -1295,7 +1434,7 @@ async fn active_session(
     }
     .build();
 
-    let mut viewer: Option<Viewer> = None;
+    let mut viewer: Option<Viewer> = initial_viewer;
     let mut wire = Wire::default();
     // size last announced to the tab (the graphics pipeline resizes the image itself)
     let mut shown = (image.width(), image.height());
@@ -1337,6 +1476,11 @@ async fn active_session(
     let mut gpu = false;
     let mut gpu_sent: u64 = 0;
     let mut gpu_shown: u64 = 0;
+    // viewer kept across a redirection: the new desktop replaces the old one
+    if viewer.is_some() {
+        emit(&mut viewer, Message::binary(size_message(image.width(), image.height())));
+        dirty.all(image.width(), image.height());
+    }
 
     loop {
         let outputs = tokio::select! {
@@ -1514,7 +1658,23 @@ async fn active_session(
                 };
                 wire.bytes += payload.len() as u64;
                 // arrival time: the server's bandwidth measurements are timed with it
-                let out = stage.process(&mut image, action, &payload, reader.last_read_at()).map_err(|e| e.to_string())?;
+                let out = match stage.process(&mut image, action, &payload, reader.last_read_at()) {
+                    Ok(o) => o,
+                    Err(e) => {
+                        // a redirection IronRDP cannot read (GNOME Remote Desktop) is read here
+                        let lenient = (action == ironrdp_pdu::Action::X224)
+                            .then(|| ironrdp_pdu::mcs::decode_send_data_indication(&payload).ok())
+                            .flatten()
+                            .and_then(|ind| crate::rdstls::lenient_redirection(ind.user_data));
+                        if let Some(r) = lenient.filter(|r| !r.is_informational()) {
+                            log::info!("RDP : redirection demandée par le serveur (lue malgré « {e} ») : {r:?}");
+                            *redirected = Some((Box::new(r), viewer.take()));
+                            return Ok(String::new());
+                        }
+                        log::debug!("RDP : PDU {action:?} illisible ({} octets) : {e:?}\n{}", payload.len(), hex_dump(&payload, 2048));
+                        return Err(e.to_string());
+                    }
+                };
                 if (image.width(), image.height()) != shown {
                     shown = (image.width(), image.height());
                     wire.mode = picture_mode(&stage);
@@ -1728,6 +1888,15 @@ async fn active_session(
                                 writer.write_all(&f).await.map_err(|e| e.to_string())?;
                             }
                         }
+                    }
+                }
+                ActiveStageOutput::ServerRedirection(r) => {
+                    log::info!("RDP : redirection demandée par le serveur : {r:?}");
+                    // LB_NOREDIRECT: informational only
+                    if !r.is_informational() {
+                        // the tab stays open: the connection to the target takes over the viewer
+                        *redirected = Some((r, viewer.take()));
+                        return Ok(String::new());
                     }
                 }
                 ActiveStageOutput::Terminate(reason) => {

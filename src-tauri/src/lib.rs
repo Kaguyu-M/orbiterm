@@ -2,6 +2,7 @@
 
 pub mod agent;
 pub mod banner;
+pub mod rdstls;
 pub mod browser;
 pub mod bundle;
 pub mod commands;

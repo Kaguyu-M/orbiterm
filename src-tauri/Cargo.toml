@@ -128,3 +128,6 @@ ironrdp-rdpdr = { path = "vendor/ironrdp-rdpdr" }
 # frame acknowledgements held until the tab has shown the frames (vendor/ironrdp-egfx/src/client.rs,
 # "Orbiterm patch"), as the Windows client paces the server to its display
 ironrdp-egfx = { path = "vendor/ironrdp-egfx" }
+# RDSTLS for the reconnection that follows a server redirection (GNOME Remote Desktop login
+# screen hand-over; vendor/ironrdp-connector/src/connection.rs, "Orbiterm patch")
+ironrdp-connector = { path = "vendor/ironrdp-connector" }
