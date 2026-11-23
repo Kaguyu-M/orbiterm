@@ -1,6 +1,6 @@
 [package]
 name = "orbiterm"
-version = "0.9.7"
+version = "0.9.8"
 description = "Orbiterm - SSH terminal & SFTP browser"
 authors = ["Kaguyu-M"]
 license = "MIT"
