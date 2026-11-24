@@ -21,7 +21,8 @@
   <h1>Orbiterm</h1>
   <p class="sub">Terminal et client d’accès distant tout-en-un — version @VERSION@ · <a href="https://github.com/Kaguyu-M/orbiterm">code source</a> · <a href="https://github.com/Kaguyu-M/orbiterm/releases/latest">téléchargements</a></p>
 
-  <h2>Windows (winget)</h2>
+  <h2>Windows (winget) — bientôt</h2>
+  <p>Paquet en cours de validation par Microsoft. Une fois accepté :</p>
   <pre>winget install Kaguyu-M.Orbiterm</pre>
 
   <h2>Windows (Scoop)</h2>
@@ -42,7 +43,7 @@ sudo dnf install orbiterm</pre>
 sudo pacman-key --lsign-key C855DF19C2A7518B
 printf '\n[orbiterm]\nServer = https://kaguyu-m.github.io/orbiterm/arch/$arch\n' | sudo tee -a /etc/pacman.conf
 sudo pacman -Sy orbiterm-bin gst-libav</pre>
-  <p>Ou depuis l’AUR : <code>yay -S orbiterm-bin</code> (<code>paru -S orbiterm-bin</code>).</p>
+  <p>Depuis l’AUR (<code>yay -S orbiterm-bin</code>) : bientôt.</p>
 
   <h2>NixOS / Nix</h2>
   <pre>nix profile install github:Kaguyu-M/orbiterm</pre>

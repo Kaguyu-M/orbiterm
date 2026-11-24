@@ -34,11 +34,11 @@ Disponible pour **Windows** (installateur) et **Linux** : Debian / Ubuntu (`.deb
 
 | Système | Commande |
 |---|---|
-| **Windows** (winget) | `winget install Kaguyu-M.Orbiterm` |
+| **Windows** (winget) | *bientôt* : `winget install Kaguyu-M.Orbiterm` (paquet en cours de validation par Microsoft) |
 | **Windows** (Scoop) | `scoop bucket add orbiterm https://github.com/Kaguyu-M/orbiterm` puis `scoop install orbiterm/orbiterm` |
 | **Debian / Ubuntu** | voir ci-dessous (dépôt APT signé) |
 | **Fedora** | voir ci-dessous (dépôt DNF signé) |
-| **Arch Linux / Omarchy** | voir ci-dessous (dépôt pacman signé), ou AUR `orbiterm-bin` |
+| **Arch Linux / Omarchy** | voir ci-dessous (dépôt pacman signé) ; AUR `orbiterm-bin` *bientôt* |
 | **NixOS / Nix** | `nix profile install github:Kaguyu-M/orbiterm` |
 
 Les fichiers (installateur Windows, version portable, .deb, .rpm) sont aussi sur la page
@@ -64,7 +64,7 @@ sudo pacman-key --lsign-key C855DF19C2A7518B
 printf '\n[orbiterm]\nServer = https://kaguyu-m.github.io/orbiterm/arch/$arch\n' | sudo tee -a /etc/pacman.conf
 sudo pacman -Sy orbiterm-bin gst-libav
 ```
-ou depuis l’AUR : `yay -S orbiterm-bin`.
+Depuis l’AUR (`yay -S orbiterm-bin`) : *bientôt*.
 
 **NixOS**, installation permanente dans le `flake.nix` du système :
 ```nix
@@ -90,7 +90,7 @@ in
 puis `sudo nixos-rebuild switch`. Orbiterm est compilé sur la machine (une vingtaine de minutes la première fois) ;
 chaque `nixos-rebuild switch` reprend ensuite la dernière version publiée (l'archive est revérifiée au bout d'une heure).
 
-Mises à jour : `winget upgrade`, `scoop update`, `apt upgrade`, `dnf upgrade`, `pacman -Syu`, `nix profile upgrade`.
+Mises à jour : `scoop update`, `apt upgrade`, `dnf upgrade`, `pacman -Syu`, `nix profile upgrade`.
 
 > L'installateur Windows n'est pas signé : Windows SmartScreen peut afficher « Windows a protégé votre ordinateur ».
 > Clique sur **Informations complémentaires → Exécuter quand même**.
