@@ -1,6 +1,6 @@
 # Orbiterm face à MobaXterm — fonctionnalités
 
-Base : rapport d'analyse de MobaXterm (`Documents\MobaXterm-Analyse`) et code d'Orbiterm (v0.7.6, mis à jour jusqu’à la v0.7.14).
+Base : rapport d'analyse de MobaXterm (`Documents\MobaXterm-Analyse`) et code d'Orbiterm (v0.7.6, mis à jour jusqu’à la v1.0.0).
 ✅ présent · 🟡 partiel · ❌ absent · ⛔ écarté volontairement
 
 ## Sessions
@@ -24,6 +24,8 @@ Base : rapport d'analyse de MobaXterm (`Documents\MobaXterm-Analyse`) et code d'
 | Journalisation de l'activité dans un dossier | ✅ 0.7.7 |
 | Coloration syntaxique (mots-clés : error, warning…) | ✅ 0.7.7 |
 | ZMODEM (lrz / lsz) | ✅ 0.7.10 (`rz` / `sz` dans le terminal, Ctrl+C interrompt, jamais d'écrasement) |
+| Raccourcis clavier personnalisables | ✅ 0.9.6 (Aide → Raccourcis clavier : plusieurs raccourcis par action, conflits résolus, repris par les menus et les terminaux) |
+| Fin de session : onglet fermé, retour à l'accueil (`exit`, déconnexion) | ✅ 0.8.7 (une coupure ou une erreur garde l'onglet avec sa raison et « Redémarrer ») |
 | Détacher un onglet en fenêtre | ⛔ tout reste dans les onglets (choix validé) |
 
 ## SSH
@@ -33,6 +35,9 @@ Base : rapport d'analyse de MobaXterm (`Documents\MobaXterm-Analyse`) et code d'
 | Clés privées OpenSSH et PuTTY (.ppk) | ✅ 0.7.14 (.ppk v2 / v3, chiffrées ou non) |
 | Générateur de clés (MobaKeyGen) | ✅ 0.7.14 (Outils → Générateur de clés SSH : Ed25519, ECDSA, RSA ; OpenSSH ou .ppk ; conversion et changement de phrase secrète) |
 | Agent SSH (MobAgent, Pageant), transfert d'agent | ✅ 0.7.14 (agent Orbiterm : clés chargées en mémoire, au démarrage si voulu ; agent du système : OpenSSH / Pageant / SSH_AUTH_SOCK ; transfert d'agent en option) |
+| Encadré d'accueil de la session SSH (options actives : X11, compression, SFTP…) | ✅ 0.9.7 (rebond, compression, SFTP, X11 accepté ou refusé par le serveur, transfert d'agent ; désactivable) |
+| Coloration du terminal | ✅ 0.9.7 étendue : états (running, stopped…), adresses IPv4 / IPv6 / MAC, dates, liens, invite du shell quand le serveur ne la colore pas |
+| Délais de connexion (serveur injoignable) | ✅ 0.8.7 (15 s pour joindre le serveur, 30 s de silence pendant l'échange de clés, 90 s pour l'authentification) |
 
 ## Navigateur SFTP
 
@@ -49,6 +54,7 @@ Base : rapport d'analyse de MobaXterm (`Documents\MobaXterm-Analyse`) et code d'
 | Ouvrir avec le programme par défaut du poste (renvoyé à chaque enregistrement) | ✅ 0.7.15 |
 | Onglet SFTP / FTP à deux volets : explorateur du poste local à côté des fichiers distants, glisser-déposer entre les deux | ✅ 0.8.0 |
 | Sélection multiple dans les listes de fichiers (Ctrl / Maj + clic, Ctrl + A) | ✅ 0.8.1 |
+| Progression des transferts | ✅ 0.9.7 (pourcentage, vitesse, temps restant) |
 
 ## Bureaux distants
 
@@ -56,7 +62,17 @@ Base : rapport d'analyse de MobaXterm (`Documents\MobaXterm-Analyse`) et code d'
 |---|---|
 | RDP intégré, presse-papiers, lecteurs redirigés, rebond SSH | ✅ |
 | Passerelle RDP (RD Gateway), multi-écran | ✅ 0.7.13 : multi-écran (tous les écrans du poste, plein écran sur tous) ; passerelle RD (HTTPS/WebSocket, Basic/NTLM/Negotiate, compte de la session ou compte propre, certificat vérifié ; aussi pour mstsc / FreeRDP) |
-| Son RDP | ✅ 0.7.11 (lu dans l'onglet ; option de session « Son ») |
+| Son RDP | ✅ 0.7.11 (lu dans l'onglet ; option de session « Son ») ; 🟡 pas encore avec le bureau à distance d'Ubuntu (GNOME Remote Desktop) |
+| Image transmise en H.264 (pipeline graphique, comme mstsc) | ✅ 0.8.9 Windows (décodage par Windows), 0.9.1 Linux (GStreamer : VA-API ou processeur) ; 10 à 30 fois moins de données que les images bitmap |
+| Affichage par la carte graphique | ✅ 0.8.8 (WebGL), 0.9.3 image composée par la carte graphique (Windows et Linux) |
+| Qualité de l'image par session (réseau local, lien lent / VPN, automatique) | ✅ 0.8.8 (l'automatique mesure le lien ; le serveur adapte l'image pendant la session, 0.9.0) |
+| Plein écran comme le Bureau à distance de Windows | ✅ 0.9.0 : barre de connexion escamotable en haut, touche Windows / Super, Alt+Tab, Ctrl+Échap, Alt+F4 envoyés à l'ordinateur distant ; F11 (0.9.6) |
+| Échelle d'affichage transmise au serveur (125 %, 150 %) | ✅ 0.9.0 (suit le passage de la fenêtre sur un autre écran ; option automatique / 100 %) |
+| Reconnexion automatique (veille, coupure Wi-Fi) | ✅ 0.9.0 (2 s, 5 s, 15 s… bandeau « Connexion perdue » avec Annuler ; activée par défaut en RDP, optionnelle en SSH) |
+| Transport UDP (comme mstsc) | ✅ 0.9.5 (repli TCP automatique ; utile sur VPN et liens avec pertes) |
+| Cache d'images persistant (reconnexion plus rapide) | ✅ 0.9.3 |
+| Bureau à distance d'Ubuntu (GNOME Remote Desktop, connexion à distance) | ✅ 0.9.8 – 1.0.0 (écran de connexion puis bureau ; redirection et RDSTLS ; « Fermer la session » sans reconnexion) |
+| Fermer la session distante depuis la barre (Windows ou Linux) | ✅ |
 | VNC intégré | ✅ |
 
 ## Serveurs intégrés
@@ -86,7 +102,14 @@ Base : rapport d'analyse de MobaXterm (`Documents\MobaXterm-Analyse`) et code d'
 | Mots de passe chiffrés (master password) | ✅ autrement : trousseau du système |
 | Gestion des mots de passe enregistrés (liste, suppression) | ✅ 0.7.16 (Paramètres → Gestion des mots de passe : liste, remplacement, suppression ; les valeurs ne sont jamais affichées) |
 | Export de configuration chiffré | ✅ 0.7.9 autrement : export sans aucun mot de passe (rien à chiffrer) |
-| Vérification des mises à jour | ✅ 0.7.9 (Aide → Rechercher les mises à jour, sur demande uniquement ; publications GitHub) |
+| Vérification des mises à jour | ✅ 0.7.9 (Aide → Rechercher les mises à jour) ; 0.8.4 vérification au démarrage (désactivable) ; 0.8.6 mise à jour Windows sans assistant, installateur vérifié par SHA-256 |
+
+## Plateformes et installation
+
+| MobaXterm | Orbiterm |
+|---|---|
+| Windows uniquement (installateur, version portable) | ✅ Windows (installateur, version portable, Scoop ; winget bientôt) et **Linux** : dépôts signés APT (Debian, Ubuntu), DNF (Fedora), pacman (Arch, Omarchy ; AUR bientôt), Nix / NixOS (flake ou `configuration.nix`) |
+| Tests avant publication | ✅ 0.8.7 : chaque publication passe d'abord les tests sous Windows et Linux |
 
 ## Lots de travail
 
@@ -103,4 +126,12 @@ Base : rapport d'analyse de MobaXterm (`Documents\MobaXterm-Analyse`) et code d'
 11. ✅ (0.8.0) **Explorateur local intégré** : onglets SFTP / FTP à deux volets (poste local / serveur), transferts par glisser-déposer entre les volets.
 12. ✅ (0.8.2) **Rangement des sessions** : glisser les sessions (une ou plusieurs) et les dossiers dans les dossiers, « Déplacer vers… » — le glisser-déposer précédent ne fonctionnait pas sous Windows.
 13. ✅ (0.8.3) **Menu du clic droit dans la liste des sessions**, y compris sur la zone vide : nouvelle session, nouveau dossier, **export de sessions vers un fichier** (une session, la sélection, un dossier avec ses sous-dossiers, ou tout) et **import depuis un fichier** (dans le dossier cliqué, sans doublon). Les mots de passe ne sont jamais écrits dans le fichier.
-14. ✅ (0.8.4) **Mise à jour depuis l'application** : vérification au démarrage (désactivable dans Paramètres › Général, « Ignorer cette version » possible) ; l'installation Windows télécharge le nouvel installateur, compare son SHA-256 à celui de la publication, le lance et se ferme. Les autres installations (Scoop, portable, .deb, .rpm, Nix) affichent la commande à lancer. La vérification repose sur GitHub : pas encore de signature propre à l'application.
+14. ✅ (0.8.4) **Mise à jour depuis l'application** : vérification au démarrage (désactivable dans Paramètres › Général, « Ignorer cette version » possible) ; l'installation Windows télécharge le nouvel installateur, compare son SHA-256 à celui de la publication, le lance et se ferme. Les autres installations (Scoop, portable, .deb, .rpm, Nix) affichent la commande à lancer. La vérification repose sur GitHub : pas encore de signature propre à l'application. Depuis 0.8.6, la mise à jour Windows se fait sans assistant (barre de progression seule, puis redémarrage).
+15. ✅ (0.8.7) **Fin de session et délais** : quitter une session ferme l'onglet et revient à l'accueil ; délais de connexion SSH et RDP ; tests exigés avant chaque publication ; NixOS sans flake.
+16. ✅ (0.8.8 – 0.9.3) **Bureau à distance fluide** : affichage par la carte graphique, réglage de qualité, H.264 (Windows puis Linux par GStreamer), cache d'images persistant, rythme calé sur l'affichage.
+17. ✅ (0.9.0 – 0.9.2) **Bureau à distance comme mstsc** : plein écran avec barre de connexion et raccourcis envoyés à l'ordinateur distant, échelle d'affichage, reconnexion automatique, mesure du lien ; paquet Arch / Omarchy (dépôt pacman signé).
+18. ✅ (0.9.4 – 0.9.5) **Transport UDP** du bureau à distance ; plus de reconnexion intempestive quand la fenêtre est masquée.
+19. ✅ (0.9.6 – 0.9.7) **Raccourcis clavier modifiables**, progression des transferts, encadré d'accueil SSH et coloration étendue.
+20. ✅ (0.9.8 – 1.0.0) **Bureau à distance d'Ubuntu** (GNOME Remote Desktop) : redirection vers l'écran de connexion puis la session, authentification RDSTLS, fermeture de session propre.
+
+Reste après la 1.0.0 : paquets winget et AUR (en attente de Microsoft et de la réouverture des inscriptions AUR), son avec GNOME Remote Desktop.
