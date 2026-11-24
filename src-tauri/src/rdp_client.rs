@@ -1344,13 +1344,22 @@ async fn reactivation_step<S: ironrdp_tokio::FramedRead>(
     buf: &mut WriteBuf,
     skipped: &mut u32,
     deferred: &mut Vec<Vec<u8>>,
-) -> Result<Written, String> {
+) -> Result<Result<Written, String>, String> {
     loop {
         buf.clear();
         let Some(hint) = activation.next_pdu_hint() else {
-            return activation.step_no_input(buf).map_err(|e| e.to_string());
+            return activation.step_no_input(buf).map(Ok).map_err(|e| e.to_string());
         };
         let pdu = reader.read_by_hint(hint).await.map_err(|e| e.to_string())?;
+        // the server ends the session instead of reactivating it: GNOME Remote Desktop after a
+        // logoff sends Deactivate All then an error info. A deliberate end, not a lost link (no
+        // automatic reconnection), handled like a Terminate of the active session.
+        if let Some(info) = error_info(&pdu) {
+            let reason = ironrdp_session::GracefulDisconnectReason::Other(info.description());
+            let text = format!("session RDP terminée : {reason}");
+            log::info!("RDP : fin de session pendant la réactivation : {reason}");
+            return Ok(Err(if user_ended(&reason) { ended(text) } else { text }));
+        }
         // virtual channel data (clipboard, drives…): handled once the session is active again
         if let Ok(ctx) = ironrdp_pdu::mcs::decode_send_data_indication(&pdu)
             && ctx.channel_id != activation.io_channel_id()
@@ -1362,7 +1371,7 @@ async fn reactivation_step<S: ironrdp_tokio::FramedRead>(
         }
         let backup = activation.clone();
         match activation.step(&pdu, reader.last_read_at(), buf) {
-            Ok(w) => return Ok(w),
+            Ok(w) => return Ok(Ok(w)),
             Err(e)
                 if *skipped < 256
                     && matches!(backup.connection_activation_state(), ConnectionActivationState::ConnectionFinalization { .. }) =>
@@ -1375,6 +1384,22 @@ async fn reactivation_step<S: ironrdp_tokio::FramedRead>(
             }
             Err(e) => return Err(e.to_string()),
         }
+    }
+}
+
+/// Error info carried by a slow-path PDU (Set Error Info), unless it is ERRINFO_NONE.
+fn error_info(pdu: &[u8]) -> Option<ironrdp_pdu::rdp::server_error_info::ErrorInfo> {
+    use ironrdp_pdu::rdp::headers::{ShareControlPdu, ShareDataPdu};
+    use ironrdp_pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode};
+    let ctx = ironrdp_pdu::mcs::decode_send_data_indication(pdu).ok()?;
+    let ShareControlPdu::Data(h) = ironrdp_pdu::rdp::headers::decode_share_control(ctx).ok()?.pdu else {
+        return None;
+    };
+    match h.share_data_pdu {
+        ShareDataPdu::ServerSetErrorInfo(info) if info.0 != ErrorInfo::ProtocolIndependentCode(ProtocolIndependentCode::None) => {
+            Some(info.0)
+        }
+        _ => None,
     }
 }
 
@@ -1858,7 +1883,10 @@ async fn active_session(
                     let mut deferred = Vec::new();
                     loop {
                         let written =
-                            reactivation_step(&mut reader, &mut activation, &mut buf, &mut skipped, &mut deferred).await?;
+                            match reactivation_step(&mut reader, &mut activation, &mut buf, &mut skipped, &mut deferred).await? {
+                                Ok(w) => w,
+                                Err(end) => return Ok(end),
+                            };
                         if written.size().is_some() {
                             writer.write_all(buf.filled()).await.map_err(|e| e.to_string())?;
                         }
