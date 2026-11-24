@@ -141,11 +141,6 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: write
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -242,12 +237,11 @@ jobs:
           git -c user.name="Kaguyu-M" -c user.email="213601983+Kaguyu-M@users.noreply.github.com" commit -m "Orbiterm ${TAG#v}"
           git push origin HEAD:master
 
+      # deployed by the "pages" job: in the same job, deploy-pages often looked the artifact up
+      # before GitHub had registered it ("No artifacts named github-pages", fixed by a re-run)
       - uses: actions/upload-pages-artifact@v5
         with:
           path: site
-
-      - id: deploy
-        uses: actions/deploy-pages@v5
 
       - name: Manifeste Scoop
         run: |
@@ -264,3 +258,17 @@ jobs:
             git commit -m "Scoop : Orbiterm $v"
             git push origin HEAD:main
           fi
+
+  pages:
+    name: Mise en ligne des dépôts (GitHub Pages)
+    needs: repos
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v5
