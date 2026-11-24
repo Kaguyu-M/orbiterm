@@ -1671,8 +1671,16 @@ async fn active_session(
                             *redirected = Some((Box::new(r), viewer.take()));
                             return Ok(String::new());
                         }
-                        log::debug!("RDP : PDU {action:?} illisible ({} octets) : {e:?}\n{}", payload.len(), hex_dump(&payload, 2048));
-                        return Err(e.to_string());
+                        // data on a dynamic channel this client refused or never opened: GNOME
+                        // Remote Desktop sends its audio formats on AUDIO_PLAYBACK_DVC even after
+                        // the creation was declined; mstsc ignores it, so do we
+                        if format!("{e:?}").contains("non existing DVC channel") {
+                            log::debug!("RDP : données ignorées sur un canal dynamique non ouvert ({} octets)", payload.len());
+                            Vec::new()
+                        } else {
+                            log::debug!("RDP : PDU {action:?} illisible ({} octets) : {e:?}\n{}", payload.len(), hex_dump(&payload, 2048));
+                            return Err(e.to_string());
+                        }
                     }
                 };
                 if (image.width(), image.height()) != shown {
