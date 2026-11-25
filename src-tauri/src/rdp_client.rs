@@ -895,6 +895,13 @@ async fn establish(
     log::info!("RDP {}:{} : profil {}", p.host, p.port, if slow { "lien lent" } else { "réseau local" });
     let mut framed = ironrdp_tokio::TokioFramed::new(stream);
     let mut dvc = DrdynvcClient::new().with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new())));
+    // shared clipboard: the static channel, and the dynamic one Windows uses over UDP
+    let (mut clip_static, mut clip_rx) = (None, None);
+    if p.clipboard {
+        let (cliprdr, clip_dvc, rx) = rdp_channels::clipboard();
+        dvc = dvc.with_dynamic_channel(clip_dvc);
+        (clip_static, clip_rx) = (Some(cliprdr), Some(rx));
+    }
     let mut gpu_queue = None;
     if gfx_enabled() {
         // IronRDP composes the pipeline's picture into the session image after each PDU, unless
@@ -940,10 +947,9 @@ async fn establish(
         }
     }
     let mut channels = Channels { clip: None, gpu: gpu_queue, drive: false, audio: None, udp: None };
-    if p.clipboard {
-        let (cliprdr, rx) = rdp_channels::clipboard();
+    if let Some(cliprdr) = clip_static {
         connector.attach_static_channel(cliprdr);
-        channels.clip = Some(rx);
+        channels.clip = clip_rx;
     }
     if let Some(dir) = &p.share_dir {
         let rdpdr = rdp_channels::drive_channel(dir)
@@ -1640,6 +1646,8 @@ async fn active_session(
                 };
                 let Some(cliprdr) = stage.get_svc_processor_mut::<CliprdrClient>() else { continue };
                 let msgs = match ev {
+                    // received on the dynamic channel: processed (and answered) by the static one
+                    ClipEvent::FromDvc(pdu) => Some(ironrdp_svc::SvcProcessor::process(cliprdr, &pdu).map(Into::into)),
                     ClipEvent::AdvertiseLocal => {
                         let formats: Vec<ClipboardFormat> =
                             local_clip.iter().map(|_| ClipboardFormat::new(CF_UNICODETEXT)).collect();

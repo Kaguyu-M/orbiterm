@@ -13,6 +13,7 @@ use ironrdp_cliprdr::pdu::{
     FormatDataRequest, FormatDataResponse, LockDataId,
 };
 use ironrdp_cliprdr::{Cliprdr, CliprdrClient};
+use ironrdp_dvc::{DvcClientProcessor, DvcMessage, DvcProcessor};
 use ironrdp_pdu::PduResult;
 use ironrdp_rdpdr::Rdpdr;
 use ironrdp_rdpdr::backend::{RdpdrBackend, RdpdrBackendFactory as _};
@@ -40,6 +41,8 @@ pub enum ClipEvent {
     DataRequest(ClipboardFormatId),
     /// text received from the server (`None`: error / not text)
     DataResponse(Option<String>),
+    /// a CLIPRDR PDU the server sent on the dynamic "cliprdr" channel (see [ClipDvc])
+    FromDvc(Vec<u8>),
 }
 
 #[derive(Debug)]
@@ -91,12 +94,43 @@ impl CliprdrBackend for ClipBackend {
     fn on_unlock(&mut self, _data_id: LockDataId) {}
 }
 
-/// Clipboard channel + the receiver of its events.
-pub fn clipboard() -> (CliprdrClient, mpsc::UnboundedReceiver<ClipEvent>) {
+/// Clipboard channels + the receiver of their events: the static CLIPRDR channel, and the
+/// dynamic "cliprdr" channel Windows opens when the session uses the UDP transport.
+pub fn clipboard() -> (CliprdrClient, ClipDvc, mpsc::UnboundedReceiver<ClipEvent>) {
     let (tx, rx) = mpsc::unbounded_channel();
     let tmp = std::env::temp_dir().to_string_lossy().into_owned();
-    (Cliprdr::new(Box::new(ClipBackend { tx, tmp })), rx)
+    let dvc = ClipDvc { tx: tx.clone() };
+    (Cliprdr::new(Box::new(ClipBackend { tx, tmp })), dvc, rx)
 }
+
+/// Dynamic "cliprdr" channel. With the UDP transport, Windows sends its clipboard PDUs on this
+/// channel instead of the static one, but still only listens on the static channel (answers
+/// sent on the dynamic channel are ignored), and refusing the dynamic channel leaves the
+/// clipboard dead. Its PDUs are therefore handed to the static channel's processor (session
+/// loop), which answers on the static channel as usual.
+#[derive(Debug)]
+pub struct ClipDvc {
+    tx: mpsc::UnboundedSender<ClipEvent>,
+}
+
+ironrdp_core::impl_as_any!(ClipDvc);
+
+impl DvcProcessor for ClipDvc {
+    fn channel_name(&self) -> &str {
+        "cliprdr"
+    }
+
+    fn start(&mut self, _channel_id: u32) -> PduResult<Vec<DvcMessage>> {
+        Ok(Vec::new())
+    }
+
+    fn process(&mut self, _channel_id: u32, payload: &[u8]) -> PduResult<Vec<DvcMessage>> {
+        let _ = self.tx.send(ClipEvent::FromDvc(payload.to_vec()));
+        Ok(Vec::new())
+    }
+}
+
+impl DvcClientProcessor for ClipDvc {}
 
 /// Remote (Windows) text → local: CRLF to LF on Linux, trailing NULs removed.
 fn normalize_remote(t: &str) -> String {
@@ -243,6 +277,24 @@ fn hostname() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Windows over UDP: the PDUs of the dynamic channel reach the static channel's processor.
+    #[test]
+    fn dynamic_clipboard_channel_feeds_the_static_one() {
+        use ironrdp_svc::SvcProcessor as _;
+        let (mut cliprdr, mut dvc, mut rx) = clipboard();
+        assert_eq!(dvc.channel_name(), "cliprdr");
+        // capabilities, then Monitor Ready, as captured from Windows 11
+        let caps = [7, 0, 0, 0, 16, 0, 0, 0, 1, 0, 0, 0, 1, 0, 12, 0, 2, 0, 0, 0, 0x3e, 0, 0, 0];
+        let ready = [1, 0, 0, 0, 0, 0, 0, 0];
+        for pdu in [&caps[..], &ready[..]] {
+            assert!(dvc.process(13, pdu).unwrap().is_empty());
+            let Ok(ClipEvent::FromDvc(p)) = rx.try_recv() else { panic!("PDU not forwarded") };
+            cliprdr.process(&p).unwrap();
+        }
+        // the static channel now asks for our format list (answered on the static channel)
+        assert!(matches!(rx.try_recv(), Ok(ClipEvent::AdvertiseLocal)));
+    }
 
     #[test]
     fn names_and_line_ends() {
