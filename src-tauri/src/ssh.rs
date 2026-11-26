@@ -20,7 +20,8 @@ use std::time::Duration;
 
 use russh::client::{self, ChannelOpenHandle, Handle, Msg};
 use russh::keys::{PrivateKeyWithHashAlg, PublicKeyOrCertificate, ssh_key::PublicKey};
-use russh::{Channel, ChannelMsg, ChannelOpenFailure, ChannelWriteHalf, Disconnect};
+use russh::client::AuthResult;
+use russh::{Channel, ChannelMsg, ChannelOpenFailure, ChannelWriteHalf, Disconnect, MethodKind, MethodSet};
 use russh_sftp::client::SftpSession;
 use serde::Serialize;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -46,6 +47,28 @@ pub struct HostKeyQuestion {
 /// Asks the user whether to trust a host key (returns true to accept).
 pub type HostKeyPrompter =
     Arc<dyn Fn(HostKeyQuestion) -> Pin<Box<dyn Future<Output = bool> + Send>> + Send + Sync>;
+/// Questions of a keyboard-interactive login the saved password cannot answer
+/// (one-time code, PIN, Duo choice…), shown to the user.
+#[derive(Debug, Clone, Serialize)]
+pub struct AuthQuestion {
+    pub host: String,
+    pub user: String,
+    /// title and explanation sent by the server (often empty)
+    pub name: String,
+    pub instructions: String,
+    pub prompts: Vec<AuthPromptText>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AuthPromptText {
+    pub text: String,
+    /// the answer may be shown while typed (false: hidden, like a password)
+    pub echo: bool,
+}
+
+/// Asks the user the server's questions: one answer per prompt, None when cancelled.
+pub type AuthPrompter =
+    Arc<dyn Fn(AuthQuestion) -> Pin<Box<dyn Future<Output = Option<Vec<String>>> + Send>> + Send + Sync>;
 /// Receives terminal output bytes.
 pub type DataSink = Arc<dyn Fn(Vec<u8>) + Send + Sync>;
 /// Called once when the shell ends (reason text, see [`ended`]).
@@ -128,6 +151,8 @@ pub struct ConnectParams {
     pub agent_forward: bool,
     /// welcome box written before the server output (Some = shown; value = SFTP browser on)
     pub banner: Option<bool>,
+    /// asks the user the questions of a two-factor login (None: hidden prompts get the password)
+    pub auth_prompter: Option<AuthPrompter>,
 }
 
 impl ConnectParams {
@@ -149,6 +174,7 @@ impl ConnectParams {
             agent: false,
             agent_forward: false,
             banner: None,
+            auth_prompter: None,
         }
     }
 }
@@ -186,7 +212,7 @@ pub struct ClientHandler {
 const REACH_TIMEOUT: Duration = Duration::from_secs(15);
 /// Silence allowed during the key exchange, not counting the time spent on a question.
 const HANDSHAKE_IDLE: Duration = Duration::from_secs(30);
-/// Authentication (password, key, agent): no question is asked at this stage.
+/// Silence allowed during authentication, not counting the time spent on a two-factor question.
 const AUTH_TIMEOUT: Duration = Duration::from_secs(90);
 
 /// Tracks whether a question is on screen and when the last one was answered.
@@ -506,7 +532,7 @@ impl SshConnection {
                     None,
                 )
                 .await?;
-                match authenticate(&mut jh, &j.username, j.credentials, p.agent).await {
+                match authenticate(&mut jh, &j.host, &j.username, j.credentials, p.agent, p.auth_prompter.clone()).await {
                     Ok(()) => {}
                     Err(AppError::AuthFailed) => return Err(AppError::JumpAuthFailed),
                     Err(AppError::NeedPassword) => return Err(AppError::NeedJumpPassword),
@@ -522,7 +548,7 @@ impl SshConnection {
 
         let mut handle =
             open_transport(config, &p.host, p.port, &p.known_hosts, prompter, shared.clone(), jump.as_ref()).await?;
-        authenticate(&mut handle, &p.username, p.credentials, p.agent).await?;
+        authenticate(&mut handle, &p.host, &p.username, p.credentials, p.agent, p.auth_prompter).await?;
 
         let writer = match p.mode {
             ShellMode::None => None,
@@ -780,25 +806,58 @@ impl SshConnection {
     }
 }
 
-async fn authenticate(handle: &mut Handle<ClientHandler>, user: &str, creds: Credentials, agent: bool) -> AppResult<()> {
-    tokio::time::timeout(AUTH_TIMEOUT, authenticate_inner(handle, user, creds, agent))
-        .await
-        .map_err(|_| AppError::Conn("le serveur SSH ne répond plus pendant l'authentification".into()))?
+/// Who asks the user, and the deadline paused while they answer.
+struct Asker<'a> {
+    prompter: Option<AuthPrompter>,
+    host: &'a str,
+    user: &'a str,
+    waiting: &'a Waiting,
 }
 
-async fn authenticate_inner(handle: &mut Handle<ClientHandler>, user: &str, creds: Credentials, agent: bool) -> AppResult<()> {
-    if agent && crate::agent::authenticate(handle, user).await? {
-        return Ok(());
+async fn authenticate(
+    handle: &mut Handle<ClientHandler>,
+    host: &str,
+    user: &str,
+    creds: Credentials,
+    agent: bool,
+    prompter: Option<AuthPrompter>,
+) -> AppResult<()> {
+    let waiting = Waiting::new();
+    let ask = Asker { prompter, host, user, waiting: &waiting };
+    idle_deadline(authenticate_inner(handle, user, creds, agent, &ask), &waiting, AUTH_TIMEOUT)
+        .await
+        .ok_or_else(|| AppError::Conn("le serveur SSH ne répond plus pendant l'authentification".into()))?
+}
+
+async fn authenticate_inner(
+    handle: &mut Handle<ClientHandler>,
+    user: &str,
+    creds: Credentials,
+    agent: bool,
+    ask: &Asker<'_>,
+) -> AppResult<()> {
+    if agent {
+        match crate::agent::authenticate(handle, user).await? {
+            AuthResult::Success => return Ok(()),
+            AuthResult::Failure { remaining_methods, partial_success: true } => {
+                return second_factor(handle, user, &remaining_methods, None, ask).await;
+            }
+            AuthResult::Failure { .. } => {}
+        }
     }
     match creds {
         Credentials::Agent => Err(AppError::NeedPassword),
         Credentials::Password(password) => {
-            if handle.authenticate_password(user, password.clone()).await?.success() {
-                return Ok(());
+            match handle.authenticate_password(user, password.clone()).await? {
+                AuthResult::Success => return Ok(()),
+                AuthResult::Failure { remaining_methods, partial_success: true } => {
+                    return second_factor(handle, user, &remaining_methods, Some(&password), ask).await;
+                }
+                AuthResult::Failure { .. } => {}
             }
-            // Many servers only enable keyboard-interactive: answer every hidden
-            // prompt with the password (covers the classic "Password:" prompt).
-            keyboard_interactive(handle, user, &password).await
+            // Many servers only enable keyboard-interactive: the password answers the
+            // "Password:" prompt, other questions (one-time code…) go to the user.
+            keyboard_interactive(handle, user, Some(&password), ask).await
         }
         Credentials::Key { path, passphrase } => {
             // OpenSSH, PEM or PuTTY .ppk
@@ -813,29 +872,118 @@ async fn authenticate_inner(handle: &mut Handle<ClientHandler>, user: &str, cred
                 }
             };
             let hash = handle.best_supported_rsa_hash().await?.flatten();
-            let res = handle
-                .authenticate_publickey(user, PrivateKeyWithHashAlg::new(Arc::new(key), hash))
-                .await?;
-            if res.success() { Ok(()) } else { Err(AppError::AuthFailed) }
+            match handle.authenticate_publickey(user, PrivateKeyWithHashAlg::new(Arc::new(key), hash)).await? {
+                AuthResult::Success => Ok(()),
+                AuthResult::Failure { remaining_methods, partial_success: true } => {
+                    second_factor(handle, user, &remaining_methods, None, ask).await
+                }
+                AuthResult::Failure { .. } => Err(AppError::AuthFailed),
+            }
         }
     }
 }
 
-async fn keyboard_interactive(handle: &mut Handle<ClientHandler>, user: &str, password: &str) -> AppResult<()> {
+/// The first method was accepted but the server wants another one (sshd
+/// `AuthenticationMethods publickey,keyboard-interactive`…).
+async fn second_factor(
+    handle: &mut Handle<ClientHandler>,
+    user: &str,
+    remaining: &MethodSet,
+    password: Option<&str>,
+    ask: &Asker<'_>,
+) -> AppResult<()> {
+    if remaining.contains(&MethodKind::KeyboardInteractive) {
+        return keyboard_interactive(handle, user, password, ask).await;
+    }
+    if let Some(password) = password
+        && remaining.contains(&MethodKind::Password)
+        && handle.authenticate_password(user, password).await?.success()
+    {
+        return Ok(());
+    }
+    let names: Vec<&str> = remaining.iter().map(<&str>::from).collect();
+    Err(AppError::Ssh(format!("le serveur exige une seconde méthode d'authentification non prise en charge ({})", names.join(", "))))
+}
+
+/// A hidden prompt asking for the account password (answered with the saved one).
+fn is_password_prompt(text: &str) -> bool {
+    let t = text.to_lowercase();
+    ["password", "mot de passe", "passwort", "contraseña", "senha", "wachtwoord", "parola"].iter().any(|w| t.contains(w))
+        && !["one-time", "one time", "otp", "verification", "token", "code", "pin"].iter().any(|w| t.contains(w))
+}
+
+/// Which prompts the saved password answers (None: one of them asks for it a second
+/// time, i.e. the password was refused).
+fn auto_answers(prompts: &[(String, bool)], password: Option<&str>, password_used: bool) -> Option<Vec<Option<String>>> {
+    let mut out = Vec::with_capacity(prompts.len());
+    for (text, echo) in prompts {
+        match password {
+            Some(pw) if !echo && is_password_prompt(text) => {
+                if password_used {
+                    return None;
+                }
+                out.push(Some(pw.to_string()));
+            }
+            _ => out.push(None),
+        }
+    }
+    Some(out)
+}
+
+async fn keyboard_interactive(
+    handle: &mut Handle<ClientHandler>,
+    user: &str,
+    password: Option<&str>,
+    ask: &Asker<'_>,
+) -> AppResult<()> {
     use russh::client::KeyboardInteractiveAuthResponse as R;
     let mut resp = handle.authenticate_keyboard_interactive_start(user, None).await?;
-    for _ in 0..5 {
-        match resp {
+    let mut password_used = false;
+    for _ in 0..8 {
+        let (name, instructions, prompts) = match resp {
             R::Success => return Ok(()),
             R::Failure { .. } => return Err(AppError::AuthFailed),
-            R::InfoRequest { prompts, .. } => {
-                let answers = prompts
-                    .iter()
-                    .map(|p| if p.echo { String::new() } else { password.to_string() })
-                    .collect();
-                resp = handle.authenticate_keyboard_interactive_respond(answers).await?;
+            R::InfoRequest { name, instructions, prompts } => (name, instructions, prompts),
+        };
+        let prompts: Vec<(String, bool)> = prompts.into_iter().map(|p| (p.prompt, p.echo)).collect();
+        let Some(prompter) = ask.prompter.as_ref() else {
+            // no one to ask: every hidden prompt gets the password (previous behaviour)
+            let answers =
+                prompts.iter().map(|(_, echo)| if *echo { String::new() } else { password.unwrap_or_default().to_string() }).collect();
+            resp = handle.authenticate_keyboard_interactive_respond(answers).await?;
+            continue;
+        };
+        let Some(auto) = auto_answers(&prompts, password, password_used) else {
+            return Err(AppError::AuthFailed);
+        };
+        password_used |= auto.iter().any(Option::is_some);
+        let open: Vec<AuthPromptText> = prompts
+            .iter()
+            .zip(&auto)
+            .filter(|(_, a)| a.is_none())
+            .map(|((text, echo), _)| AuthPromptText { text: text.trim().to_string(), echo: *echo })
+            .collect();
+        let mut typed = if open.is_empty() {
+            Vec::new().into_iter()
+        } else {
+            let question = AuthQuestion {
+                host: ask.host.to_string(),
+                user: ask.user.to_string(),
+                name: name.trim().to_string(),
+                instructions: instructions.trim().to_string(),
+                prompts: open,
+            };
+            ask.waiting.asking.store(true, std::sync::atomic::Ordering::SeqCst);
+            let answer = prompter(question).await;
+            *ask.waiting.since.lock().unwrap_or_else(|e| e.into_inner()) = std::time::Instant::now();
+            ask.waiting.asking.store(false, std::sync::atomic::Ordering::SeqCst);
+            match answer {
+                Some(a) => a.into_iter(),
+                None => return Err(AppError::Conn("authentification annulée".into())),
             }
-        }
+        };
+        let answers = auto.into_iter().map(|a| a.unwrap_or_else(|| typed.next().unwrap_or_default())).collect();
+        resp = handle.authenticate_keyboard_interactive_respond(answers).await?;
     }
     Err(AppError::AuthFailed)
 }
@@ -852,6 +1000,29 @@ fn cwd_command(tag: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn saved_password_answers_password_prompts_only() {
+        assert!(is_password_prompt("Password: "));
+        assert!(is_password_prompt("claude@host's password:"));
+        assert!(is_password_prompt("Mot de passe : "));
+        assert!(!is_password_prompt("Verification code: "));
+        assert!(!is_password_prompt("One-time password (OATH) for `claude':"));
+        assert!(!is_password_prompt("Passcode or option (1-3): "));
+        assert!(!is_password_prompt("Enter PIN for token:"));
+        let p = |t: &str, echo| (t.to_string(), echo);
+        // password then code in one request: only the code is left to the user
+        assert_eq!(
+            auto_answers(&[p("Password: ", false), p("Verification code: ", false)], Some("pw"), false),
+            Some(vec![Some("pw".into()), None])
+        );
+        // no saved password (key login with a second factor): everything is asked
+        assert_eq!(auto_answers(&[p("Password: ", false)], None, false), Some(vec![None]));
+        // asked again for the password: it was refused
+        assert_eq!(auto_answers(&[p("Password: ", false)], Some("pw"), true), None);
+        // a visible prompt is never answered with the password
+        assert_eq!(auto_answers(&[p("Password hint: ", true)], Some("pw"), false), Some(vec![None]));
+    }
 
     #[test]
     fn ended_reasons_round_trip() {

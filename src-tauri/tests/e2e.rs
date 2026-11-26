@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use orbiterm_lib::error::AppError;
 use orbiterm_lib::sftp;
-use orbiterm_lib::ssh::{ConnectParams, Credentials, HostKeyPrompter, SshConnection};
+use orbiterm_lib::ssh::{AuthPrompter, AuthQuestion, ConnectParams, Credentials, HostKeyPrompter, SshConnection};
 
 struct Fixture {
     port: u16,
@@ -44,6 +44,62 @@ fn prompter(answer: bool, counter: Arc<AtomicUsize>) -> HostKeyPrompter {
 }
 
 type Output = Arc<Mutex<Vec<u8>>>;
+
+/// Two-factor login of OTP_USER: answers the questions with `code` (None = cancel).
+async fn connect_otp(f: &Fixture, code: Option<&str>) -> (Result<Arc<SshConnection>, AppError>, Vec<AuthQuestion>) {
+    let asked: Arc<Mutex<Vec<AuthQuestion>>> = Default::default();
+    let (a, code) = (asked.clone(), code.map(str::to_string));
+    let auth: AuthPrompter = Arc::new(move |q: AuthQuestion| {
+        let answers = code.clone().map(|c| q.prompts.iter().map(|_| c.clone()).collect());
+        a.lock().unwrap().push(q);
+        Box::pin(async move { answers })
+    });
+    let mut p = ConnectParams::simple(
+        "127.0.0.1",
+        f.port,
+        server::OTP_USER,
+        Credentials::Password(server::PASSWORD.into()),
+        f.cfg.path().join("known_hosts"),
+    );
+    p.auth_prompter = Some(auth);
+    let res = SshConnection::connect(p, prompter(true, Default::default()), Arc::new(|_| {}), Arc::new(|_| {})).await;
+    let asked = asked.lock().unwrap().clone();
+    (res, asked)
+}
+
+#[tokio::test]
+async fn two_factor_login_asks_the_code_only() {
+    let f = fixture().await;
+    // the saved password answers "Password:", the user is asked the code
+    let (res, asked) = connect_otp(&f, Some(server::OTP_CODE)).await;
+    assert!(res.is_ok(), "{:?}", res.err());
+    assert_eq!(asked.len(), 1);
+    assert_eq!(asked[0].prompts.len(), 1);
+    assert_eq!(asked[0].prompts[0].text, "Verification code:");
+    assert!(!asked[0].prompts[0].echo);
+    assert_eq!(asked[0].user, server::OTP_USER);
+    assert_eq!(asked[0].instructions, "Code de l'application d'authentification");
+    // wrong code: refused
+    let (res, _) = connect_otp(&f, Some("000000")).await;
+    assert!(matches!(res, Err(AppError::AuthFailed)), "{:?}", res.err());
+    // cancelled by the user
+    let (res, _) = connect_otp(&f, None).await;
+    assert!(matches!(&res, Err(AppError::Conn(m)) if m.contains("annulée")), "{:?}", res.err());
+}
+
+#[tokio::test]
+async fn plain_password_login_asks_nothing() {
+    let f = fixture().await;
+    let asked = Arc::new(AtomicUsize::new(0));
+    let a = asked.clone();
+    let mut p = params(&f, server::PASSWORD);
+    p.auth_prompter = Some(Arc::new(move |_| {
+        a.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async { None })
+    }));
+    SshConnection::connect(p, prompter(true, Default::default()), Arc::new(|_| {}), Arc::new(|_| {})).await.unwrap();
+    assert_eq!(asked.load(Ordering::SeqCst), 0);
+}
 
 async fn connect(f: &Fixture, password: &str, accept: bool, asked: Arc<AtomicUsize>) -> Result<(Arc<SshConnection>, Output), AppError> {
     let out: Output = Default::default();

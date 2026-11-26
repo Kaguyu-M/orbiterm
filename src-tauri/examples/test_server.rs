@@ -21,6 +21,10 @@ use tokio::sync::Mutex;
 
 pub const USER: &str = "test";
 pub const PASSWORD: &str = "test";
+/// Account with a two-step login like PAM + Google Authenticator: password then code,
+/// both through keyboard-interactive (the "password" method is refused).
+pub const OTP_USER: &str = "otp";
+pub const OTP_CODE: &str = "123456";
 
 /// Starts the server on 127.0.0.1:`port` (0 = random). Returns the bound port and the
 /// server host public key.
@@ -62,11 +66,13 @@ struct SshHandler {
     x11: Option<String>,
     /// agent forwarding requested by the client
     agent: bool,
+    /// OTP_USER: password accepted, code expected
+    otp_stage: u8,
 }
 
 impl SshHandler {
     fn new(root: PathBuf) -> Self {
-        Self { root, channels: Default::default(), line: vec![], size: (80, 24), shell: None, x11: None, agent: false }
+        Self { root, channels: Default::default(), line: vec![], size: (80, 24), shell: None, x11: None, agent: false, otp_stage: 0 }
     }
 
     fn run_command(&mut self, cmd: &str) -> (String, bool) {
@@ -101,6 +107,25 @@ impl russh::server::Handler for SshHandler {
         _submethods: &str,
         response: Option<russh::server::Response<'a>>,
     ) -> Result<Auth, Self::Error> {
+        if user == OTP_USER {
+            let answer = response.and_then(|mut r| r.next().map(|b| String::from_utf8_lossy(b.as_ref()).into_owned()));
+            return Ok(match (self.otp_stage, answer) {
+                (_, None) => {
+                    self.otp_stage = 0;
+                    Auth::Partial { name: "".into(), instructions: "".into(), prompts: vec![("Password: ".into(), false)].into() }
+                }
+                (0, Some(pw)) if pw == PASSWORD => {
+                    self.otp_stage = 1;
+                    Auth::Partial {
+                        name: "".into(),
+                        instructions: "Code de l'application d'authentification".into(),
+                        prompts: vec![("Verification code: ".into(), false)].into(),
+                    }
+                }
+                (1, Some(code)) if code == OTP_CODE => Auth::Accept,
+                _ => Auth::reject(),
+            });
+        }
         match response {
             None => Ok(Auth::Partial {
                 name: "".into(),

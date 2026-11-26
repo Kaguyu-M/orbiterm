@@ -156,6 +156,16 @@ export interface HostKeyPrompt {
   status: "unknown" | "changed" | "known";
 }
 
+/** Questions of a two-factor SSH login (one-time code, PIN…) the saved password cannot answer. */
+export interface AuthPrompt {
+  request_id: string;
+  host: string;
+  user: string;
+  name: string;
+  instructions: string;
+  prompts: { text: string; echo: boolean }[];
+}
+
 /** Error shape produced by the backend (AppError). */
 export interface ApiError {
   kind: string;
@@ -310,6 +320,8 @@ export const api = {
   }) => invoke<string>("term_open", { args }),
   hostkeyAnswer: (requestId: string, accept: boolean) =>
     invoke<void>("hostkey_answer", { requestId, accept }),
+  /** answers of a two-factor question, null when cancelled */
+  authAnswer: (requestId: string, answers: string[] | null) => invoke<void>("auth_answer", { requestId, answers }),
   termWrite: (connId: string, data: string) => invoke<void>("term_write", { connId, data }),
   termWriteBytes: (connId: string, data: string) => invoke<void>("term_write_bytes", { connId, data }),
   localFileInfo: (path: string) => invoke<{ size: number; mtime: number }>("local_file_info", { path }),

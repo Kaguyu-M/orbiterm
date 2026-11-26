@@ -13,7 +13,7 @@
   import { listen } from "@tauri-apps/api/event";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { theme } from "$lib/theme.svelte";
-  import { api, describe, forwardLabel, IS_WINDOWS, protocol, viewOf, type HostKeyPrompt, type ServerKind } from "$lib/api";
+  import { api, describe, forwardLabel, IS_WINDOWS, protocol, viewOf, type AuthPrompt, type HostKeyPrompt, type ServerKind } from "$lib/api";
   import { actionOf, menuLabel, type ActionId } from "$lib/shortcuts";
   import ShortcutsDialog from "$lib/ShortcutsDialog.svelte";
   import BrowserView from "$lib/BrowserView.svelte";
@@ -517,6 +517,13 @@
     const updTimer = setTimeout(startupUpdateCheck, 5000);
     unsubs.push(() => clearTimeout(updTimer));
     listen<HostKeyPrompt>("hostkey-prompt", (e) => app.hostKeys.push(e.payload)).then((u) => unsubs.push(u));
+    listen<AuthPrompt>("auth-prompt", (e) => app.authAsks.push({ ...e.payload, answers: e.payload.prompts.map(() => "") })).then((u) =>
+      unsubs.push(u),
+    );
+    // not answered in time: the connection has given up, the dialog goes away
+    listen<string>("auth-prompt-expired", (e) => {
+      app.authAsks = app.authAsks.filter((a) => a.request_id !== e.payload);
+    }).then((u) => unsubs.push(u));
     unsubs.push(onConnectionClosed((connId, reason, ended, lost) => app.onConnectionClosed(connId, reason, ended, lost)));
     // X server and standalone tunnels can change outside the app
     const poll = setInterval(() => {
@@ -801,6 +808,45 @@
         {hk.status === "changed" ? "Accepter la nouvelle clé" : "Faire confiance"}
       </button>
       <button onclick={() => app.answerHostKey(false)}>Refuser</button>
+    {/snippet}
+  </Modal>
+{/if}
+
+{#if app.authAsks.length && !app.hostKeys.length}
+  {@const aa = app.authAsks[0]}
+  <Modal title={aa.name || "Vérification en deux étapes"} onclose={() => app.answerAuth(false)} width="460px">
+    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+    <form
+      class="auth"
+      data-auth-prompt
+      onsubmit={(e) => {
+        e.preventDefault();
+        app.answerAuth(true);
+      }}
+      onkeydown={(e) => {
+        // Enter validates, whatever the number of questions
+        if (e.key === "Enter") {
+          e.preventDefault();
+          app.answerAuth(true);
+        }
+      }}
+    >
+      <p class="muted">{aa.user}@{aa.host}</p>
+      {#if aa.instructions}<p class="instr">{aa.instructions}</p>{/if}
+      {#each aa.prompts as pr, i (i)}
+        <label>
+          <span>{pr.text || "Réponse"}</span>
+          {#if i === 0}
+            <input class="full" type={pr.echo ? "text" : "password"} autocomplete="one-time-code" spellcheck="false" bind:value={aa.answers[i]} use:grabFocus />
+          {:else}
+            <input class="full" type={pr.echo ? "text" : "password"} autocomplete="one-time-code" spellcheck="false" bind:value={aa.answers[i]} />
+          {/if}
+        </label>
+      {/each}
+    </form>
+    {#snippet actions()}
+      <button class="primary dlg" onclick={() => app.answerAuth(true)}>Valider</button>
+      <button class="dlg" onclick={() => app.answerAuth(false)}>Annuler</button>
     {/snippet}
   </Modal>
 {/if}
@@ -1539,6 +1585,22 @@
   }
   .msg p {
     margin: 0 0 8px;
+  }
+  .auth {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .auth p {
+    margin: 0;
+  }
+  .auth .instr {
+    white-space: pre-line;
+  }
+  .auth label {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
   }
   .fp {
     font-family: var(--mono);

@@ -22,7 +22,8 @@ use crate::pty::{self, LocalShell, PtyConnection, PtySpawn};
 use crate::serial::SerialConnection;
 use crate::forward;
 use crate::ssh::{
-    ActiveForward, CloseSink, ConnectParams, Credentials, DataSink, HostKeyPrompter, HostKeyQuestion, JumpParams, ShellMode,
+    ActiveForward, AuthPrompter, AuthQuestion, CloseSink, ConnectParams, Credentials, DataSink, HostKeyPrompter, HostKeyQuestion,
+    JumpParams, ShellMode,
     SshConnection,
 };
 use crate::x11;
@@ -38,6 +39,8 @@ pub struct AppState {
     pub store: Mutex<Store>,
     pub conns: Mutex<HashMap<String, Conn>>,
     pub hostkey_waiters: Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>,
+    /// two-factor SSH questions waiting for the user's answers
+    pub auth_waiters: Arc<Mutex<HashMap<String, oneshot::Sender<Option<Vec<String>>>>>>,
     /// running standalone tunnels (tunnel manager), by tunnel id
     pub tunnels: Mutex<HashMap<String, Arc<SshConnection>>>,
     /// SSH gateways of RDP / VNC tabs, by connection id (closed with the tab)
@@ -74,6 +77,7 @@ impl AppState {
             store: Mutex::new(store),
             conns: Mutex::new(HashMap::new()),
             hostkey_waiters: Arc::new(Mutex::new(HashMap::new())),
+            auth_waiters: Arc::new(Mutex::new(HashMap::new())),
             tunnels: Mutex::new(HashMap::new()),
             gateways: Mutex::new(HashMap::new()),
             monitors: Mutex::new(HashMap::new()),
@@ -384,6 +388,37 @@ fn make_prompter(app: AppHandle, waiters: Arc<Mutex<HashMap<String, oneshot::Sen
     })
 }
 
+#[derive(Clone, Serialize)]
+struct AuthPrompt {
+    request_id: String,
+    #[serde(flatten)]
+    question: AuthQuestion,
+}
+
+/// Two-factor SSH login: the server's questions are shown in a dialog, the answers come
+/// back through `auth_answer` (5 minutes to type a code sent by SMS or mail).
+fn make_auth_prompter(app: AppHandle, waiters: Arc<Mutex<HashMap<String, oneshot::Sender<Option<Vec<String>>>>>>) -> AuthPrompter {
+    Arc::new(move |question: AuthQuestion| {
+        let app = app.clone();
+        let waiters = waiters.clone();
+        Box::pin(async move {
+            let request_id = crate::config::new_id("auth");
+            let (tx, rx) = oneshot::channel();
+            waiters.lock().await.insert(request_id.clone(), tx);
+            if app.emit("auth-prompt", AuthPrompt { request_id: request_id.clone(), question }).is_err() {
+                waiters.lock().await.remove(&request_id);
+                return None;
+            }
+            let answer = tokio::time::timeout(Duration::from_secs(300), rx).await;
+            waiters.lock().await.remove(&request_id);
+            if answer.is_err() {
+                let _ = app.emit("auth-prompt-expired", request_id);
+            }
+            answer.ok().and_then(Result::ok).flatten()
+        })
+    })
+}
+
 fn sinks(app: &AppHandle, conn_id: &str, log: Option<Arc<crate::termlog::TermLog>>) -> (DataSink, CloseSink) {
     let (app_d, id_d) = (app.clone(), conn_id.to_string());
     let on_data: DataSink = Arc::new(move |bytes: Vec<u8>| {
@@ -580,6 +615,7 @@ async fn open_ssh(
         agent_forward: session.opt_bool("agent_forward"),
         // global setting injected by the UI
         banner: session.opt_bool("banner").then_some(session.sftp_enabled),
+        auth_prompter: Some(make_auth_prompter(app.clone(), state.auth_waiters.clone())),
     };
     let prompter = make_prompter(app.clone(), state.hostkey_waiters.clone());
     match SshConnection::connect(params, prompter, on_data, on_close).await {
@@ -970,6 +1006,15 @@ pub async fn term_open(app: AppHandle, state: State<'_, AppState>, args: OpenArg
 pub async fn hostkey_answer(state: State<'_, AppState>, request_id: String, accept: bool) -> AppResult<()> {
     if let Some(tx) = state.hostkey_waiters.lock().await.remove(&request_id) {
         let _ = tx.send(accept);
+    }
+    Ok(())
+}
+
+/// Answers of the user to a two-factor question (None: cancelled).
+#[tauri::command]
+pub async fn auth_answer(state: State<'_, AppState>, request_id: String, answers: Option<Vec<String>>) -> AppResult<()> {
+    if let Some(tx) = state.auth_waiters.lock().await.remove(&request_id) {
+        let _ = tx.send(answers);
     }
     Ok(())
 }

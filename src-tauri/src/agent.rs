@@ -202,7 +202,12 @@ impl russh::Signer for Signer {
 }
 
 /// Tries every key of both agents. Ok(true) when the server accepted one.
-pub async fn authenticate<H: russh::client::Handler>(handle: &mut russh::client::Handle<H>, user: &str) -> AppResult<bool> {
+pub async fn authenticate<H: russh::client::Handler>(
+    handle: &mut russh::client::Handle<H>,
+    user: &str,
+) -> AppResult<russh::client::AuthResult> {
+    use russh::client::AuthResult;
+    let refused = || AuthResult::Failure { remaining_methods: russh::MethodSet::empty(), partial_success: false };
     let mut ids: Vec<AgentIdentity> = internal_keys()
         .iter()
         .map(|k| AgentIdentity::PublicKey { key: k.public_key().clone(), comment: k.comment().to_string() })
@@ -221,7 +226,7 @@ pub async fn authenticate<H: russh::client::Handler>(handle: &mut russh::client:
         }
     }
     if ids.is_empty() {
-        return Ok(false);
+        return Ok(refused());
     }
     let mut signer = Signer { system };
     let rsa_hash = handle.best_supported_rsa_hash().await.ok().flatten().flatten();
@@ -229,13 +234,14 @@ pub async fn authenticate<H: russh::client::Handler>(handle: &mut russh::client:
         let AgentIdentity::PublicKey { key, .. } = &id else { continue };
         let hash = if matches!(key.algorithm(), Algorithm::Rsa { .. }) { rsa_hash } else { None };
         match handle.authenticate_publickey_with(user, key.clone(), hash, &mut signer).await {
-            Ok(r) if r.success() => return Ok(true),
+            // accepted, possibly with a second factor still to give
+            Ok(r @ (AuthResult::Success | AuthResult::Failure { partial_success: true, .. })) => return Ok(r),
             Ok(_) => {}
             // the agent declined (e.g. a locked key): try the next one
             Err(e) => log::debug!("agent : {e}"),
         }
     }
-    Ok(false)
+    Ok(refused())
 }
 
 // ---- agent protocol server (forwarded channels) ----

@@ -155,6 +155,7 @@ pub fn run() {
             browser::browser_close,
             commands::term_open,
             commands::hostkey_answer,
+            commands::auth_answer,
             commands::term_write,
             commands::term_log,
             commands::term_resize,

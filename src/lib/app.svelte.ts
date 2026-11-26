@@ -9,6 +9,7 @@ import {
   type ApiError,
   type Folder,
   type HostKeyPrompt,
+  type AuthPrompt,
   type LocalShell,
   type Macro,
   type MacroStep,
@@ -257,6 +258,8 @@ class App {
   alertText = $state("");
   infoText = $state("");
   hostKeys: HostKeyPrompt[] = $state([]);
+  /** two-factor SSH questions, with the answers being typed */
+  authAsks: (AuthPrompt & { answers: string[] })[] = $state([]);
   tunnels: TunnelStatus[] = $state([]);
   showTunnels = $state(false);
   servers: ServerStatus[] = $state([]);
@@ -272,7 +275,7 @@ class App {
   /** Something is drawn above the tab area (native browser webviews must hide). */
   overlay = $derived(
     !!this.ctx || !!this.editing || !!this.textAsk || !!this.confirmAsk || !!this.alertText || !!this.infoText ||
-      this.showSettings || this.showPasswords || this.showImport || this.showTunnels || this.showServers || !!this.netTool || this.menuOpen || this.hostKeys.length > 0,
+      this.showSettings || this.showPasswords || this.showImport || this.showTunnels || this.showServers || !!this.netTool || this.menuOpen || this.hostKeys.length > 0 || this.authAsks.length > 0,
   );
   /** SFTP side tab exists only while the active terminal is a live SSH connection. */
   hasSftp = $derived(
@@ -1171,6 +1174,11 @@ class App {
     if (t.openedAt === undefined || Date.now() - t.openedAt < 3000) return false;
     if ((t.session.extra?.command ?? "").trim() !== "") return false;
     return true;
+  }
+
+  async answerAuth(ok: boolean) {
+    const a = this.authAsks.shift();
+    if (a) await api.authAnswer(a.request_id, ok ? [...a.answers] : null);
   }
 
   async answerHostKey(accept: boolean) {
