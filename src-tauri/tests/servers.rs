@@ -616,7 +616,7 @@ async fn vnc_update(s: &mut TcpStream, z: &mut flate2::Decompress, img: &mut [u3
                 let mut raw = vec![0u8; w * h * bpp];
                 s.read_exact(&mut raw).await.unwrap();
                 if bpp == 4 {
-                    for (i, p) in raw.chunks_exact(4).enumerate() {
+                    for (i, p) in raw.as_chunks::<4>().0.iter().enumerate() {
                         img[(y + i / w) * fw + x + i % w] = u32::from_le_bytes([p[0], p[1], p[2], 0]);
                     }
                 }

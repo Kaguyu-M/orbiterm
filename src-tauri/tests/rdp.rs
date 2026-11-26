@@ -145,7 +145,7 @@ async fn embedded_rdp_client() {
             assert_eq!(m[1], 2, "stereo");
             assert_eq!(u32::from_le_bytes([m[2], m[3], m[4], m[5]]), 44_100);
             pcm += m.len() - 6;
-            loud = m[6..].chunks_exact(2).map(|s| i16::from_le_bytes([s[0], s[1]]).saturating_abs()).max().unwrap_or(0).max(loud);
+            loud = m[6..].as_chunks::<2>().0.iter().map(|s| i16::from_le_bytes(*s).saturating_abs()).max().unwrap_or(0).max(loud);
         }
         pcm >= 100_000
     })

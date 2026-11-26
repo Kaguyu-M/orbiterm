@@ -1436,6 +1436,7 @@ fn user_ended(reason: &ironrdp_session::GracefulDisconnectReason) -> bool {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn active_session(
     framed: Framed,
     result: ironrdp_connector::ConnectionResult,

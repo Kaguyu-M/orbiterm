@@ -34,13 +34,16 @@ use crate::telnet::{Mode, TcpTermConnection};
 use crate::terminal::Conn;
 use crate::vnc::VncBridge;
 
+/// Two-factor questions on screen, by request id: the answers (None = cancelled) go back here.
+pub type AuthWaiters = Arc<Mutex<HashMap<String, oneshot::Sender<Option<Vec<String>>>>>>;
+
 pub struct AppState {
     pub config_dir: PathBuf,
     pub store: Mutex<Store>,
     pub conns: Mutex<HashMap<String, Conn>>,
     pub hostkey_waiters: Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>,
     /// two-factor SSH questions waiting for the user's answers
-    pub auth_waiters: Arc<Mutex<HashMap<String, oneshot::Sender<Option<Vec<String>>>>>>,
+    pub auth_waiters: AuthWaiters,
     /// running standalone tunnels (tunnel manager), by tunnel id
     pub tunnels: Mutex<HashMap<String, Arc<SshConnection>>>,
     /// SSH gateways of RDP / VNC tabs, by connection id (closed with the tab)
@@ -397,7 +400,7 @@ struct AuthPrompt {
 
 /// Two-factor SSH login: the server's questions are shown in a dialog, the answers come
 /// back through `auth_answer` (5 minutes to type a code sent by SMS or mail).
-fn make_auth_prompter(app: AppHandle, waiters: Arc<Mutex<HashMap<String, oneshot::Sender<Option<Vec<String>>>>>>) -> AuthPrompter {
+fn make_auth_prompter(app: AppHandle, waiters: AuthWaiters) -> AuthPrompter {
     Arc::new(move |question: AuthQuestion| {
         let app = app.clone();
         let waiters = waiters.clone();
@@ -1063,8 +1066,8 @@ pub async fn local_kind(path: String) -> String {
 
 // ---- local explorer (shown next to the remote files in SFTP / FTP tabs)
 
-fn blocking<T: Send + 'static>(f: impl FnOnce() -> AppResult<T> + Send + 'static) -> impl std::future::Future<Output = AppResult<T>> {
-    async move { tokio::task::spawn_blocking(f).await.map_err(|e| AppError::Conn(e.to_string()))? }
+async fn blocking<T: Send + 'static>(f: impl FnOnce() -> AppResult<T> + Send + 'static) -> AppResult<T> {
+    tokio::task::spawn_blocking(f).await.map_err(|e| AppError::Conn(e.to_string()))?
 }
 
 /// Content of a local folder (the home folder when `path` is empty).
