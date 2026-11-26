@@ -63,7 +63,7 @@ Base : rapport d'analyse de MobaXterm (`Documents\MobaXterm-Analyse`) et code d'
 |---|---|
 | RDP intégré, presse-papiers, lecteurs redirigés, rebond SSH | ✅ (presse-papiers avec Windows en transport UDP : 1.0.1) |
 | Passerelle RDP (RD Gateway), multi-écran | ✅ 0.7.13 : multi-écran (tous les écrans du poste, plein écran sur tous) ; passerelle RD (HTTPS/WebSocket, Basic/NTLM/Negotiate, compte de la session ou compte propre, certificat vérifié ; aussi pour mstsc / FreeRDP) |
-| Son RDP | ✅ 0.7.11 (lu dans l'onglet ; option de session « Son ») ; 🟡 pas encore avec le bureau à distance d'Ubuntu (GNOME Remote Desktop) |
+| Son RDP | ✅ 0.7.11 (lu dans l'onglet ; option de session « Son ») ; avec le bureau à distance d'Ubuntu (GNOME Remote Desktop, canal AUDIO_PLAYBACK_DVC) : version en cours |
 | Image transmise en H.264 (pipeline graphique, comme mstsc) | ✅ 0.8.9 Windows (décodage par Windows), 0.9.1 Linux (GStreamer : VA-API ou processeur) ; 10 à 30 fois moins de données que les images bitmap |
 | Affichage par la carte graphique | ✅ 0.8.8 (WebGL), 0.9.3 image composée par la carte graphique (Windows et Linux) |
 | Qualité de l'image par session (réseau local, lien lent / VPN, automatique) | ✅ 0.8.8 (l'automatique mesure le lien ; le serveur adapte l'image pendant la session, 0.9.0) |
@@ -137,6 +137,6 @@ Base : rapport d'analyse de MobaXterm (`Documents\MobaXterm-Analyse`) et code d'
 20. ✅ (0.9.8 – 1.0.0) **Bureau à distance d'Ubuntu** (GNOME Remote Desktop) : redirection vers l'écran de connexion puis la session, authentification RDSTLS, fermeture de session propre.
 
 21. ✅ (1.0.1) **Presse-papiers RDP avec Windows en UDP** : Windows passe alors par un canal dynamique « cliprdr » mais écoute les réponses sur le canal statique.
-22. ✅ (version en cours) **Raccourcis Windows en fenêtre** (comme RustDesk) et **vérification SSH en deux étapes**.
+22. ✅ (version en cours) **Raccourcis Windows en fenêtre** (comme RustDesk), **vérification SSH en deux étapes**, **son du bureau à distance d'Ubuntu**.
 
-Reste : paquets winget et AUR (en attente de Microsoft et de la réouverture des inscriptions AUR), son avec GNOME Remote Desktop.
+Reste : paquets winget et AUR (en attente de Microsoft et de la réouverture des inscriptions AUR).

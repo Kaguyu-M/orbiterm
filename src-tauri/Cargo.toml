@@ -131,3 +131,6 @@ ironrdp-egfx = { path = "vendor/ironrdp-egfx" }
 # RDSTLS for the reconnection that follows a server redirection (GNOME Remote Desktop login
 # screen hand-over; vendor/ironrdp-connector/src/connection.rs, "Orbiterm patch")
 ironrdp-connector = { path = "vendor/ironrdp-connector" }
+# Training Confirm with the size of the whole Training PDU, as MS-RDPEA asks: GNOME Remote
+# Desktop drops its audio channel otherwise (vendor/ironrdp-rdpsnd/src/client.rs, "Orbiterm patch")
+ironrdp-rdpsnd = { path = "vendor/ironrdp-rdpsnd" }

@@ -902,6 +902,13 @@ async fn establish(
         dvc = dvc.with_dynamic_channel(clip_dvc);
         (clip_static, clip_rx) = (Some(cliprdr), Some(rx));
     }
+    // sound: the static channel, and the dynamic one (GNOME Remote Desktop, Windows 8 and later)
+    let mut audio_static = None;
+    if p.sound {
+        let (rdpsnd, rdpsnd_dvc, rx) = rdp_channels::audio();
+        dvc = dvc.with_dynamic_channel(rdpsnd_dvc);
+        audio_static = Some((rdpsnd, rx));
+    }
     let mut gpu_queue = None;
     if gfx_enabled() {
         // IronRDP composes the pipeline's picture into the session image after each PDU, unless
@@ -957,8 +964,7 @@ async fn establish(
         connector.attach_static_channel(rdpdr);
         channels.drive = true;
     }
-    if p.sound {
-        let (rdpsnd, rx) = rdp_channels::audio();
+    if let Some((rdpsnd, rx)) = audio_static {
         connector.attach_static_channel(rdpsnd);
         channels.audio = Some(rx);
     } else if channels.drive {

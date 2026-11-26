@@ -278,6 +278,30 @@ fn hostname() -> String {
 mod tests {
     use super::*;
 
+    /// GNOME Remote Desktop: formats then a 1024-byte training on AUDIO_PLAYBACK_DVC; the
+    /// confirm must echo the whole PDU size or the server drops the channel.
+    #[test]
+    fn dynamic_audio_channel_confirms_gnome_training() {
+        use ironrdp_dvc::DvcProcessor;
+        use ironrdp_rdpsnd::pdu::{ServerAudioFormatPdu, ServerAudioOutputPdu, TrainingPdu, Version};
+        let (_static, mut dvc, _rx) = audio();
+        assert_eq!(dvc.channel_name(), "AUDIO_PLAYBACK_DVC");
+        dvc.start(5).unwrap();
+        let formats = ServerAudioOutputPdu::AudioFormat(ServerAudioFormatPdu { version: Version::V8, formats: vec![pcm(44_100, 2)] });
+        let replies = dvc.process(5, &ironrdp_core::encode_vec(&formats).unwrap()).unwrap();
+        assert!(!replies.is_empty(), "client formats expected");
+        // GNOME: 1024-byte Training PDU = SNDPROLOG (4) + wTimeStamp + wPackSize (4) + 1016 bytes of data
+        let training = ServerAudioOutputPdu::Training(TrainingPdu { timestamp: 0, data: vec![0; 1016] });
+        let bytes = ironrdp_core::encode_vec(&training).unwrap();
+        assert_eq!(bytes.len(), 1024);
+        let replies = dvc.process(5, &bytes).unwrap();
+        assert_eq!(replies.len(), 1);
+        let confirm = ironrdp_core::encode_vec(replies[0].as_ref()).unwrap();
+        // SNDPROLOG (msgType 6 = training) + wTimeStamp + wPackSize
+        assert_eq!(confirm[0], 6);
+        assert_eq!(u16::from_le_bytes([confirm[6], confirm[7]]), 1024, "{confirm:?}");
+    }
+
     /// Windows over UDP: the PDUs of the dynamic channel reach the static channel's processor.
     #[test]
     fn dynamic_clipboard_channel_feeds_the_static_one() {
@@ -390,9 +414,16 @@ impl ironrdp_rdpsnd::client::RdpsndClientHandler for AudioOut {
     }
 }
 
-/// Sound channel playing in the tab, and the receiver of its frames.
-pub fn audio() -> (ironrdp_rdpsnd::client::Rdpsnd, mpsc::UnboundedReceiver<Vec<u8>>) {
+/// Sound played in the tab: the static RDPSND channel, the dynamic AUDIO_PLAYBACK_DVC one
+/// (GNOME Remote Desktop only offers this one; Windows 8 and later try it first), and the
+/// receiver of their frames. The lossy channel (AAC) is not offered: only PCM is played.
+pub fn audio() -> (ironrdp_rdpsnd::client::Rdpsnd, ironrdp_rdpsnd::client::RdpsndDvc, mpsc::UnboundedReceiver<Vec<u8>>) {
     let (tx, rx) = mpsc::unbounded_channel();
     let formats = vec![pcm(44_100, 2), pcm(48_000, 2), pcm(22_050, 2)];
-    (ironrdp_rdpsnd::client::Rdpsnd::new(Box::new(AudioOut { tx, formats, end: None })), rx)
+    let out = |tx| Box::new(AudioOut { tx, formats: formats.clone(), end: None });
+    (
+        ironrdp_rdpsnd::client::Rdpsnd::new(out(tx.clone())),
+        ironrdp_rdpsnd::client::RdpsndDvc::new(out(tx)),
+        rx,
+    )
 }
