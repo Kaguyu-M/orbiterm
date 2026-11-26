@@ -1,4 +1,4 @@
-# Vérifications : contrôle du code Svelte/TypeScript et tests Rust, sous Windows et Linux.
+# Vérifications : contrôle du code Svelte/TypeScript, Clippy et tests Rust, sous Windows et Linux.
 # Lancées à chaque envoi sur main, sur les demandes de fusion, et avant toute publication
 # (release.yml appelle ce workflow et ne compile rien s'il échoue).
 name: Vérifications
@@ -47,6 +47,8 @@ jobs:
           cache: npm
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -80,6 +82,11 @@ jobs:
       - name: Tests Rust
         working-directory: src-tauri
         run: cargo test --locked
+
+      # lints of the Rust code (Windows and Linux code paths differ): any warning fails
+      - name: Clippy
+        working-directory: src-tauri
+        run: cargo clippy --locked --all-targets -- -D warnings
 
       # Launches the real app under Xvfb with the GStreamer H.264 decoders installed (the
       # combination that once left the window blank) and fails if the interface is not drawn.

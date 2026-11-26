@@ -22,6 +22,7 @@ npm ci
 npm run check                     # svelte-check (exigé par la CI)
 npm run build                     # frontend
 cd src-tauri && cargo test --locked   # tests unitaires + bout en bout (exigés par la CI)
+cd src-tauri && cargo clippy --locked --all-targets -- -D warnings   # exigé par la CI (Windows et Linux)
 npx tauri build --no-bundle       # binaire release (src-tauri/target/release/orbiterm)
 cd src-tauri && cargo test --test exp_xxx -- --ignored --nocapture   # expériences contre de vraies machines
 ```

@@ -363,7 +363,7 @@ mod imp {
                 .reply()
                 .map_err(err)?;
             let px: Vec<u32> =
-                img.data.chunks_exact(4).map(|p| u32::from_le_bytes([p[0], p[1], p[2], 0])).collect();
+                img.data.as_chunks::<4>().0.iter().map(|p| u32::from_le_bytes([p[0], p[1], p[2], 0])).collect();
             if px.len() < usize::from(w) * usize::from(h) {
                 return Err(io::Error::other("image X11 incomplète"));
             }
