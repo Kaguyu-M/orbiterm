@@ -28,7 +28,7 @@
   import { onMount } from "svelte";
   import { availableMonitors, getCurrentWindow, PhysicalPosition, PhysicalSize } from "@tauri-apps/api/window";
   import Icon from "./Icon.svelte";
-  import { api, IS_WINDOWS, type Session } from "./api";
+  import { api, IS_WINDOWS, RDP_KEYS_DEFAULT, type Session } from "./api";
   import { listen } from "@tauri-apps/api/event";
   import { app, type Tab } from "./app.svelte";
   import RemoteInfo from "./RemoteInfo.svelte";
@@ -548,7 +548,7 @@
   // ------------------------------------------------- full screen like Windows Remote Desktop
   // Windows shortcuts (session option rdp_keys): "full" in full screen only (mstsc), "always", "never"
   // svelte-ignore state_referenced_locally
-  const keysMode = tab.session.extra?.rdp_keys || "full";
+  const keysMode = tab.session.extra?.rdp_keys || RDP_KEYS_DEFAULT;
   // the whole window in full screen by another way (F11 on another tab, a window manager…)
   // counts as full screen too: the remote desktop then fills the screen all the same
   let winFull = $state(false);
@@ -568,9 +568,9 @@
     return () => setCapture(id, false);
   });
   onMount(() => {
-    // Ctrl+Alt+Pause (caught by the keyboard hook) leaves full screen, as in mstsc
+    // Ctrl+Alt+Pause (caught by the keyboard hook) switches full screen, as in mstsc
     const un = listen<{ conn_id: string; action: string }>("rdp-hotkey", (e) => {
-      if (e.payload.conn_id === tab.connId && e.payload.action === "leave-full" && full) toggleFull();
+      if (e.payload.conn_id === tab.connId && e.payload.action === "toggle-full") toggleFull();
     });
     const w = getCurrentWindow();
     const sync = () => w.isFullscreen().then((f) => (winFull = f)).catch(() => {});
@@ -650,6 +650,14 @@
     <button title={full ? "Quitter le plein écran" : "Plein écran"} disabled={!connected} onclick={toggleFull}>
       {full ? "Quitter le plein écran" : "Plein écran"}
     </button>
+    {#if capturing && !full}
+      <span
+        class="keys"
+        title={IS_WINDOWS
+          ? "La touche Windows, Alt+Tab… vont à l'ordinateur distant tant que le bureau distant a le clavier (cliquer en dehors pour les rendre à cet ordinateur). Ctrl+Alt+Fin envoie Ctrl+Alt+Suppr · Ctrl+Alt+Pause passe en plein écran"
+          : "Super, Alt+Tab… vont à l'ordinateur distant tant que le bureau distant a le clavier"}
+        data-rdp-keys-on>raccourcis → distant</span>
+    {/if}
     {#if !connected && status}<span class="state">{status}</span>{/if}
     <div class="endwrap">
       <button
@@ -822,6 +830,12 @@
   }
   .state {
     color: var(--muted);
+  }
+  .keys {
+    color: var(--muted);
+    font-size: 11px;
+    white-space: nowrap;
+    cursor: help;
   }
   .endwrap {
     margin-left: auto;

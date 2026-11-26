@@ -240,6 +240,10 @@ export interface TextFile {
 export const EDITOR: Protocol = { kind: "editor", label: "Éditeur", icon: "edit", port: 0, ready: true, remote: false };
 export const DIFF: Protocol = { kind: "diff", label: "Comparaison", icon: "split", port: 0, ready: true, remote: false };
 export const IS_WINDOWS = typeof navigator !== "undefined" && /windows/i.test(navigator.userAgent);
+/** RDP session option rdp_keys by default: under Windows the shortcuts (Windows key, Alt+Tab…)
+ *  go to the remote desktop whenever it has the keyboard, like RustDesk; under Linux a window
+ *  keyboard grab is more intrusive, so only in full screen there. */
+export const RDP_KEYS_DEFAULT = IS_WINDOWS ? "always" : "full";
 export function viewOf(s: Pick<Session, "kind" | "extra">): TabView {
   const kind = s.kind;
   if (kind === "sftp" || kind === "ftp") return "files";

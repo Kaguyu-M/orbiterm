@@ -1234,7 +1234,7 @@ pub async fn rdp_url(state: State<'_, AppState>, conn_id: String) -> AppResult<R
     }
 }
 
-/// Full-screen remote desktop with the keyboard: Windows shortcuts (Win, Alt+Tab…) go to the
+/// Remote desktop with the keyboard (full screen, or a window per the session option): Windows shortcuts (Win, Alt+Tab…) go to the
 /// remote computer (`on`), or back to this one. Windows only (no-op elsewhere).
 #[derive(Serialize, Clone)]
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -1265,8 +1265,8 @@ pub async fn rdp_capture_keys(window: tauri::WebviewWindow, state: State<'_, App
             Box::new(move |ev| match ev {
                 HookEvent::Key(sc, up) => s.key(sc, up),
                 HookEvent::CtrlAltDel => s.ctrl_alt_del(),
-                HookEvent::LeaveFullScreen => {
-                    let _ = app.emit("rdp-hotkey", RdpHotkey { conn_id: conn_id.clone(), action: "leave-full" });
+                HookEvent::ToggleFullScreen => {
+                    let _ = app.emit("rdp-hotkey", RdpHotkey { conn_id: conn_id.clone(), action: "toggle-full" });
                 }
             }),
         );

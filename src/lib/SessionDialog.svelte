@@ -4,7 +4,7 @@
   import Modal from "./Modal.svelte";
   import Icon from "./Icon.svelte";
   import { app } from "./app.svelte";
-  import { api, IS_WINDOWS, newForward, PROTOCOLS, protocol, viewOf, type Session } from "./api";
+  import { api, IS_WINDOWS, RDP_KEYS_DEFAULT, newForward, PROTOCOLS, protocol, viewOf, type Session } from "./api";
 
   let { session }: { session: Session } = $props();
 
@@ -263,9 +263,9 @@
                 <option value="100">100 % (plus de place, texte plus petit)</option>
               </select>
               <label class="lbl" for="rkeys">{IS_WINDOWS ? "Raccourcis Windows" : "Raccourcis du système"}</label>
-              <select id="rkeys" value={x("rdp_keys", "full")} onchange={(e) => setX("rdp_keys", e.currentTarget.value)} data-rdp-keys>
-                <option value="full">Envoyés à l'ordinateur distant en plein écran (comme le Bureau à distance)</option>
-                <option value="always">Toujours envoyés quand le bureau distant a le clavier</option>
+              <select id="rkeys" value={x("rdp_keys", RDP_KEYS_DEFAULT)} onchange={(e) => setX("rdp_keys", e.currentTarget.value)} data-rdp-keys>
+                <option value="always">Envoyés à l'ordinateur distant dès que le bureau distant a le clavier, même en fenêtre (comme RustDesk)</option>
+                <option value="full">Envoyés à l'ordinateur distant en plein écran seulement (comme le Bureau à distance)</option>
                 <option value="never">Jamais : Alt+Tab et la touche {IS_WINDOWS ? "Windows" : "Super"} restent sur cet ordinateur</option>
               </select>
               <label class="lbl" for="rreco">Reconnexion</label>

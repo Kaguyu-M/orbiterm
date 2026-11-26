@@ -3,8 +3,11 @@
 //! foreground, a low-level keyboard hook takes every key before Windows does — the Windows
 //! key, Alt+Tab, Alt+Esc, Ctrl+Esc, Alt+F4… — and sends it to the remote computer instead.
 //!
+//! Captured in full screen, and by default also in a window while the remote desktop has the
+//! keyboard (like RustDesk): the Start menu then opens on the remote computer, not this one.
+//!
 //! As in mstsc: Ctrl+Alt+End sends Ctrl+Alt+Del (which Windows never gives to programs), and
-//! Ctrl+Alt+Pause leaves full screen. Win+L and Ctrl+Alt+Del themselves stay local.
+//! Ctrl+Alt+Pause switches full screen on or off. Win+L and Ctrl+Alt+Del themselves stay local.
 
 use std::collections::BTreeSet;
 use std::sync::Mutex;
@@ -26,7 +29,8 @@ pub enum HookEvent {
     /// scancode (set 1, 0xE0xx = extended), released?
     Key(u16, bool),
     CtrlAltDel,
-    LeaveFullScreen,
+    /// Ctrl+Alt+Pause: full screen on / off
+    ToggleFullScreen,
 }
 
 pub type HookSink = Box<dyn Fn(HookEvent) + Send>;
@@ -111,8 +115,8 @@ fn decide(vk: u32, scan: u32, flags: u32, ctrl: bool, alt: bool) -> Option<Optio
     }
     let up = flags & LLKHF_UP != 0;
     if vk == u32::from(VK_PAUSE) {
-        // Ctrl+Alt+Pause leaves full screen (Pause itself has no plain scancode)
-        return Some((ctrl && alt && !up).then_some(HookEvent::LeaveFullScreen));
+        // Ctrl+Alt+Pause switches full screen (Pause itself has no plain scancode)
+        return Some((ctrl && alt && !up).then_some(HookEvent::ToggleFullScreen));
     }
     if vk == u32::from(VK_END) && ctrl && alt {
         return Some((!up).then_some(HookEvent::CtrlAltDel));
@@ -182,8 +186,8 @@ mod tests {
         assert_eq!(decide(u32::from(VK_END), 0x4F, LLKHF_EXTENDED | LLKHF_UP, true, true), Some(None));
         // End alone is a normal key
         assert_eq!(decide(u32::from(VK_END), 0x4F, LLKHF_EXTENDED, false, false), Some(Some(HookEvent::Key(0xE04F, false))));
-        // Ctrl+Alt+Pause leaves full screen
-        assert_eq!(decide(u32::from(VK_PAUSE), 0x45, 0, true, true), Some(Some(HookEvent::LeaveFullScreen)));
+        // Ctrl+Alt+Pause switches full screen
+        assert_eq!(decide(u32::from(VK_PAUSE), 0x45, 0, true, true), Some(Some(HookEvent::ToggleFullScreen)));
         // AltGr's fake Ctrl is dropped, injected keys go to the system
         assert_eq!(decide(u32::from(VK_LCONTROL), 0x21D, 0, false, false), Some(None));
         assert_eq!(decide(0x41, 0x1E, LLKHF_INJECTED, false, false), None);
