@@ -1,6 +1,6 @@
 # Orbiterm face à MobaXterm — fonctionnalités
 
-Base : rapport d'analyse de MobaXterm (`Documents\MobaXterm-Analyse`) et code d'Orbiterm (v0.7.6, mis à jour jusqu’à la v1.0.2).
+Base : rapport d'analyse de MobaXterm (`Documents\MobaXterm-Analyse`) et code d'Orbiterm (v0.7.6, mis à jour jusqu’à la v1.0.3).
 ✅ présent · 🟡 partiel · ❌ absent · ⛔ écarté volontairement
 
 ## Sessions
@@ -68,7 +68,7 @@ Base : rapport d'analyse de MobaXterm (`Documents\MobaXterm-Analyse`) et code d'
 | Affichage par la carte graphique | ✅ 0.8.8 (WebGL), 0.9.3 image composée par la carte graphique (Windows et Linux) |
 | Qualité de l'image par session (réseau local, lien lent / VPN, automatique) | ✅ 0.8.8 (l'automatique mesure le lien ; le serveur adapte l'image pendant la session, 0.9.0) |
 | Plein écran comme le Bureau à distance de Windows | ✅ 0.9.0 : barre de connexion escamotable en haut, touche Windows / Super, Alt+Tab, Ctrl+Échap, Alt+F4 envoyés à l'ordinateur distant ; F11 (0.9.6) |
-| Raccourcis Windows envoyés à l'ordinateur distant même en fenêtre (comme RustDesk) | ✅ 1.0.2 : par défaut sous Windows dès que le bureau distant a le clavier ; Ctrl+Alt+Pause bascule le plein écran |
+| Raccourcis Windows envoyés à l'ordinateur distant même en fenêtre (comme RustDesk) | ✅ 1.0.3 (1.0.2 ouvrait aussi le menu Démarrer local) : par défaut sous Windows dès que le bureau distant a le clavier ; Ctrl+Alt+Pause bascule le plein écran |
 | Échelle d'affichage transmise au serveur (125 %, 150 %) | ✅ 0.9.0 (suit le passage de la fenêtre sur un autre écran ; option automatique / 100 %) |
 | Reconnexion automatique (veille, coupure Wi-Fi) | ✅ 0.9.0 (2 s, 5 s, 15 s… bandeau « Connexion perdue » avec Annuler ; activée par défaut en RDP, optionnelle en SSH) |
 | Transport UDP (comme mstsc) | ✅ 0.9.5 (repli TCP automatique ; utile sur VPN et liens avec pertes) |
@@ -138,5 +138,6 @@ Base : rapport d'analyse de MobaXterm (`Documents\MobaXterm-Analyse`) et code d'
 
 21. ✅ (1.0.1) **Presse-papiers RDP avec Windows en UDP** : Windows passe alors par un canal dynamique « cliprdr » mais écoute les réponses sur le canal statique.
 22. ✅ (1.0.2) **Raccourcis Windows en fenêtre** (comme RustDesk), **vérification SSH en deux étapes**, **son du bureau à distance d'Ubuntu**.
+23. ✅ (1.0.3) Touche Windows en fenêtre réellement réservée à l'ordinateur distant (crochet clavier dans un processus auxiliaire), bouton « Rechercher les mises à jour maintenant ».
 
 Reste : paquets winget et AUR (en attente de Microsoft et de la réouverture des inscriptions AUR).
