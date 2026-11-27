@@ -100,6 +100,12 @@ fn web_data_dir() -> Option<std::path::PathBuf> {
 }
 
 pub fn run() {
+    // keyboard hook helper of the remote desktop's Windows shortcuts (see keyhook.rs)
+    #[cfg(windows)]
+    if std::env::args().nth(1).as_deref() == Some(keyhook::HELPER_ARG) {
+        keyhook::helper_main();
+        return;
+    }
     #[cfg(target_os = "linux")]
     webkit_workarounds();
     #[cfg(target_os = "linux")]
