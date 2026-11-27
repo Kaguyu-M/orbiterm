@@ -452,6 +452,46 @@ fn clamp16(v: u32) -> u16 {
     v.clamp(1, u16::MAX as u32) as u16
 }
 
+/// The fastfetch-like summary of the system a local shell runs on (this computer, or a WSL
+/// distribution), or None (mosh, custom programs elsewhere than Windows, failure).
+fn local_summary(session: &Session, cols: u32) -> Option<String> {
+    let script = crate::sysfetch::unix_script();
+    let wsl = |distro: &str| {
+        let mut a = vec![];
+        if !distro.is_empty() {
+            a.extend(["-d", distro]);
+        }
+        // -e: no shell in between ("--" would re-parse the script and break its quotes)
+        a.extend(["-e", "sh", "-c", script]);
+        crate::sysfetch::run_local("wsl.exe", &a)
+    };
+    let facts = match session.kind.as_str() {
+        "wsl" => wsl(session.opt("distro"))?,
+        "shell" => {
+            let shells = pty::local_shells();
+            let wanted = session.opt("shell");
+            let custom = !session.opt("program").trim().is_empty();
+            let sh = shells.iter().find(|s| s.id == wanted).or_else(|| shells.first());
+            match sh {
+                Some(sh) if !custom && sh.id.starts_with("wsl:") => wsl(&sh.id[4..])?,
+                #[cfg(windows)]
+                Some(sh) => crate::sysfetch::local_windows(if custom { session.opt("program") } else { &sh.label }),
+                #[cfg(not(windows))]
+                Some(_) => {
+                    let mut f = crate::sysfetch::run_local("sh", &["-c", script])?;
+                    if custom {
+                        f.shell = session.opt("program").rsplit('/').next().unwrap_or_default().to_string();
+                    }
+                    f
+                }
+                None => return None,
+            }
+        }
+        _ => return None,
+    };
+    Some(crate::sysfetch::render(&facts, cols))
+}
+
 /// Builds the local program to run for `shell`, `wsl` and `mosh` sessions.
 fn pty_spec(session: &Session, cols: u32, rows: u32) -> AppResult<PtySpawn> {
     let (program, args) = match session.kind.as_str() {
@@ -618,6 +658,7 @@ async fn open_ssh(
         agent_forward: session.opt_bool("agent_forward"),
         // global setting injected by the UI
         banner: session.opt_bool("banner").then_some(session.sftp_enabled),
+        fetch: session.opt_bool("fetch"),
         auth_prompter: Some(make_auth_prompter(app.clone(), state.auth_waiters.clone())),
     };
     let prompter = make_prompter(app.clone(), state.hostkey_waiters.clone());
@@ -767,7 +808,7 @@ pub async fn term_open(app: AppHandle, state: State<'_, AppState>, args: OpenArg
         state.store.lock().await.session(&args.session.id).cloned().unwrap_or(args.session.clone())
     };
     // global settings injected by the UI
-    for k in ["keepalive", "ssh_agent", "agent_forward", "banner"] {
+    for k in ["keepalive", "ssh_agent", "agent_forward", "banner", "fetch"] {
         if let Some(v) = args.session.extra.get(k) {
             session.extra.insert(k.into(), v.clone());
         }
@@ -995,6 +1036,17 @@ pub async fn term_open(app: AppHandle, state: State<'_, AppState>, args: OpenArg
         }
         _ => {
             let spec = pty_spec(&session, args.cols, args.rows)?;
+            // system summary (global setting injected by the UI) before the shell's own output
+            if session.opt_bool("fetch") {
+                let s = session.clone();
+                let cols = args.cols;
+                let job = tokio::task::spawn_blocking(move || local_summary(&s, cols));
+                // WSL may have to start first
+                let wait = if session.kind == "wsl" || session.opt("shell").starts_with("wsl:") { 15 } else { 6 };
+                if let Ok(Ok(Some(text))) = tokio::time::timeout(std::time::Duration::from_secs(wait), job).await {
+                    on_data(text.into_bytes());
+                }
+            }
             let c = tokio::task::spawn_blocking(move || PtyConnection::spawn(spec, on_data, on_close))
                 .await
                 .map_err(|e| AppError::Conn(e.to_string()))??;
@@ -2097,4 +2149,24 @@ fn local_monitors(app: &AppHandle) -> Vec<(i32, i32, u32, u32, bool)> {
             (p.x, p.y, s.width, s.height, Some(*p) == primary)
         })
         .collect()
+}
+
+/// A local image (terminal background) as a data: URL; 20 MB at most.
+#[tauri::command]
+pub async fn image_data_url(path: String) -> AppResult<String> {
+    let mime = match std::path::Path::new(&path).extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref() {
+        Some("png") => "image/png",
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        Some("bmp") => "image/bmp",
+        Some("svg") => "image/svg+xml",
+        _ => return Err(AppError::Config("format d'image non pris en charge (PNG, JPEG, GIF, WebP, BMP, SVG)".into())),
+    };
+    let len = tokio::fs::metadata(&path).await?.len();
+    if len > 20 << 20 {
+        return Err(AppError::Config("image trop grande (20 Mo au plus)".into()));
+    }
+    let bytes = tokio::fs::read(&path).await?;
+    Ok(format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes)))
 }

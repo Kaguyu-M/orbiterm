@@ -375,6 +375,8 @@ export const api = {
   updateMode: () => invoke<{ kind: "installer" | "scoop" | "portable" | "deb" | "rpm" | "nix" | "other"; hint: string }>("update_mode"),
   updateDownload: (version: string) => invoke<void>("update_download", { version }),
   updateLaunch: () => invoke<void>("update_launch"),
+  /** local image as a data: URL (terminal background) */
+  imageDataUrl: (path: string) => invoke<string>("image_data_url", { path }),
   dirCompare: (left: string, right: string) =>
     invoke<{
       entries: Array<{ path: string; dir: boolean; status: "same" | "different" | "left_only" | "right_only" | "kind_mismatch"; left_size: number | null; right_size: number | null; left_mtime: number | null; right_mtime: number | null }>;

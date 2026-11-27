@@ -1,4 +1,5 @@
 // Global application state shared by every component (Svelte 5 runes).
+import type { CustomTheme } from "./termthemes";
 import {
   api,
   asApiError,
@@ -89,6 +90,22 @@ export interface Prefs {
   termFontSize: number;
   termTheme: string;
   termScrollback: number;
+  /** line height of every terminal (1 = font's own) */
+  termLineHeight: number;
+  /** extra space between characters, in pixels */
+  termLetterSpacing: number;
+  termFontWeight: string;
+  termFontWeightBold: string;
+  /** image drawn behind the terminals ("" = none): path on this computer */
+  termBgImage: string;
+  /** how the image fills the terminal */
+  termBgFit: "cover" | "contain" | "center" | "repeat";
+  /** opacity of the terminal's colour over the image (0-100) */
+  termBgOpacity: number;
+  /** colour themes made by the user (theme editor) */
+  customThemes: CustomTheme[];
+  /** system summary (logo + facts, like fastfetch) when a shell opens */
+  termFetch: boolean;
   cursorStyle: "block" | "underline" | "bar";
   cursorBlink: boolean;
   copyOnSelect: boolean;
@@ -152,6 +169,15 @@ export const DEFAULT_PREFS: Prefs = {
   termFontSize: 14,
   termTheme: "orbiterm",
   termScrollback: 10000,
+  termLineHeight: 1,
+  termLetterSpacing: 0,
+  termFontWeight: "normal",
+  termFontWeightBold: "bold",
+  termBgImage: "",
+  termBgFit: "cover",
+  termBgOpacity: 80,
+  customThemes: [],
+  termFetch: true,
   cursorStyle: "block",
   cursorBlink: true,
   copyOnSelect: true,
@@ -203,6 +229,15 @@ function loadJson<T>(key: string, fallback: T): T {
   } catch {
     return fallback;
   }
+}
+
+/** Columns of a new terminal, from the size of the tab area and the font (before the terminal
+ *  exists and reports its real size). */
+function guessCols(s: Session): number {
+  const w = document.querySelector(".terms")?.getBoundingClientRect().width ?? 0;
+  const size = s.terminal?.font_size || 14;
+  if (!w) return 120;
+  return Math.max(40, Math.floor((w - 24) / (size * 0.62 + (app.prefs.termLetterSpacing || 0))));
 }
 
 /** Prefs saved by older versions: adopt the new palette once. */
@@ -942,6 +977,7 @@ class App {
         if (r) snap.extra = { ...snap.extra, rdp_w: String(Math.round(r.width * k)), rdp_h: String(Math.round((r.height - bar) * k)) };
       }
       if (this.prefs.termLog) snap.extra = { ...snap.extra, log_dir: this.prefs.termLogDir };
+      if (this.prefs.termFetch && ["ssh", "shell", "wsl"].includes(snap.kind)) snap.extra = { ...snap.extra, fetch: "1" };
       if (snap.kind === "ssh" || snap.kind === "sftp") {
         snap.extra = { ...snap.extra, ssh_agent: this.prefs.sshAgent ? "1" : "", agent_forward: this.prefs.agentForward ? "1" : "" };
       }
@@ -959,7 +995,7 @@ class App {
         s,
         async (sec) => {
           const scale = Math.round((window.devicePixelRatio || 1) * 100);
-          const id = await api.termOpen({ session: snap, cols: 120, rows: 32, scale, ...sec });
+          const id = await api.termOpen({ session: snap, cols: guessCols(snap), rows: 32, scale, ...sec });
           // kept in memory only, to open a separate SFTP session later
           if (sec.password !== undefined || sec.jump_password !== undefined) this.typedSecrets.set(tab.key, { ...sec });
           return id;

@@ -6,11 +6,15 @@
   import { api, type AgentState } from "./api";
   import { open } from "@tauri-apps/plugin-dialog";
   import { app, DEFAULT_PREFS, UI_THEMES, type Prefs } from "./app.svelte";
+  import { ANSI_KEYS, BASE_KEYS, fullColors, parseScheme, themeChoices, withAlpha, type CustomTheme } from "./termthemes";
+  import { familyOf, firstName, fontChoices } from "./fonts";
+  import { imageUrl } from "./termbg";
 
-  type TabId = "general" | "terminal" | "ssh" | "x11" | "display";
+  type TabId = "general" | "terminal" | "style" | "ssh" | "x11" | "display";
   const TABS: Array<{ id: TabId; label: string; icon: string }> = [
     { id: "general", label: "Général", icon: "settings" },
     { id: "terminal", label: "Terminal", icon: "terminal" },
+    { id: "style", label: "Style", icon: "palette" },
     { id: "ssh", label: "SSH", icon: "ssh" },
     { id: "x11", label: "Serveur X", icon: "xserver" },
     { id: "display", label: "Affichage", icon: "view" },
@@ -19,14 +23,101 @@
   let p: Prefs = $state(structuredClone($state.snapshot(app.prefs)) as Prefs);
   let cfgDir = $state("");
 
-  const FONTS = [
-    "Cascadia Mono, Consolas, 'DejaVu Sans Mono', monospace",
-    "Consolas, monospace",
-    "'Courier New', monospace",
-    "'Lucida Console', monospace",
-    "'DejaVu Sans Mono', monospace",
+  // ---- style of the terminals: fonts, spacing, colours, background
+  const FONTS = fontChoices();
+  /** the font list shows the current font even when it is not one of the proposed ones */
+  const fontKnown = $derived(FONTS.some((f) => f.family === p.termFont));
+  let fontOther = $state(false);
+  function pickFont(v: string) {
+    if (v === "__other") {
+      fontOther = true;
+      return;
+    }
+    fontOther = false;
+    p.termFont = v;
+  }
+  const WEIGHTS: Array<[string, string]> = [
+    ["300", "Fine (300)"],
+    ["normal", "Normale (400)"],
+    ["500", "Moyenne (500)"],
+    ["600", "Demi-gras (600)"],
+    ["bold", "Gras (700)"],
+    ["800", "Très gras (800)"],
   ];
-  const fontLabel = (f: string) => f.split(",")[0].replaceAll("'", "");
+
+  /** custom theme open in the editor (its id) */
+  let editingTheme = $state("");
+  const edited = $derived(p.customThemes.find((t) => t.id === editingTheme));
+  function newThemeId() {
+    return "custom:" + Math.random().toString(36).slice(2, 10);
+  }
+  /** New custom theme, starting from the colours of `base`. */
+  function addTheme(base: string, name: string) {
+    const t: CustomTheme = { id: newThemeId(), name, colors: fullColors(base, p.customThemes) };
+    p.customThemes = [...p.customThemes, t];
+    editingTheme = t.id;
+    p.termTheme = t.id;
+  }
+  function removeTheme(id: string) {
+    p.customThemes = p.customThemes.filter((t) => t.id !== id);
+    if (p.termTheme === id) p.termTheme = "orbiterm";
+    if (editingTheme === id) editingTheme = "";
+  }
+  let importText = $state("");
+  let importOpen = $state(false);
+  function importTheme() {
+    const s = parseScheme(importText);
+    if (!s) {
+      app.alert("Thème non reconnu : colle un schéma de couleurs JSON (Windows Terminal, ou objet de thème xterm.js).");
+      return;
+    }
+    const t: CustomTheme = { id: newThemeId(), name: s.name, colors: { ...fullColors("dark"), ...s.colors } };
+    p.customThemes = [...p.customThemes, t];
+    p.termTheme = t.id;
+    editingTheme = t.id;
+    importOpen = false;
+    importText = "";
+  }
+
+  async function pickBackground() {
+    // automated GUI tests replace the native dialog (window.__orbitermKeyPick.open)
+    const pick = (window as unknown as { __orbitermKeyPick?: { open?: string } }).__orbitermKeyPick?.open;
+    const f =
+      pick ??
+      (await open({
+        multiple: false,
+        directory: false,
+        title: "Image de fond des terminaux",
+        filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"] }],
+      }));
+    if (typeof f !== "string") return;
+    try {
+      await imageUrl(f);
+      p.termBgImage = f;
+    } catch (e) {
+      app.alert((e as { message?: string })?.message ?? String(e));
+    }
+  }
+
+  // preview of the style being set
+  const preview = $derived(fullColors(p.termTheme, p.customThemes));
+  let previewBg = $state("");
+  $effect(() => {
+    const path = p.termBgImage;
+    if (!path) {
+      previewBg = "";
+      return;
+    }
+    imageUrl(path).then((u) => (previewBg = u)).catch(() => (previewBg = ""));
+  });
+  const FITS: Record<string, string> = { cover: "center / cover no-repeat", contain: "center / contain no-repeat", center: "center no-repeat", repeat: "repeat" };
+  const previewStyle = $derived.by(() => {
+    const cell = previewBg ? withAlpha(preview.background, p.termBgOpacity / 100) : preview.background;
+    const back = previewBg ? `linear-gradient(${cell}, ${cell}), url("${previewBg}") ${FITS[p.termBgFit] ?? FITS.cover}, ${preview.background}` : cell;
+    const weight = p.termFontWeight === "normal" ? "400" : p.termFontWeight;
+    return `background: ${back}; color: ${preview.foreground}; font-family: ${p.termFont}; font-size: ${p.termFontSize}px; line-height: ${p.termLineHeight}; letter-spacing: ${p.termLetterSpacing}px; font-weight: ${weight};`;
+  });
+  const boldWeight = $derived(p.termFontWeightBold === "bold" ? "700" : p.termFontWeightBold);
 
   onMount(async () => {
     cfgDir = await api.configPath().catch(() => "");
@@ -98,7 +189,8 @@
   }
 
   function reset() {
-    const keep = { sidebarWidth: p.sidebarWidth };
+    // the user's own themes are kept (they are not settings, they are made)
+    const keep = { sidebarWidth: p.sidebarWidth, customThemes: p.customThemes };
     p = { ...structuredClone(DEFAULT_PREFS), ...keep };
   }
 
@@ -167,32 +259,8 @@
       </fieldset>
     {:else if tab === "terminal"}
       <fieldset>
-        <legend>Apparence par défaut des nouvelles sessions</legend>
-        <div class="grid">
-          <label for="tf">Police</label>
-          <select id="tf" bind:value={p.termFont}>
-            {#each FONTS as f (f)}<option value={f}>{fontLabel(f)}</option>{/each}
-          </select>
-          <label for="ts">Taille</label>
-          <input id="ts" type="number" min="6" max="40" bind:value={p.termFontSize} />
-          <label for="tt">Thème</label>
-          <select id="tt" bind:value={p.termTheme}>
-            <option value="dark">Noir</option>
-            <option value="light">Clair</option>
-            <option value="solarized">Solarized</option>
-            <option value="orbiterm">Orbiterm brun</option>
-            <option value="creme">Orbiterm crème</option>
-            <option value="cyber">Cyberpunk néon</option>
-            <option value="graphite">Gris sombre</option>
-            <option value="graphite-light">Gris clair</option>
-          </select>
-          <label for="tsb">Historique (lignes)</label>
-          <input id="tsb" type="number" min="100" max="200000" step="1000" bind:value={p.termScrollback} />
-        </div>
-        <button onclick={applyToAll} disabled={!app.store.sessions.length}>Appliquer à toutes les sessions enregistrées</button>
-      </fieldset>
-      <fieldset>
         <legend>Comportement de tous les terminaux</legend>
+        <label class="chk" title="Logo de la distribution (Ubuntu, Debian, Fedora, Arch, Windows…) et informations du système : version, noyau, processeur, mémoire, disque, adresse IP. Lu par Orbiterm : rien à installer sur le serveur."><input type="checkbox" bind:checked={p.termFetch} data-term-fetch /> Afficher un résumé du système à l'ouverture d'un shell SSH ou local (logo et informations, façon fastfetch)</label>
         <div class="row">
           <label for="cs">Curseur</label>
           <select id="cs" bind:value={p.cursorStyle}>
@@ -216,6 +284,117 @@
           <button type="button" disabled={!p.termLog} onclick={pickLogDir}>…</button>
         </div>
         <p class="muted">Un fichier par session ouverte (nom de la session, date et heure), sans les codes de couleur. Effet à la prochaine ouverture.</p>
+      </fieldset>
+    {:else if tab === "style"}
+      <div class="preview" style={previewStyle} data-style-preview>
+        <div><span style:color={preview.green} style:font-weight={boldWeight}>claude@serveur</span>:<span style:color={preview.blue} style:font-weight={boldWeight}>~/projets</span>$ ls</div>
+        <div><span style:color={preview.blue}>docs</span>  <span style:color={preview.magenta}>photo.png</span>  <span style:color={preview.green}>deploy.sh</span>  <span style:color={preview.red}>archive.tar.gz</span></div>
+        <div><span style:color={preview.red}>erreur :</span> fichier introuvable · <span style:color={preview.yellow}>attention</span> · <span style:color={preview.cyan}>192.168.0.10</span></div>
+        <div class="swatches">
+          {#each ANSI_KEYS as [k] (k)}<span style:background={preview[k]} title={k}></span>{/each}
+        </div>
+        <div><span style:background={preview.selectionBackground}>texte sélectionné</span> <span class="cur" style:background={preview.cursor} style:color={preview.cursorAccent}>_</span></div>
+      </div>
+
+      <fieldset>
+        <legend>Police et couleurs par défaut des nouvelles sessions</legend>
+        <div class="grid">
+          <label for="tf">Police</label>
+          <select id="tf" value={fontOther || !fontKnown ? "__other" : p.termFont} onchange={(e) => pickFont(e.currentTarget.value)} data-font>
+            {#each FONTS as f (f.label)}<option value={f.family}>{f.label}{f.installed ? "" : " — non installée"}</option>{/each}
+            <option value="__other">Autre police…</option>
+          </select>
+          <label for="ts">Taille</label>
+          <input id="ts" type="number" min="6" max="40" bind:value={p.termFontSize} />
+          {#if fontOther || !fontKnown}
+            <label for="tfo">Nom de la police</label>
+            <input id="tfo" value={firstName(p.termFont)} onchange={(e) => (p.termFont = familyOf(e.currentTarget.value.trim() || "Cascadia Mono"))} spellcheck="false" placeholder="ex. Iosevka Term" />
+            <span></span><span></span>
+          {/if}
+          <label for="tt">Thème</label>
+          <select id="tt" bind:value={p.termTheme} data-term-theme>
+            {#each themeChoices(p.customThemes) as [id, label] (id)}<option value={id}>{label}</option>{/each}
+          </select>
+          <label for="tsb">Historique (lignes)</label>
+          <input id="tsb" type="number" min="100" max="200000" step="1000" bind:value={p.termScrollback} />
+        </div>
+        <p class="muted">Les polices « Nerd Font » ajoutent les icônes des invites décorées (Starship, Powerlevel10k…) ; elles s'installent depuis nerdfonts.com.</p>
+        <button onclick={applyToAll} disabled={!app.store.sessions.length}>Appliquer à toutes les sessions enregistrées</button>
+      </fieldset>
+
+      <fieldset>
+        <legend>Espacements et graisse (tous les terminaux)</legend>
+        <div class="grid">
+          <label for="lh">Interligne</label>
+          <span class="range"><input id="lh" type="range" min="1" max="2" step="0.05" bind:value={p.termLineHeight} data-line-height /> {Number(p.termLineHeight).toFixed(2)}</span>
+          <label for="ls">Espace entre les lettres</label>
+          <span class="range"><input id="ls" type="range" min="0" max="5" step="0.5" bind:value={p.termLetterSpacing} /> {p.termLetterSpacing} px</span>
+          <label for="fw">Texte normal</label>
+          <select id="fw" bind:value={p.termFontWeight}>{#each WEIGHTS.filter(([w]) => w !== "800") as [w, l] (w)}<option value={w}>{l}</option>{/each}</select>
+          <label for="fwb">Texte gras</label>
+          <select id="fwb" bind:value={p.termFontWeightBold}>{#each WEIGHTS.filter(([w]) => w !== "300") as [w, l] (w)}<option value={w}>{l}</option>{/each}</select>
+        </div>
+      </fieldset>
+
+      <fieldset data-themes>
+        <legend>Thèmes de couleurs personnalisés</legend>
+        {#each p.customThemes as t (t.id)}
+          <div class="row theme-row">
+            <span class="mini" style:background={t.colors.background} style:color={t.colors.foreground}>Aa</span>
+            <span class="grow">{t.name}</span>
+            <button class="small" onclick={() => (editingTheme = editingTheme === t.id ? "" : t.id)} data-theme-edit={t.name}>{editingTheme === t.id ? "Fermer" : "Modifier"}</button>
+            <button class="small" onclick={() => addTheme(t.id, t.name + " (copie)")}>Dupliquer</button>
+            <button class="small" title="Supprimer" aria-label="Supprimer" onclick={() => removeTheme(t.id)}><Icon name="trash" size={14} /></button>
+          </div>
+          {#if editingTheme === t.id && edited}
+            <div class="editor" data-theme-editor>
+              <div class="row">
+                <label for="tn">Nom</label>
+                <input id="tn" bind:value={edited.name} spellcheck="false" />
+              </div>
+              <div class="colors">
+                {#each [...BASE_KEYS, ...ANSI_KEYS] as [k, label] (k)}
+                  <label class="color">
+                    <input type="color" value={edited.colors[k] ?? "#000000"} oninput={(e) => (edited.colors[k] = e.currentTarget.value)} data-color={k} />
+                    <span>{label}</span>
+                  </label>
+                {/each}
+              </div>
+              <p class="muted">L'aperçu en haut montre ce thème s'il est choisi comme thème par défaut.</p>
+            </div>
+          {/if}
+        {:else}
+          <p class="muted">Aucun thème personnalisé.</p>
+        {/each}
+        <div class="row">
+          <button onclick={() => addTheme(p.termTheme, "Mon thème")} data-theme-new><Icon name="plus" size={14} /> Nouveau thème (à partir du thème choisi)</button>
+          <button onclick={() => (importOpen = !importOpen)}>Importer…</button>
+        </div>
+        {#if importOpen}
+          <textarea class="import" bind:value={importText} placeholder={'Colle ici un schéma de couleurs JSON (Windows Terminal : { "name": …, "background": "#…", "foreground": …, "black": … })'} spellcheck="false"></textarea>
+          <div class="row"><button onclick={importTheme} disabled={!importText.trim()}>Importer ce thème</button></div>
+        {/if}
+      </fieldset>
+
+      <fieldset>
+        <legend>Image de fond (tous les terminaux)</legend>
+        <div class="row">
+          <input class="grow" readonly value={p.termBgImage} placeholder="(aucune)" data-bg-path />
+          <button onclick={pickBackground} data-bg-pick>Choisir…</button>
+          <button onclick={() => (p.termBgImage = "")} disabled={!p.termBgImage}>Retirer</button>
+        </div>
+        <div class="grid">
+          <label for="bgf">Ajustement</label>
+          <select id="bgf" bind:value={p.termBgFit} disabled={!p.termBgImage}>
+            <option value="cover">Remplir (recadrée)</option>
+            <option value="contain">Adapter (entière)</option>
+            <option value="center">Centrer (taille réelle)</option>
+            <option value="repeat">Mosaïque</option>
+          </select>
+          <label for="bgo">Voile du thème</label>
+          <span class="range"><input id="bgo" type="range" min="0" max="100" step="5" bind:value={p.termBgOpacity} disabled={!p.termBgImage} /> {p.termBgOpacity} %</span>
+        </div>
+        <p class="muted">Le voile est la couleur de fond du thème posée sur l'image : plus il est opaque, plus le texte reste lisible.</p>
       </fieldset>
     {:else if tab === "ssh"}
       <fieldset>
@@ -434,5 +613,80 @@
   .dlg {
     min-width: 90px;
     justify-content: center;
+  }
+  .preview {
+    border: 1px solid var(--chrome-border-dark);
+    border-radius: 4px;
+    padding: 8px 10px;
+    margin: 0 0 10px;
+    overflow: hidden;
+  }
+  .preview > div {
+    white-space: pre;
+  }
+  .preview .swatches {
+    white-space: normal;
+    display: flex;
+    gap: 3px;
+    margin: 4px 0;
+  }
+  .preview .swatches span {
+    width: 18px;
+    height: 12px;
+    border-radius: 2px;
+  }
+  .preview .cur {
+    padding: 0 1px;
+  }
+  .range {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    white-space: nowrap;
+  }
+  .range input {
+    flex: 1;
+    min-width: 80px;
+  }
+  .theme-row .mini {
+    width: 34px;
+    text-align: center;
+    border: 1px solid var(--chrome-border);
+    border-radius: 3px;
+    font-family: var(--mono, monospace);
+    font-size: 11px;
+  }
+  .small {
+    padding: 2px 8px;
+    font-size: 12px;
+  }
+  .editor {
+    border: 1px dashed var(--chrome-border-dark);
+    padding: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .colors {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 4px 10px;
+  }
+  .color {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 12px;
+  }
+  .color input {
+    width: 28px;
+    height: 20px;
+    padding: 0;
+    border: 1px solid var(--chrome-border);
+  }
+  .import {
+    min-height: 80px;
+    font-family: var(--mono, monospace);
+    font-size: 11px;
   }
 </style>

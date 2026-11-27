@@ -140,5 +140,6 @@ Base : rapport d'analyse de MobaXterm (`Documents\MobaXterm-Analyse`) et code d'
 22. ✅ (1.0.2) **Raccourcis Windows en fenêtre** (comme RustDesk), **vérification SSH en deux étapes**, **son du bureau à distance d'Ubuntu**.
 23. ✅ (1.0.3) Touche Windows en fenêtre réellement réservée à l'ordinateur distant (crochet clavier dans un processus auxiliaire), bouton « Rechercher les mises à jour maintenant ».
 24. ✅ (version en cours) **Son des bureaux Windows** (TCP et UDP).
+25. ✅ (version en cours) **Personnalisation des terminaux** : éditeur de thèmes de couleurs, polices et espacements, image de fond ; **résumé du système façon fastfetch** à l’ouverture d’un shell (SSH Unix, local, WSL ; pas pour les serveurs SSH Windows, dont la console efface l’écran).
 
 Reste : paquets winget et AUR (en attente de Microsoft et de la réouverture des inscriptions AUR).

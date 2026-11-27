@@ -18,7 +18,7 @@
   import { clipRead, clipWrite } from "./clipboard";
   import { ZmodemBridge } from "./zmodem";
   import { onMount } from "svelte";
-  import { Terminal } from "@xterm/xterm";
+  import { Terminal, type FontWeight } from "@xterm/xterm";
   import { FitAddon } from "@xterm/addon-fit";
   import { WebLinksAddon } from "@xterm/addon-web-links";
   import { SearchAddon } from "@xterm/addon-search";
@@ -29,6 +29,8 @@
   import { attach } from "./bus";
   import type { Prefs } from "./app.svelte";
   import { actionOf } from "./shortcuts";
+  import { imageUrl } from "./termbg";
+  import { isLight, themeColors, withAlpha } from "./termthemes";
 
   let {
     tabKey,
@@ -50,31 +52,6 @@
     oninput?: (data: string) => void;
   } = $props();
   let flash = $state(false);
-
-  const THEMES: Record<string, Record<string, string>> = {
-    dark: { background: "#000000", foreground: "#e6e6e6", cursor: "#e6e6e6", selectionBackground: "#4a5a78" },
-    light: { background: "#ffffff", foreground: "#1d2027", cursor: "#1d2027", selectionBackground: "#b5d0f5",
-      black: "#1d2027", brightBlack: "#5b6470", white: "#c9d1db", brightWhite: "#ffffff", yellow: "#a87b00", brightYellow: "#b88a00" },
-    solarized: { background: "#002b36", foreground: "#93a1a1", cursor: "#93a1a1", selectionBackground: "#2a4a55" },
-    // palette Orbiterm : brun profond / crème / ambre / olive
-    orbiterm: { background: "#28251f", foreground: "#f3ede0", cursor: "#d9a35f", cursorAccent: "#28251f", selectionBackground: "#58402b",
-      black: "#28251f", red: "#c0583f", green: "#8f9a5c", yellow: "#d9a35f", blue: "#7f95a8", magenta: "#b0806a", cyan: "#8fae9c", white: "#d8cfbd",
-      brightBlack: "#62553b", brightRed: "#e07a5f", brightGreen: "#b5c07a", brightYellow: "#f0c27e", brightBlue: "#a3b8c9", brightMagenta: "#d4a38b", brightCyan: "#b3d1bf", brightWhite: "#f3ede0" },
-    creme: { background: "#f3ede0", foreground: "#28251f", cursor: "#9c6f3e", cursorAccent: "#f3ede0", selectionBackground: "#e0cfae",
-      black: "#28251f", red: "#a8432f", green: "#5a6b2e", yellow: "#9c6f3e", blue: "#3f5d78", magenta: "#7e4a5a", cyan: "#3f7466", white: "#cfc5b0",
-      brightBlack: "#62553b", brightRed: "#c0583f", brightGreen: "#696b4d", brightYellow: "#b9853f", brightBlue: "#557a9b", brightMagenta: "#9b6276", brightCyan: "#4f8f7e", brightWhite: "#ffffff" },
-    // néon : nuit bleu-violet, cyan / magenta / jaune
-    cyber: { background: "#05060f", foreground: "#c8f6ff", cursor: "#ff2a8a", cursorAccent: "#05060f", selectionBackground: "#3a1a6e",
-      black: "#0d0e1f", red: "#ff3b6b", green: "#3dffa2", yellow: "#fcee0a", blue: "#3d8bff", magenta: "#ff2a8a", cyan: "#00e5ff", white: "#c8d3ff",
-      brightBlack: "#5b6190", brightRed: "#ff6e93", brightGreen: "#7dffc2", brightYellow: "#fff566", brightBlue: "#7fb2ff", brightMagenta: "#ff6fb5", brightCyan: "#7df3ff", brightWhite: "#ffffff" },
-    // gris classique
-    graphite: { background: "#2b2b2b", foreground: "#dcdcdc", cursor: "#dcdcdc", cursorAccent: "#2b2b2b", selectionBackground: "#214283",
-      black: "#1e1e1e", red: "#e0605a", green: "#7bb662", yellow: "#d9a441", blue: "#5c9ad6", magenta: "#b07cc6", cyan: "#56b6c2", white: "#c8c8c8",
-      brightBlack: "#777b7e", brightRed: "#f0817b", brightGreen: "#9bd17f", brightYellow: "#ebc06b", brightBlue: "#8ab4e8", brightMagenta: "#cba0dd", brightCyan: "#7fd2dc", brightWhite: "#ffffff" },
-    "graphite-light": { background: "#ffffff", foreground: "#1e1e1e", cursor: "#1e1e1e", cursorAccent: "#ffffff", selectionBackground: "#cce4f7",
-      black: "#1e1e1e", red: "#c42b1c", green: "#2e7d32", yellow: "#8f6a00", blue: "#0067c0", magenta: "#8e3a9d", cyan: "#00798c", white: "#c8c8c8",
-      brightBlack: "#6b6b6b", brightRed: "#d9534a", brightGreen: "#3f9443", brightYellow: "#a67c00", brightBlue: "#2f86d6", brightMagenta: "#a857b6", brightCyan: "#1a93a6", brightWhite: "#ffffff" },
-  };
 
   let host: HTMLDivElement;
   let term: Terminal | undefined;
@@ -131,7 +108,27 @@
     found = "";
     term?.focus();
   }
-  const bg = $derived((THEMES[settings.theme] ?? THEMES.dark).background);
+  // colours (built-in or custom theme), and the background image of the settings
+  const colors = $derived(themeColors(settings.theme, prefs.customThemes));
+  const light = $derived(isLight(settings.theme, prefs.customThemes));
+  const tone = $derived(light ? "light" : "dark");
+  let bgUrl = $state("");
+  $effect(() => {
+    const path = prefs.termBgImage;
+    if (!path) {
+      bgUrl = "";
+      return;
+    }
+    imageUrl(path).then((u) => (bgUrl = u)).catch(() => (bgUrl = ""));
+  });
+  /** colour of the cells: transparent over an image (the veil is drawn by the frame, margins included) */
+  const cellBg = $derived(bgUrl ? "rgba(0, 0, 0, 0)" : (colors.background ?? "#000000"));
+  const veil = $derived(withAlpha(colors.background ?? "#000000", prefs.termBgOpacity / 100));
+  const FITS = { cover: "center / cover no-repeat", contain: "center / contain no-repeat", center: "center no-repeat", repeat: "repeat" };
+  const hostBg = $derived(
+    bgUrl ? `linear-gradient(${veil}, ${veil}), url("${bgUrl}") ${FITS[prefs.termBgFit] ?? FITS.cover}, ${colors.background ?? "#000000"}` : cellBg,
+  );
+  const xtermTheme = $derived({ ...colors, background: cellBg });
 
   function sendSize() {
     if (!term || !connId) return;
@@ -164,8 +161,13 @@
       scrollback: settings.scrollback,
       cursorBlink: prefs.cursorBlink,
       cursorStyle: prefs.cursorStyle,
+      lineHeight: prefs.termLineHeight || 1,
+      letterSpacing: prefs.termLetterSpacing || 0,
+      fontWeight: (prefs.termFontWeight || "normal") as FontWeight,
+      fontWeightBold: (prefs.termFontWeightBold || "bold") as FontWeight,
+      allowTransparency: true,
       allowProposedApi: true,
-      theme: THEMES[settings.theme] ?? THEMES.dark,
+      theme: xtermTheme,
     });
     fit = new FitAddon();
     term.loadAddon(fit);
@@ -188,8 +190,8 @@
         scanQueued = false;
         if (!term) return;
         const r = hlLines!.take();
-        if (r && prefs.termHighlight) highlightLines(term, r, settings.theme);
-        cursorPrompt.update(term, settings.theme, prefs.termHighlight);
+        if (r && prefs.termHighlight) highlightLines(term, r, tone);
+        cursorPrompt.update(term, tone, prefs.termHighlight);
         flushLog(false);
       });
     });
@@ -307,6 +309,18 @@
       term.options.cursorBlink = blink;
     }
   });
+  $effect(() => {
+    const o = {
+      lineHeight: prefs.termLineHeight || 1,
+      letterSpacing: prefs.termLetterSpacing || 0,
+      fontWeight: (prefs.termFontWeight || "normal") as FontWeight,
+      fontWeightBold: (prefs.termFontWeightBold || "bold") as FontWeight,
+      theme: xtermTheme,
+    };
+    if (!term) return;
+    Object.assign(term.options, o);
+    refit();
+  });
 
   // Becoming visible: re-fit and focus.
   $effect(() => {
@@ -328,7 +342,7 @@
   });
 </script>
 
-<div class="term" class:flash bind:this={host} style:background={bg} style:--term-bg={bg}></div>
+<div class="term" class:flash bind:this={host} style:background={hostBg} style:--term-bg={cellBg}></div>
 {#if searchOpen}
   <div class="find" role="search">
     <input

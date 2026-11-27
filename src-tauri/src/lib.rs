@@ -38,6 +38,7 @@ pub mod serial;
 pub mod scp;
 pub mod sftp;
 pub mod ssh;
+pub mod sysfetch;
 pub mod telnet;
 pub mod terminal;
 pub mod termlog;
@@ -212,6 +213,7 @@ pub fn run() {
             commands::update_mode,
             commands::update_download,
             commands::update_launch,
+            commands::image_data_url,
             commands::ssh_cwd,
             commands::text_write,
             tools_commands::servers_status,

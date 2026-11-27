@@ -4,6 +4,8 @@
   import Modal from "./Modal.svelte";
   import Icon from "./Icon.svelte";
   import { app } from "./app.svelte";
+  import { themeChoices } from "./termthemes";
+  import { fontChoices } from "./fonts";
   import { api, IS_WINDOWS, RDP_KEYS_DEFAULT, newForward, PROTOCOLS, protocol, viewOf, type Session } from "./api";
 
   let { session }: { session: Session } = $props();
@@ -392,19 +394,13 @@
         <div class="grid">
           <label class="lbl" for="ff">Police</label>
           <div class="row">
-            <input id="ff" bind:value={s.terminal.font_family} spellcheck="false" />
+            <input id="ff" bind:value={s.terminal.font_family} spellcheck="false" list="ff-fonts" />
+            <datalist id="ff-fonts">{#each fontChoices() as f (f.label)}<option value={f.family}>{f.label}{f.installed ? "" : " (non installée)"}</option>{/each}</datalist>
             <input class="port" type="number" min="6" max="40" bind:value={s.terminal.font_size} aria-label="Taille de police" />
           </div>
           <label class="lbl" for="th">Thème</label>
           <select id="th" bind:value={s.terminal.theme}>
-            <option value="dark">Noir</option>
-            <option value="light">Clair</option>
-            <option value="solarized">Solarized sombre</option>
-            <option value="orbiterm">Orbiterm brun</option>
-            <option value="creme">Orbiterm crème</option>
-            <option value="cyber">Cyberpunk néon</option>
-            <option value="graphite">Gris sombre</option>
-            <option value="graphite-light">Gris clair</option>
+            {#each themeChoices(app.prefs.customThemes) as [id, label] (id)}<option value={id}>{label}</option>{/each}
           </select>
           <label class="lbl" for="sbk">Lignes d'historique</label>
           <input id="sbk" class="port" type="number" min="100" max="200000" step="1000" bind:value={s.terminal.scrollback} />

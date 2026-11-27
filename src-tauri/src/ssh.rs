@@ -151,6 +151,8 @@ pub struct ConnectParams {
     pub agent_forward: bool,
     /// welcome box written before the server output (Some = shown; value = SFTP browser on)
     pub banner: Option<bool>,
+    /// system summary (logo + facts, like fastfetch) written when the shell opens
+    pub fetch: bool,
     /// asks the user the questions of a two-factor login (None: hidden prompts get the password)
     pub auth_prompter: Option<AuthPrompter>,
 }
@@ -174,6 +176,7 @@ impl ConnectParams {
             agent: false,
             agent_forward: false,
             banner: None,
+            fetch: false,
             auth_prompter: None,
         }
     }
@@ -496,6 +499,38 @@ async fn open_transport(
     }
 }
 
+/// Runs a command on a separate channel (no PTY) of `handle` and returns its standard output.
+async fn capture_on(handle: &Handle<ClientHandler>, cmd: &str, timeout: Duration) -> AppResult<String> {
+    let mut ch = handle.channel_open_session().await?;
+    ch.exec(true, cmd).await?;
+    let mut out = Vec::new();
+    let read = async {
+        while let Some(m) = ch.wait().await {
+            match m {
+                ChannelMsg::Data { data } => {
+                    if out.len() < 1 << 20 {
+                        out.extend_from_slice(&data);
+                    }
+                }
+                ChannelMsg::Eof | ChannelMsg::Close => break,
+                _ => {}
+            }
+        }
+    };
+    if tokio::time::timeout(timeout, read).await.is_err() {
+        let _ = ch.close().await;
+        return Err(AppError::Timeout);
+    }
+    Ok(String::from_utf8_lossy(&out).into_owned())
+}
+
+/// The fastfetch-like summary of a Unix-like server, or None (Windows servers: their console
+/// clears the screen when the shell starts, the summary would be wiped at once).
+async fn system_summary(handle: &Handle<ClientHandler>, cols: u32) -> Option<String> {
+    let out = capture_on(handle, &crate::sysfetch::unix_command(), Duration::from_secs(4)).await.ok()?;
+    Some(crate::sysfetch::render(&crate::sysfetch::parse(&out)?, cols))
+}
+
 impl SshConnection {
     pub async fn connect(
         p: ConnectParams,
@@ -549,6 +584,14 @@ impl SshConnection {
         let mut handle =
             open_transport(config, &p.host, p.port, &p.known_hosts, prompter, shared.clone(), jump.as_ref()).await?;
         authenticate(&mut handle, &p.host, &p.username, p.credentials, p.agent, p.auth_prompter).await?;
+
+        // system summary first (its own channel, before the shell prints anything)
+        if p.fetch
+            && matches!(p.mode, ShellMode::Shell)
+            && let Some(text) = system_summary(&handle, p.cols).await
+        {
+            on_data(text.into_bytes());
+        }
 
         let writer = match p.mode {
             ShellMode::None => None,
@@ -725,27 +768,7 @@ impl SshConnection {
 
     /// Runs a command on a separate channel (no PTY) and returns its standard output.
     pub async fn exec_capture(&self, cmd: &str, timeout: Duration) -> AppResult<String> {
-        let mut ch = self.handle.channel_open_session().await?;
-        ch.exec(true, cmd).await?;
-        let mut out = Vec::new();
-        let read = async {
-            while let Some(m) = ch.wait().await {
-                match m {
-                    ChannelMsg::Data { data } => {
-                        if out.len() < 1 << 20 {
-                            out.extend_from_slice(&data);
-                        }
-                    }
-                    ChannelMsg::Eof | ChannelMsg::Close => break,
-                    _ => {}
-                }
-            }
-        };
-        if tokio::time::timeout(timeout, read).await.is_err() {
-            let _ = ch.close().await;
-            return Err(AppError::Timeout);
-        }
-        Ok(String::from_utf8_lossy(&out).into_owned())
+        capture_on(&self.handle, cmd, timeout).await
     }
 
     /// Starts a port forwarding on this connection. Returns the listening port.
