@@ -1,6 +1,6 @@
 # Orbiterm face à MobaXterm — fonctionnalités
 
-Base : rapport d'analyse de MobaXterm (`Documents\MobaXterm-Analyse`) et code d'Orbiterm (v0.7.6, mis à jour jusqu’à la v1.0.1 et la version en cours).
+Base : rapport d'analyse de MobaXterm (`Documents\MobaXterm-Analyse`) et code d'Orbiterm (v0.7.6, mis à jour jusqu’à la v1.0.2).
 ✅ présent · 🟡 partiel · ❌ absent · ⛔ écarté volontairement
 
 ## Sessions
@@ -37,7 +37,7 @@ Base : rapport d'analyse de MobaXterm (`Documents\MobaXterm-Analyse`) et code d'
 | Agent SSH (MobAgent, Pageant), transfert d'agent | ✅ 0.7.14 (agent Orbiterm : clés chargées en mémoire, au démarrage si voulu ; agent du système : OpenSSH / Pageant / SSH_AUTH_SOCK ; transfert d'agent en option) |
 | Encadré d'accueil de la session SSH (options actives : X11, compression, SFTP…) | ✅ 0.9.7 (rebond, compression, SFTP, X11 accepté ou refusé par le serveur, transfert d'agent ; désactivable) |
 | Coloration du terminal | ✅ 0.9.7 étendue : états (running, stopped…), adresses IPv4 / IPv6 / MAC, dates, liens, invite du shell quand le serveur ne la colore pas |
-| Vérification en deux étapes (code à usage unique, PIN, Duo : questions « keyboard-interactive » du serveur) | ✅ version en cours (fenêtre de saisie ; le mot de passe mémorisé répond seul à « Password » ; seconde méthode après une clé ou l'agent) |
+| Vérification en deux étapes (code à usage unique, PIN, Duo : questions « keyboard-interactive » du serveur) | ✅ 1.0.2 (fenêtre de saisie ; le mot de passe mémorisé répond seul à « Password » ; seconde méthode après une clé ou l'agent) |
 | Délais de connexion (serveur injoignable) | ✅ 0.8.7 (15 s pour joindre le serveur, 30 s de silence pendant l'échange de clés, 90 s pour l'authentification) |
 
 ## Navigateur SFTP
@@ -63,12 +63,12 @@ Base : rapport d'analyse de MobaXterm (`Documents\MobaXterm-Analyse`) et code d'
 |---|---|
 | RDP intégré, presse-papiers, lecteurs redirigés, rebond SSH | ✅ (presse-papiers avec Windows en transport UDP : 1.0.1) |
 | Passerelle RDP (RD Gateway), multi-écran | ✅ 0.7.13 : multi-écran (tous les écrans du poste, plein écran sur tous) ; passerelle RD (HTTPS/WebSocket, Basic/NTLM/Negotiate, compte de la session ou compte propre, certificat vérifié ; aussi pour mstsc / FreeRDP) |
-| Son RDP | ✅ 0.7.11 (lu dans l'onglet ; option de session « Son ») ; avec le bureau à distance d'Ubuntu (GNOME Remote Desktop, canal AUDIO_PLAYBACK_DVC) : version en cours |
+| Son RDP | ✅ 0.7.11 (lu dans l'onglet ; option de session « Son ») ; avec le bureau à distance d'Ubuntu (GNOME Remote Desktop, canal AUDIO_PLAYBACK_DVC) : 1.0.2 |
 | Image transmise en H.264 (pipeline graphique, comme mstsc) | ✅ 0.8.9 Windows (décodage par Windows), 0.9.1 Linux (GStreamer : VA-API ou processeur) ; 10 à 30 fois moins de données que les images bitmap |
 | Affichage par la carte graphique | ✅ 0.8.8 (WebGL), 0.9.3 image composée par la carte graphique (Windows et Linux) |
 | Qualité de l'image par session (réseau local, lien lent / VPN, automatique) | ✅ 0.8.8 (l'automatique mesure le lien ; le serveur adapte l'image pendant la session, 0.9.0) |
 | Plein écran comme le Bureau à distance de Windows | ✅ 0.9.0 : barre de connexion escamotable en haut, touche Windows / Super, Alt+Tab, Ctrl+Échap, Alt+F4 envoyés à l'ordinateur distant ; F11 (0.9.6) |
-| Raccourcis Windows envoyés à l'ordinateur distant même en fenêtre (comme RustDesk) | ✅ version en cours : par défaut sous Windows dès que le bureau distant a le clavier ; Ctrl+Alt+Pause bascule le plein écran |
+| Raccourcis Windows envoyés à l'ordinateur distant même en fenêtre (comme RustDesk) | ✅ 1.0.2 : par défaut sous Windows dès que le bureau distant a le clavier ; Ctrl+Alt+Pause bascule le plein écran |
 | Échelle d'affichage transmise au serveur (125 %, 150 %) | ✅ 0.9.0 (suit le passage de la fenêtre sur un autre écran ; option automatique / 100 %) |
 | Reconnexion automatique (veille, coupure Wi-Fi) | ✅ 0.9.0 (2 s, 5 s, 15 s… bandeau « Connexion perdue » avec Annuler ; activée par défaut en RDP, optionnelle en SSH) |
 | Transport UDP (comme mstsc) | ✅ 0.9.5 (repli TCP automatique ; utile sur VPN et liens avec pertes) |
@@ -137,6 +137,6 @@ Base : rapport d'analyse de MobaXterm (`Documents\MobaXterm-Analyse`) et code d'
 20. ✅ (0.9.8 – 1.0.0) **Bureau à distance d'Ubuntu** (GNOME Remote Desktop) : redirection vers l'écran de connexion puis la session, authentification RDSTLS, fermeture de session propre.
 
 21. ✅ (1.0.1) **Presse-papiers RDP avec Windows en UDP** : Windows passe alors par un canal dynamique « cliprdr » mais écoute les réponses sur le canal statique.
-22. ✅ (version en cours) **Raccourcis Windows en fenêtre** (comme RustDesk), **vérification SSH en deux étapes**, **son du bureau à distance d'Ubuntu**.
+22. ✅ (1.0.2) **Raccourcis Windows en fenêtre** (comme RustDesk), **vérification SSH en deux étapes**, **son du bureau à distance d'Ubuntu**.
 
 Reste : paquets winget et AUR (en attente de Microsoft et de la réouverture des inscriptions AUR).
