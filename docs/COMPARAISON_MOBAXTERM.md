@@ -1,6 +1,6 @@
 # Orbiterm face à MobaXterm — fonctionnalités
 
-Base : rapport d'analyse de MobaXterm (`Documents\MobaXterm-Analyse`) et code d'Orbiterm (v0.7.6, mis à jour jusqu’à la v1.0.3).
+Base : rapport d'analyse de MobaXterm (`Documents\MobaXterm-Analyse`) et code d'Orbiterm (v0.7.6, mis à jour jusqu’à la v1.0.4).
 ✅ présent · 🟡 partiel · ❌ absent · ⛔ écarté volontairement
 
 ## Sessions
@@ -63,7 +63,7 @@ Base : rapport d'analyse de MobaXterm (`Documents\MobaXterm-Analyse`) et code d'
 |---|---|
 | RDP intégré, presse-papiers, lecteurs redirigés, rebond SSH | ✅ (presse-papiers avec Windows en transport UDP : 1.0.1) |
 | Passerelle RDP (RD Gateway), multi-écran | ✅ 0.7.13 : multi-écran (tous les écrans du poste, plein écran sur tous) ; passerelle RD (HTTPS/WebSocket, Basic/NTLM/Negotiate, compte de la session ou compte propre, certificat vérifié ; aussi pour mstsc / FreeRDP) |
-| Son RDP | ✅ 0.7.11 (lu dans l'onglet ; option de session « Son ») ; avec le bureau à distance d'Ubuntu (GNOME Remote Desktop, canal AUDIO_PLAYBACK_DVC) : 1.0.2 ; avec Windows : version en cours (Windows ne redirige le son que si le client a aussi le canal des périphériques RDPDR, qu'il ouvre en canal dynamique en UDP) |
+| Son RDP | ✅ 0.7.11 (lu dans l'onglet ; option de session « Son ») ; avec le bureau à distance d'Ubuntu (GNOME Remote Desktop, canal AUDIO_PLAYBACK_DVC) : 1.0.2 ; avec Windows : 1.0.4 (Windows ne redirige le son que si le client a aussi le canal des périphériques RDPDR, qu'il ouvre en canal dynamique en UDP) |
 | Image transmise en H.264 (pipeline graphique, comme mstsc) | ✅ 0.8.9 Windows (décodage par Windows), 0.9.1 Linux (GStreamer : VA-API ou processeur) ; 10 à 30 fois moins de données que les images bitmap |
 | Affichage par la carte graphique | ✅ 0.8.8 (WebGL), 0.9.3 image composée par la carte graphique (Windows et Linux) |
 | Qualité de l'image par session (réseau local, lien lent / VPN, automatique) | ✅ 0.8.8 (l'automatique mesure le lien ; le serveur adapte l'image pendant la session, 0.9.0) |
@@ -139,7 +139,7 @@ Base : rapport d'analyse de MobaXterm (`Documents\MobaXterm-Analyse`) et code d'
 21. ✅ (1.0.1) **Presse-papiers RDP avec Windows en UDP** : Windows passe alors par un canal dynamique « cliprdr » mais écoute les réponses sur le canal statique.
 22. ✅ (1.0.2) **Raccourcis Windows en fenêtre** (comme RustDesk), **vérification SSH en deux étapes**, **son du bureau à distance d'Ubuntu**.
 23. ✅ (1.0.3) Touche Windows en fenêtre réellement réservée à l'ordinateur distant (crochet clavier dans un processus auxiliaire), bouton « Rechercher les mises à jour maintenant ».
-24. ✅ (version en cours) **Son des bureaux Windows** (TCP et UDP).
-25. ✅ (version en cours) **Personnalisation des terminaux** : éditeur de thèmes de couleurs, polices et espacements, image de fond ; **résumé du système façon fastfetch** à l’ouverture d’un shell (SSH Unix, local, WSL ; pas pour les serveurs SSH Windows, dont la console efface l’écran).
+24. ✅ (1.0.4) **Son des bureaux Windows** (TCP et UDP).
+25. ✅ (1.0.4) **Personnalisation des terminaux** : éditeur de thèmes de couleurs, polices et espacements, image de fond ; **résumé du système façon fastfetch** à l’ouverture d’un shell (SSH Unix, local, WSL ; pas pour les serveurs SSH Windows, dont la console efface l’écran).
 
 Reste : paquets winget et AUR (en attente de Microsoft et de la réouverture des inscriptions AUR).
