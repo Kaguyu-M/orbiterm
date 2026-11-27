@@ -516,6 +516,9 @@
     app.init();
     const updTimer = setTimeout(startupUpdateCheck, 5000);
     unsubs.push(() => clearTimeout(updTimer));
+    // "check now" button of the settings
+    window.addEventListener("orbiterm-update-check", runUpdateCheck);
+    unsubs.push(() => window.removeEventListener("orbiterm-update-check", runUpdateCheck));
     listen<HostKeyPrompt>("hostkey-prompt", (e) => app.hostKeys.push(e.payload)).then((u) => unsubs.push(u));
     listen<AuthPrompt>("auth-prompt", (e) => app.authAsks.push({ ...e.payload, answers: e.payload.prompts.map(() => "") })).then((u) =>
       unsubs.push(u),
@@ -912,11 +915,13 @@
             Recherche de mises à jour…
           {:else if upd.state === "error"}
             <span class="error">Vérification impossible : {upd.msg}</span>
+            <button class="link" onclick={runUpdateCheck} data-update-again>Réessayer</button>
           {:else if upd.state === "done" && upd.info?.newer}
             <b>Version {upd.info.latest} disponible.</b>
             <button class="link" onclick={() => ((about = false), (offer = upd.info!))} data-update-open>Mettre à jour…</button>
           {:else if upd.state === "done"}
             Orbiterm est à jour.
+            <button class="link" onclick={runUpdateCheck} data-update-again>Rechercher à nouveau</button>
           {:else}
             <button class="link" onclick={runUpdateCheck}>Rechercher les mises à jour</button>
           {/if}

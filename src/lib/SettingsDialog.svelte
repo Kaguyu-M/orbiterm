@@ -133,6 +133,14 @@
         <label class="chk"><input type="checkbox" bind:checked={p.closeOnEnd} data-close-on-end /> Fermer l'onglet et revenir à l'accueil quand on quitte une session (exit, déconnexion)</label>
         <label class="chk"><input type="checkbox" bind:checked={p.updateCheck} data-update-check /> Rechercher les mises à jour au démarrage (rien n'est installé sans votre accord)</label>
         <div class="row">
+          <button
+            onclick={() => {
+              app.showSettings = false;
+              window.dispatchEvent(new Event("orbiterm-update-check"));
+            }}
+            data-update-now><Icon name="refresh" size={14} /> Rechercher les mises à jour maintenant</button>
+        </div>
+        <div class="row">
           <label for="defsh">Terminal local par défaut</label>
           <select id="defsh" bind:value={p.defaultShell}>
             <option value="">(premier détecté{app.shells[0] ? ` : ${app.shells[0].label}` : ""})</option>
