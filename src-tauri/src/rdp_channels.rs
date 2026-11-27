@@ -161,6 +161,45 @@ pub fn share_name(dir: &Path) -> String {
     if name.trim_matches('_').is_empty() { "Orbiterm".into() } else { name }
 }
 
+/// Device redirection channel with no device: Windows only redirects the sound (RDPSND)
+/// of a client that also has RDPDR (FreeRDP opens it with the sound for the same reason).
+pub fn empty_device_channel() -> Rdpdr {
+    Rdpdr::new(Box::new(ironrdp_rdpdr::NoopRdpdrBackend), hostname())
+}
+
+/// Device redirection over UDP: as with the clipboard, Windows opens a dynamic channel named
+/// "rdpdr" instead of using the static one; its PDUs are handed to the static channel's
+/// processor (session loop), which answers on the static channel. Without it Windows never
+/// starts the device redirection, and with it the sound.
+#[derive(Debug)]
+pub struct RdpdrDvc {
+    tx: mpsc::UnboundedSender<Vec<u8>>,
+}
+
+ironrdp_core::impl_as_any!(RdpdrDvc);
+
+impl DvcProcessor for RdpdrDvc {
+    fn channel_name(&self) -> &str {
+        "rdpdr"
+    }
+
+    fn start(&mut self, _channel_id: u32) -> PduResult<Vec<DvcMessage>> {
+        Ok(Vec::new())
+    }
+
+    fn process(&mut self, _channel_id: u32, payload: &[u8]) -> PduResult<Vec<DvcMessage>> {
+        let _ = self.tx.send(payload.to_vec());
+        Ok(Vec::new())
+    }
+}
+
+impl DvcClientProcessor for RdpdrDvc {}
+
+pub fn rdpdr_dvc() -> (RdpdrDvc, mpsc::UnboundedReceiver<Vec<u8>>) {
+    let (tx, rx) = mpsc::unbounded_channel();
+    (RdpdrDvc { tx }, rx)
+}
+
 /// RDPDR channel sharing `dir` (read/write) with the remote computer.
 pub fn drive_channel(dir: &Path) -> Result<Rdpdr, String> {
     let dir = dir.canonicalize().map_err(|e| format!("{} : {e}", dir.display()))?;
@@ -278,6 +317,23 @@ fn hostname() -> String {
 mod tests {
     use super::*;
 
+    /// Windows over UDP: RDPDR comes on a dynamic channel named "rdpdr", handed as is to the
+    /// static channel's processor; nothing is answered on the dynamic channel.
+    #[test]
+    fn dynamic_rdpdr_channel_forwards_to_static() {
+        use ironrdp_dvc::DvcProcessor;
+        let (mut dvc, mut rx) = rdpdr_dvc();
+        assert_eq!(dvc.channel_name(), "rdpdr");
+        assert!(dvc.start(14).unwrap().is_empty());
+        // Server Announce Request (component "rD", packet "nI", version 1.13, client id 3)
+        let pdu = [0x72, 0x44, 0x6e, 0x49, 0x01, 0x00, 0x0d, 0x00, 0x03, 0x00, 0x00, 0x00];
+        assert!(dvc.process(14, &pdu).unwrap().is_empty());
+        assert_eq!(rx.try_recv().unwrap(), pdu);
+        // and the static processor understands it
+        let mut rdpdr = empty_device_channel();
+        assert!(!ironrdp_svc::SvcProcessor::process(&mut rdpdr, &pdu).unwrap().is_empty());
+    }
+
     /// GNOME Remote Desktop: formats then a 1024-byte training on AUDIO_PLAYBACK_DVC; the
     /// confirm must echo the whole PDU size or the server drops the channel.
     #[test]
@@ -383,6 +439,9 @@ impl ironrdp_rdpsnd::client::RdpsndClientHandler for AudioOut {
     fn wave(&mut self, format: &ironrdp_rdpsnd::pdu::AudioFormat, _ts: u32, data: std::borrow::Cow<'_, [u8]>) {
         if format.format != ironrdp_rdpsnd::pdu::WaveFormat::PCM || format.bits_per_sample != 16 || format.n_channels == 0 {
             return;
+        }
+        if self.end.is_none() {
+            log::info!("RDP : son reçu ({} Hz, {} voie(s))", format.n_samples_per_sec, format.n_channels);
         }
         let mut m = Vec::with_capacity(6 + data.len());
         m.push(AUDIO_FRAME);

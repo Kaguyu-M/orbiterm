@@ -841,6 +841,8 @@ struct Channels {
     /// sound frames for the tab
     audio: Option<mpsc::UnboundedReceiver<Vec<u8>>>,
     drive: bool,
+    /// RDPDR PDUs received on the dynamic channel (Windows over UDP)
+    rdpdr: Option<mpsc::UnboundedReceiver<Vec<u8>>>,
     /// UDP transport the dynamic channels may move onto (see crate::rdp_udp)
     udp: Option<ironrdp_rdpeudp_tokio::UdpTransport>,
 }
@@ -909,6 +911,14 @@ async fn establish(
         dvc = dvc.with_dynamic_channel(rdpsnd_dvc);
         audio_static = Some((rdpsnd, rx));
     }
+    // device redirection (shared folder, and needed by Windows for the sound): the dynamic
+    // channel Windows uses over UDP
+    let mut rdpdr_rx = None;
+    if p.sound || p.share_dir.is_some() {
+        let (rdpdr_dvc, rx) = rdp_channels::rdpdr_dvc();
+        dvc = dvc.with_dynamic_channel(rdpdr_dvc);
+        rdpdr_rx = Some(rx);
+    }
     let mut gpu_queue = None;
     if gfx_enabled() {
         // IronRDP composes the pipeline's picture into the session image after each PDU, unless
@@ -953,7 +963,7 @@ async fn establish(
             connector = connector.with_rdstls();
         }
     }
-    let mut channels = Channels { clip: None, gpu: gpu_queue, drive: false, audio: None, udp: None };
+    let mut channels = Channels { clip: None, gpu: gpu_queue, drive: false, audio: None, rdpdr: rdpdr_rx, udp: None };
     if let Some(cliprdr) = clip_static {
         connector.attach_static_channel(cliprdr);
         channels.clip = clip_rx;
@@ -965,6 +975,10 @@ async fn establish(
         channels.drive = true;
     }
     if let Some((rdpsnd, rx)) = audio_static {
+        if !channels.drive {
+            // Windows redirects the sound only to clients that also have RDPDR
+            connector.attach_static_channel(rdp_channels::empty_device_channel());
+        }
         connector.attach_static_channel(rdpsnd);
         channels.audio = Some(rx);
     } else if channels.drive {
@@ -1490,7 +1504,7 @@ async fn active_session(
     let mut last_pointer: Option<Vec<u8>> = None;
     // last network measurement of the server (message for the tab)
     let mut link: Option<Vec<u8>> = None;
-    let Channels { clip: mut clip_rx, gpu: gpu_queue, drive, audio: mut audio_rx, mut udp } = channels;
+    let Channels { clip: mut clip_rx, gpu: gpu_queue, drive, audio: mut audio_rx, rdpdr: mut rdpdr_rx, mut udp } = channels;
     // the response accepting the tunnel has gone out: the server may now move channels onto it
     if udp.is_some() {
         stage.enable_reliable_udp_dvc_tunnel().map_err(|e| e.to_string())?;
@@ -1640,6 +1654,25 @@ async fn active_session(
                     None => audio_rx = None,
                 }
                 continue;
+            }
+            pdu = async {
+                match rdpdr_rx.as_mut() {
+                    Some(rx) => rx.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                let Some(pdu) = pdu else {
+                    rdpdr_rx = None;
+                    continue;
+                };
+                // received on the dynamic channel: processed (and answered) by the static one
+                let Some(rdpdr) = stage.get_svc_processor_mut::<Rdpdr>() else { continue };
+                let msgs = ironrdp_svc::SvcProcessor::process(rdpdr, &pdu).map_err(|e| e.to_string())?;
+                if !msgs.is_empty() {
+                    let frame = stage.process_svc_messages_by_name(&Rdpdr::NAME, msgs).map_err(|e| e.to_string())?;
+                    writer.write_all(&frame).await.map_err(|e| e.to_string())?;
+                }
+                Vec::new()
             }
             ev = async {
                 match clip_rx.as_mut() {
