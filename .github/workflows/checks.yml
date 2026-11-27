@@ -67,6 +67,8 @@ jobs:
             echo "apt : tentative $i échouée — miroir de secours archive.ubuntu.com"
             echo "http://archive.ubuntu.com/ubuntu/" | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
             sudo sed -i 's#http://azure.archive.ubuntu.com/ubuntu#http://archive.ubuntu.com/ubuntu#g' /etc/apt/sources.list.d/*.sources /etc/apt/sources.list 2>/dev/null || true
+            # third-party repositories of the runner image (packages.microsoft.com answered 403 on 2026-11-27): not needed
+            grep -l "packages.microsoft.com" /etc/apt/sources.list.d/* 2>/dev/null | xargs -r sudo rm -f
             sleep 10
           done
           exit 1
