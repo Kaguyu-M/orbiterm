@@ -141,6 +141,6 @@ Base : rapport d'analyse de MobaXterm (`Documents\MobaXterm-Analyse`) et code d'
 23. ✅ (1.0.3) Touche Windows en fenêtre réellement réservée à l'ordinateur distant (crochet clavier dans un processus auxiliaire), bouton « Rechercher les mises à jour maintenant ».
 24. ✅ (1.0.4) **Son des bureaux Windows** (TCP et UDP).
 25. ✅ (1.0.4) **Personnalisation des terminaux** : éditeur de thèmes de couleurs, polices et espacements, image de fond ; **résumé du système façon fastfetch** à l’ouverture d’un shell (SSH Unix, local, WSL ; pas pour les serveurs SSH Windows, dont la console efface l’écran).
-26. ✅ (version en cours) **Nerd Fonts intégrées** (JetBrains Mono, CaskaydiaCove, Fira Code, Hack ; variantes « Mono », licences OFL / MIT dans `static/fonts`) ; résumé du système affiché sous l’encadré d’accueil ; case « Mémoriser » proposée pour toute session enregistrée (les sessions importées d’un autre ordinateur arrivent sans mot de passe mémorisé).
+26. ✅ (1.0.5) **Nerd Fonts intégrées** (JetBrains Mono, CaskaydiaCove, Fira Code, Hack ; variantes « Mono », licences OFL / MIT dans `static/fonts`) ; résumé du système affiché sous l’encadré d’accueil ; case « Mémoriser » proposée pour toute session enregistrée (les sessions importées d’un autre ordinateur arrivent sans mot de passe mémorisé).
 
 Reste : paquets winget et AUR (en attente de Microsoft et de la réouverture des inscriptions AUR).
