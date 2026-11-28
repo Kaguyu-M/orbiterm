@@ -30,6 +30,7 @@
   import type { Prefs } from "./app.svelte";
   import { actionOf } from "./shortcuts";
   import { imageUrl } from "./termbg";
+  import { ensureLoaded } from "./fonts";
   import { isLight, themeColors, withAlpha } from "./termthemes";
 
   let {
@@ -178,6 +179,14 @@
       found = resultCount === 0 ? "aucun résultat" : resultIndex >= 0 ? `${resultIndex + 1} / ${resultCount}` : `${resultCount}`;
     });
     term.open(host);
+    // a font shipped with Orbiterm is read on first use: measure the cells again once it is there
+    ensureLoaded(settings.font_family).then((loaded) => {
+      if (!loaded || !term) return;
+      const family = term.options.fontFamily ?? settings.font_family;
+      term.options.fontFamily = "monospace";
+      term.options.fontFamily = family;
+      refit();
+    });
     // completed lines: keywords in colour (error / warning / success) and session log
     hlLines = new LineTracker(term, false);
     const cursorPrompt = new CursorPrompt();

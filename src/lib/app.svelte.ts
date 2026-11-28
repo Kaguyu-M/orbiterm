@@ -592,13 +592,16 @@ class App {
     } catch (e) {
       const err = asApiError(e);
       const who = `${s.username ? s.username + "@" : ""}${s.host}`;
+      // offered for every saved session, ticked when it already remembers its password
+      // (sessions imported from another computer arrive with it off)
       const canStore = !!s.id && s.remember_password;
       const cancelled = { kind: "cancelled", message: "Connexion annulée." };
-      const check = canStore ? "Mémoriser dans le trousseau du système" : undefined;
+      const check = s.id ? "Mémoriser dans le trousseau du système" : undefined;
       switch (err.kind) {
         case "need_password": {
           const r = await this.ask(`${note}Mot de passe pour ${who}`, "", true, check, canStore);
           if (!r) throw cancelled;
+          if (r.checked) await this.rememberPasswords(s);
           return this.withSecrets(s, run, { ...sec, password: r.value, remember: r.checked });
         }
         case "need_jump_password": {
@@ -607,6 +610,7 @@ class App {
           const what = rdgw ? `de la passerelle RD ${ju ? ju + "@" : ""}${s.extra?.rdp_gateway}` : `du rebond SSH ${ju ? ju + "@" : ""}${s.extra?.jump_host}`;
           const r = await this.ask(`${note}Mot de passe ${what}`, "", true, check, canStore);
           if (!r) throw cancelled;
+          if (r.checked) await this.rememberPasswords(s);
           return this.withSecrets(s, run, { ...sec, jump_password: r.value, remember: r.checked });
         }
         case "need_passphrase": {
@@ -628,6 +632,20 @@ class App {
           break;
       }
       throw err;
+    }
+  }
+
+  /** Turns on "remember the password" for a saved session (ticked in the password prompt). */
+  async rememberPasswords(s: Session) {
+    if (!s.id || s.remember_password) return;
+    s.remember_password = true;
+    const stored = this.store.sessions.find((x) => x.id === s.id);
+    if (!stored) return;
+    try {
+      await api.sessionSave({ ...$state.snapshot(stored), remember_password: true } as Session);
+      await this.reload();
+    } catch (e) {
+      this.alert(asApiError(e).message);
     }
   }
 
@@ -995,7 +1013,7 @@ class App {
         s,
         async (sec) => {
           const scale = Math.round((window.devicePixelRatio || 1) * 100);
-          const id = await api.termOpen({ session: snap, cols: guessCols(snap), rows: 32, scale, ...sec });
+          const id = await api.termOpen({ session: { ...snap, remember_password: s.remember_password }, cols: guessCols(snap), rows: 32, scale, ...sec });
           // kept in memory only, to open a separate SFTP session later
           if (sec.password !== undefined || sec.jump_password !== undefined) this.typedSecrets.set(tab.key, { ...sec });
           return id;

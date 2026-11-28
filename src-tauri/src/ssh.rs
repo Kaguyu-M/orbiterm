@@ -585,13 +585,12 @@ impl SshConnection {
             open_transport(config, &p.host, p.port, &p.known_hosts, prompter, shared.clone(), jump.as_ref()).await?;
         authenticate(&mut handle, &p.host, &p.username, p.credentials, p.agent, p.auth_prompter).await?;
 
-        // system summary first (its own channel, before the shell prints anything)
-        if p.fetch
-            && matches!(p.mode, ShellMode::Shell)
-            && let Some(text) = system_summary(&handle, p.cols).await
-        {
-            on_data(text.into_bytes());
-        }
+        // system summary, gathered on its own channel before the shell starts; written
+        // under the welcome box, before anything the shell prints
+        let mut summary = match p.mode {
+            ShellMode::Shell if p.fetch => system_summary(&handle, p.cols).await,
+            _ => None,
+        };
 
         let writer = match p.mode {
             ShellMode::None => None,
@@ -630,8 +629,13 @@ impl SshConnection {
                     // arrives before any output, then the box can say whether X11 works.
                     let mut x11_wait = x11_state == X11State::Accepted;
                     let mut banner = banner_info;
-                    if !x11_wait && let Some(b) = banner.take() {
-                        on_data(crate::banner::render(&b, x11_state).into_bytes());
+                    if !x11_wait {
+                        if let Some(b) = banner.take() {
+                            on_data(crate::banner::render(&b, x11_state).into_bytes());
+                        }
+                        if let Some(t) = summary.take() {
+                            on_data(t.into_bytes());
+                        }
                     }
                     loop {
                         let msg = reader.wait().await;
@@ -644,12 +648,16 @@ impl SshConnection {
                                         let st = if ok { X11State::Accepted } else { X11State::Refused };
                                         on_data(crate::banner::render(&b, st).into_bytes());
                                     }
+                                    if let Some(t) = summary.take() {
+                                        on_data(t.into_bytes());
+                                    }
                                     continue;
                                 }
                                 // output before the answer (unexpected): no box in the middle of it
                                 Some(ChannelMsg::Data { .. } | ChannelMsg::ExtendedData { .. }) | None => {
                                     x11_wait = false;
                                     banner = None;
+                                    summary = None;
                                 }
                                 _ => {}
                             }
