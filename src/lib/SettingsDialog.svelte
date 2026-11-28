@@ -7,7 +7,7 @@
   import { open } from "@tauri-apps/plugin-dialog";
   import { app, DEFAULT_PREFS, UI_THEMES, type Prefs } from "./app.svelte";
   import { ANSI_KEYS, BASE_KEYS, fullColors, parseScheme, themeChoices, withAlpha, type CustomTheme } from "./termthemes";
-  import { familyOf, firstName, fontChoices } from "./fonts";
+  import { canonical, familyOf, firstName, fontChoices } from "./fonts";
   import { imageUrl } from "./termbg";
 
   type TabId = "general" | "terminal" | "style" | "ssh" | "x11" | "display";
@@ -26,7 +26,7 @@
   // ---- style of the terminals: fonts, spacing, colours, background
   const FONTS = fontChoices();
   /** the font list shows the current font even when it is not one of the proposed ones */
-  const fontKnown = $derived(FONTS.some((f) => f.family === p.termFont));
+  const fontKnown = $derived(FONTS.some((f) => f.family === canonical(p.termFont)));
   let fontOther = $state(false);
   function pickFont(v: string) {
     if (v === "__other") {
@@ -300,7 +300,7 @@
         <legend>Police et couleurs par défaut des nouvelles sessions</legend>
         <div class="grid">
           <label for="tf">Police</label>
-          <select id="tf" value={fontOther || !fontKnown ? "__other" : p.termFont} onchange={(e) => pickFont(e.currentTarget.value)} data-font>
+          <select id="tf" value={fontOther || !fontKnown ? "__other" : canonical(p.termFont)} onchange={(e) => pickFont(e.currentTarget.value)} data-font>
             {#each FONTS as f (f.label)}<option value={f.family}>{f.label}{f.installed ? "" : " — non installée"}</option>{/each}
             <option value="__other">Autre police…</option>
           </select>
@@ -318,7 +318,7 @@
           <label for="tsb">Historique (lignes)</label>
           <input id="tsb" type="number" min="100" max="200000" step="1000" bind:value={p.termScrollback} />
         </div>
-        <p class="muted">Les polices « Nerd Font » ajoutent les icônes des invites décorées (Starship, Powerlevel10k…) ; elles s'installent depuis nerdfonts.com.</p>
+        <p class="muted">Les polices de la liste sont livrées avec Orbiterm, rien à installer, et contiennent les icônes des invites décorées (Starship, Powerlevel10k, Oh My Posh…). Consolas, Lucida Console et Courier New viennent de Windows.</p>
         <button onclick={applyToAll} disabled={!app.store.sessions.length}>Appliquer à toutes les sessions enregistrées</button>
       </fieldset>
 

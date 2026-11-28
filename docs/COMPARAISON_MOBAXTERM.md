@@ -142,5 +142,6 @@ Base : rapport d'analyse de MobaXterm (`Documents\MobaXterm-Analyse`) et code d'
 24. ✅ (1.0.4) **Son des bureaux Windows** (TCP et UDP).
 25. ✅ (1.0.4) **Personnalisation des terminaux** : éditeur de thèmes de couleurs, polices et espacements, image de fond ; **résumé du système façon fastfetch** à l’ouverture d’un shell (SSH Unix, local, WSL ; pas pour les serveurs SSH Windows, dont la console efface l’écran).
 26. ✅ (1.0.5) **Nerd Fonts intégrées** (JetBrains Mono, CaskaydiaCove, Fira Code, Hack ; variantes « Mono », licences OFL / MIT dans `static/fonts`) ; résumé du système affiché sous l’encadré d’accueil ; case « Mémoriser » proposée pour toute session enregistrée (les sessions importées d’un autre ordinateur arrivent sans mot de passe mémorisé).
+27. ✅ (version en cours) **Toutes les polices libres intégrées** : 16 familles en version Nerd Fonts « Mono » (woff2, licences OFL / Apache / Ubuntu / Bitstream dans `static/fonts`), sous leur nom habituel ; seules Consolas, Lucida Console et Courier New (Microsoft, non redistribuables) viennent du système.
 
 Reste : paquets winget et AUR (en attente de Microsoft et de la réouverture des inscriptions AUR).
